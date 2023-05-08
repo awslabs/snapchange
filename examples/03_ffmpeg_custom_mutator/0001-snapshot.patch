@@ -1,0 +1,42 @@
+From 3fd6c4b58036e23bc19603f3c3f773fa94e0a0ad Mon Sep 17 00:00:00 2001
+From: Cory Duplantis <corydu@amazon.com>
+Date: Tue, 10 Jan 2023 17:01:30 +0000
+Subject: [PATCH] snapshot
+
+---
+ libavformat/file.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/libavformat/file.c b/libavformat/file.c
+index 7001750c80..422a623163 100644
+--- a/libavformat/file.c
++++ b/libavformat/file.c
+@@ -106,12 +106,25 @@ static const AVClass pipe_class = {
+     .version    = LIBAVUTIL_VERSION_INT,
+ };
+ 
++// Single use flag for taking a single snapshot
++int ready_to_snapshot = 1;
++
+ static int file_read(URLContext *h, unsigned char *buf, int size)
+ {
+     FileContext *c = h->priv_data;
+     int ret;
+     size = FFMIN(size, c->blocksize);
++
++    if (ready_to_snapshot && getenv("SNAPSHOT") != NULL) {
++        // Reset the snapshot to never trigger again
++        ready_to_snapshot = 0;
++
++        // Take the snapshot
++        __asm("int3 ; vmcall");
++    }
++
+     ret = read(c->fd, buf, size);
++    
+     if (ret == 0 && c->follow)
+         return AVERROR(EAGAIN);
+     if (ret == 0)
+-- 
+2.25.1
+

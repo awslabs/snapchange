@@ -1,0 +1,53 @@
+[package]
+name = "snapchange"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+vmm-sys-util  = "0.11.0"
+kvm-bindings  = { version = "0.6.0", features = ["fam-wrappers"] }
+kvm-ioctls = "0.12.0"
+anyhow        = "1.0.40"
+libc          = "0.2.98"
+bitflags      = "1.2.1"
+x86_64        = { version = "0.14.10", default-features = false, features = ["instructions"] }
+clap          = { version = "4.1.8", features = ["derive"] }
+serde_json    = "1.0"
+serde         = { version = "1.0", features = ["derive"] }
+serde-hex     = "0.1.0"
+nix           = "0.22.2"
+iced-x86      = "1.13.0"
+thiserror     = "1.0"
+ctrlc         = "3.2.0"
+core_affinity = "0.5.10"
+lazy_static   = "1.4.0"
+log           = "0.4"
+env_logger    = "0.9.0"
+clap-verbosity-flag = "2.0"
+rand          = "0.8"
+rand_core     = "0.6"
+ahash         = "0.8"
+
+# For addr2line implementation 
+addr2line     = "0.17.0"
+memmap        = "0.7"
+object        = { version = "0.27.1", default-features = false, features = ["read"], optional = true }
+
+# For MSRs to/from primitive
+num_enum     = "0.5.7"
+
+# For stats TUI
+tui = "0.19.0"
+crossterm = "0.22.1"
+tui-logger = "0.8.1"
+toml = "0.7.2"
+
+[profile.release]
+debug = true
+incremental = true
+
+[features]
+default = []
+redqueen = []
