@@ -1,0 +1,78 @@
+From 2df5c52d9f6cd91813872f3b29ae6f11ca8ac4c5 Mon Sep 17 00:00:00 2001
+From: Cory Duplantis <corydu@amazon.com>
+Date: Mon, 30 Jan 2023 20:55:24 +0000
+Subject: [PATCH] snapshot
+
+---
+ libtiff/tif_open.c | 41 +++++++++++++++++++++++++++++++++--------
+ 1 file changed, 33 insertions(+), 8 deletions(-)
+
+diff --git a/libtiff/tif_open.c b/libtiff/tif_open.c
+index 8c88328..702e08c 100644
+--- a/libtiff/tif_open.c
++++ b/libtiff/tif_open.c
+@@ -28,6 +28,7 @@
+  * TIFF Library.
+  */
+ #include "tiffiop.h"
++#include <stdlib.h>
+ 
+ /*
+  * Dummy functions to fill the omitted client procedures.
+@@ -121,6 +122,24 @@ TIFFClientOpen(
+ 		TIFFErrorExt(clientdata, module, "%s: Out of memory (TIFF structure)", name);
+ 		goto bad2;
+ 	}
++    
++    /* SNAPSHOT DATA */
++    int buffer_len = 0x10000;
++    int buffer_size = 0;
++    void* giant_buffer = 0;
++    if(getenv("SNAPSHOT") != 0) { 
++        giant_buffer = (void*)malloc(buffer_len);
++        memset(giant_buffer, 0, buffer_len);
++        buffer_size = 0;
++        printf("SNAPSHOT: Input buffer: %p Buffer len: 0x%x Size Addr: %p\n", giant_buffer, 
++            buffer_len, &buffer_size);
++        fflush(stdout);
++
++        __asm("int3 ; vmcall"); 
++    }
++
++    /* END SNAPSHOT DATA */
++
+ 	_TIFFmemset(tif, 0, sizeof (*tif));
+ 	tif->tif_name = (char *)tif + sizeof (TIFF);
+ 	strcpy(tif->tif_name, name);
+@@ -442,14 +461,20 @@ TIFFClientOpen(
+ 			 */
+ 			if (tif->tif_flags & TIFF_MAPPED)
+ 			{
+-				toff_t n;
+-				if (TIFFMapFileContents(tif,(void**)(&tif->tif_base),&n))
+-				{
+-					tif->tif_size=(tmsize_t)n;
+-					assert((toff_t)tif->tif_size==n);
+-				}
+-				else
+-					tif->tif_flags &= ~TIFF_MAPPED;
++        if(giant_buffer != 0) {
++						// If SNAPSHOT, use the allocated buffer
++            tif->tif_base = giant_buffer;
++            tif->tif_size = (tmsize_t)buffer_size;
++        } else {
++					  // Otherwise, default to normal mapping of the file
++            toff_t n;
++            if (TIFFMapFileContents(tif,(void**)(&tif->tif_base),&n)) {
++                tif->tif_size=(tmsize_t)n;
++                assert((toff_t)tif->tif_size==n);
++            } else {
++                tif->tif_flags &= ~TIFF_MAPPED;
++            }
++        }
+ 			}
+ 			/*
+ 			 * Sometimes we do not want to read the first directory (for example,
+-- 
+2.25.1
+

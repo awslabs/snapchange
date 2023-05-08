@@ -1,0 +1,5 @@
+run
+source /root/gdbsnapshot.py
+next
+next
+quit

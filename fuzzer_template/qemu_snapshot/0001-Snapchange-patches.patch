@@ -1,0 +1,108 @@
+From ffa44f6d2f7a42a4869e08066d34ca9d749c3208 Mon Sep 17 00:00:00 2001
+From: corydu <corydu@amazon.com>
+Date: Tue, 2 May 2023 11:40:47 -0500
+Subject: [PATCH] Snapshot
+
+---
+ target/i386/tcg/translate.c | 64 +++++++++++++++++++++++++++++++++++++
+ 1 file changed, 64 insertions(+)
+
+diff --git a/target/i386/tcg/translate.c b/target/i386/tcg/translate.c
+index b7972f0ff5..fecc425327 100644
+--- a/target/i386/tcg/translate.c
++++ b/target/i386/tcg/translate.c
+@@ -32,6 +32,14 @@
+ 
+ #include "exec/log.h"
+ 
++// #ifdef SNAPCHANGE
++#include "monitor/hmp.h"
++#include "monitor/monitor.h"
++#include "qapi/qmp/qdict.h"
++void dump_physical_memory(uint64_t addr, uint64_t size, const char* filename);
++void dump_regs(CPUState *cpu, const char* filename);
++// #endif
++
+ #define PREFIX_REPZ   0x01
+ #define PREFIX_REPNZ  0x02
+ #define PREFIX_LOCK   0x04
+@@ -4545,6 +4553,53 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
+     }
+ }
+ 
++/// Write `size` physical memory bytes starting from `addr` into `filename`
++void dump_physical_memory(uint64_t addr, uint64_t size, const char* filename) {
++    Error *err = NULL;
++    printf("Calling pmemsave.. addr 0x%lx size 0x%lx", addr, size);
++
++    // Call `qmp_pmemsave` to write the physical memory
++    qmp_pmemsave(addr, size, filename, &err);
++
++    printf("Done dumping physical memory in %s\n", filename);
++}
++
++void dump_regs(CPUState *cpu, const char* filename) {
++    FILE* f = fopen(filename, "w");
++    if (!f) {
++        printf("Failed to open file for registers: %s", filename);
++        return;
++    }
++
++    X86CPU *x86_cpu = X86_CPU(cpu);
++    CPUX86State *state = &x86_cpu->env;
++    uint8_t code[3];
++    if (
++        // `vmcall` is 0f 01 c1
++        cpu_memory_rw_debug(cpu, state->eip + 0, &code, 3, 0) == 0
++            && code[0] == 0x0f
++            && code[1] == 0x01
++            && code[2] == 0xc1
++    ) {
++        // Move RIP past the `vmcall` instruction for this snapshot
++        state->eip += 3;
++    }
++
++    printf("Calling dump registers.. ");
++    x86_cpu_dump_state(cpu, f, 0x70000);
++    printf("Done dumping registers in %s\n", filename);
++
++    CPUArchState *env = cpu->env_ptr;
++    fprintf(f, "APIC_BASE=%lx\n", cpu_get_apic_base(env_archcpu(env)->apic_state));
++    fprintf(f, "EFER=%lx\n", env->efer);
++    fprintf(f, "STAR=%lx\n", env->star);
++    fprintf(f, "LSTAR=%lx\n", env->lstar);
++    fprintf(f, "CSTAR=%lx\n", env->cstar);
++    fprintf(f, "SFMASK=%lx\n", env->fmask);
++    fprintf(f, "KERNELGSBASE=%lx\n", env->kernelgsbase);
++    fclose(f);
++}
++
+ /* convert one instruction. s->base.is_jmp is set if the translation must
+    be stopped. Return the next pc value */
+ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
+@@ -4556,6 +4611,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
+     int modrm, reg, rm, mod, op, opreg, val;
+     target_ulong next_eip, tval;
+     target_ulong pc_start = s->base.pc_next;
++    uint64_t physmem_dump_size;
+ 
+     s->pc_start = s->pc = pc_start;
+     s->override = -1;
+@@ -7461,6 +7517,14 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
+             gen_op_st_v(s, CODE64(s) + MO_32, s->T0, s->A0);
+             break;
+ 
++        case 0xc1: /* vmcall */
++            // Sometimes we had a page table beyond 4GB even in 4GB memory, so dump 5GB
++            // just to be safe
++            physmem_dump_size = (uint64_t)(5 * 1024 * 1024) * 1024;
++            dump_regs(cpu, "fuzzvm.qemuregs");
++            dump_physical_memory(0,  physmem_dump_size, "fuzzvm.physmem");
++            break;
++
+         case 0xc8: /* monitor */
+             if (!(s->cpuid_ext_features & CPUID_EXT_MONITOR) || CPL(s) != 0) {
+                 goto illegal_op;
+-- 
+2.34.1
+
