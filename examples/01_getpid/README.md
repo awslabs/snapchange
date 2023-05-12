@@ -411,7 +411,7 @@ addresses that, if hit, signal a coverage hit. Typically, this is a list of basi
 in the target.
 
 There is a [Binary Ninja](https://binary.ninja) script available 
-[here](../../bn_snapchange.py) to generate basic block coverage, but any 
+[here](../../fuzzer_template/coverage_scripts/bn_snapchange.py) to generate basic block coverage, but any 
 method of getting basic block coverage will work. For this tutorial there is already a 
 `example1.covbps` for the target available in this directory. 
 
