@@ -78,10 +78,10 @@ download_linux() {
     # If no specific linux kernel given, download the entire kernel
     if [ -z "$VERSION" ]; then
         echo "Downloading latest linux kernel"
-        git clone $DEPTH https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+        git clone $DEPTH https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
     else
         echo "Downloading kernel version: $VERSION"
-        git clone $DEPTH --branch "$VERSION" https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git 
+        git clone $DEPTH --branch "$VERSION" https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git  || true
     fi
 
     pushd linux
