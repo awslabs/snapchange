@@ -329,6 +329,12 @@ impl_enum!(
         /// Time to for rapid stats sync
         StatsSync,
 
+        /// Time to for stats coverage sync
+        SyncCov1,
+
+        /// Time to for stats coverage sync
+        SyncCov2,
+
         /// Time taken to gather redqueen breakpoints
         Redqueen,
     }
