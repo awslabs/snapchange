@@ -312,7 +312,7 @@ pub(crate) const MAX_CRASHES: usize = 64;
 /// # Returns
 ///
 /// * Path to input file written
-fn write_crash_input(
+pub fn write_crash_input(
     crash_dir: &Path,
     path: &str,
     input: &[u8],
