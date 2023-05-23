@@ -118,20 +118,41 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
     } else if project_state.path.join("current_corpus").exists() {
         // If no input dir was given, and the current corpus exists, use the old corpus
         project_state.path.join("current_corpus")
-    } else {
-        // Default to using the `input` directory
+    } else if project_state.path.join("input").exists() {
+        // If no given input or current corpus, use "input" directory
         project_state.path.join("input")
+    } else {
+        // Default to the standard current_corpus directory
+        project_state.path.join("current_corpus")
     };
 
-    // Get the corpus dir
+    // Get the corpus directory
     let mut corpus_dir = project_state.path.clone();
     corpus_dir.push("current_corpus");
     if !corpus_dir.exists() {
         std::fs::create_dir(&corpus_dir).context("Failed to create crash dir")?;
     }
 
+    let num_files = input_dir.read_dir()?.count();
+
+    // Give some statistics on reading the initial corpus
+    let mut start = std::time::Instant::now();
+    let mut count = 0_u32;
     if input_dir.exists() {
-        for file in input_dir.read_dir()? {
+        for (i, file) in input_dir.read_dir()?.enumerate() {
+            if start.elapsed() >= std::time::Duration::from_millis(1000) {
+                let left = num_files - i;
+                println!(
+                    "{i:9} / {num_files:9} | Reading corpus {:8.2} files/sec | {:6.2} seconds left",
+                    count as f64 / start.elapsed().as_secs_f64(),
+                    left as f64 / (count as f64 / start.elapsed().as_secs_f64()),
+                );
+                start = std::time::Instant::now();
+                count = 0;
+            }
+
+            count += 1;
+
             let filepath = file?.path();
 
             // Ignore directories if they exist
@@ -140,6 +161,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
                 continue;
             }
 
+            // Add the input to the input corpus
             input_corpus.push(FUZZER::Input::from_bytes(&std::fs::read(filepath)?)?);
         }
     } else {
@@ -162,9 +184,11 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         log::warn!("No dictionary in use. {dict_dir:?} not found.");
     }
 
-    // Start each core with the full corpus
+    // Start each core with the full corpus based on the configuration
     let input_corpus_len = input_corpus.len();
-    let starting_corp_len = input_corpus_len;
+    let max_new_corpus_size = project_state.config.stats.maximum_new_corpus_size;
+    let starting_corp_len = input_corpus_len.min(max_new_corpus_size);
+    log::info!("Starting corp len: {starting_corp_len}");
     let mut corp_counter = 0;
 
     log::info!(
@@ -188,22 +212,6 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
     } = project_state.coverage_left()?;
 
     log::info!("Coverage left: {}", coverage_left.len());
-
-    let mut starting_corp = Vec::new();
-
-    // Add the new corpus to the core
-    for _ in 0..starting_corp_len {
-        starting_corp.push(input_corpus[corp_counter].clone());
-        corp_counter = (corp_counter + 1) % input_corpus_len;
-    }
-
-    // Add a single input if none found
-    if starting_corp.is_empty() {
-        let mut rng = Rng::new();
-        let input = FUZZER::Input::generate(&[], &mut rng, &dict, FUZZER::MAX_INPUT_LENGTH);
-        starting_corp.push(input.clone());
-        input_corpus.push(input);
-    }
 
     // Init the coverage breakpoints mapping to byte
     let mut covbp_bytes = BTreeMap::new();
@@ -246,17 +254,6 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
     // Due to the time it takes to clone large corpi, symbols, or coverage breakpoints,
     // we bulk clone as many as we need for all the cores at once and then `.take` them
     // from these collections
-    let start = std::time::Instant::now();
-    log::info!(
-        "Cloning corpus of {} for {} cores",
-        starting_corp.len(),
-        cores
-    );
-    let mut starting_corps = (0..=cores)
-        .map(|_| starting_corp.clone())
-        .collect::<Vec<_>>();
-    log::info!("...took {:?}", start.elapsed());
-
     let start = std::time::Instant::now();
     let mut starting_symbols = (0..=cores).map(|_| symbols.clone()).collect::<Vec<_>>();
     log::info!("Cloned {} symbols in {:?}", cores, start.elapsed());
@@ -346,9 +343,31 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         // Get the stats for this core
         let core_stats = stats[core_id.id - 1].clone();
 
+        // Create this core's corpus
+        let mut rng = Rng::new();
+        let mut corpus = Vec::new();
+        let mut seen = BTreeSet::new();
+        for _ in 0..starting_corp_len {
+            let corp_counter = rng.next() as usize % input_corpus.len();
+            if !seen.insert(corp_counter) {
+                continue;
+            }
+
+            corpus.push(input_corpus[corp_counter].clone());
+        }
+
+        // Add a single input if none found
+        if corpus.is_empty() {
+            let mut rng = Rng::new();
+            let input = FUZZER::Input::generate(&[], &mut rng, &dict, FUZZER::MAX_INPUT_LENGTH);
+            input_corpus.push(input.clone());
+            corpus.push(input);
+        }
+
+        log::info!("Created corpus {id} of len {}", corpus.len());
+
         // Get the starting resources for this specific core
         let curr_symbols = std::mem::take(&mut starting_symbols[id]);
-        let corpus = std::mem::take(&mut starting_corps[id]);
         let symbol_breakpoints = std::mem::take(&mut starting_sym_breakpoints[id]);
         let coverage_breakpoints = Some(std::mem::take(&mut starting_covbps[id]));
         let dictionary = std::mem::take(&mut starting_dicts[id]);
@@ -692,6 +711,7 @@ fn start_core<FUZZER: Fuzzer>(
     let mut new_coverage_for_input = BTreeSet::new();
 
     // Number of iterations before syncing stats
+    let mut coverage_sync = std::time::Instant::now();
     let mut last_sync = std::time::Instant::now();
     let mut last_corpus_sync = std::time::Instant::now();
 
@@ -752,19 +772,11 @@ fn start_core<FUZZER: Fuzzer>(
             last_corpus_sync = Instant::now();
         }
 
-        // Sync the current stats to the main stats after 500ms
-        if last_sync.elapsed() >= Duration::from_millis(500) {
+        // Sync the current stats to the main stats
+        if last_sync.elapsed() >= config.stats.stats_sync_timer {
             time!(StatsSync, {
                 // Add the current iterations to the coverage
                 core_stats.lock().unwrap().iterations += iters;
-
-                // Append the current coverage
-                core_stats.lock().unwrap().coverage.append(&mut coverage);
-
-                // Reset the local coverage to match the global coverage set in stats
-                for addr in &core_stats.lock().unwrap().coverage {
-                    coverage.insert(*addr);
-                }
 
                 // Reset the local coverage to match the global coverage set in stats
                 /*
@@ -785,6 +797,23 @@ fn start_core<FUZZER: Fuzzer>(
                 // Reset the last sync counter
                 last_sync = Instant::now();
             });
+        }
+
+        if coverage_sync.elapsed() >= config.stats.coverage_sync_timer {
+            time!(SyncCov1, {
+                // Append the current coverage
+                core_stats.lock().unwrap().coverage.append(&mut coverage);
+            });
+
+            time!(SyncCov2, {
+                // Reset the local coverage to match the global coverage set in stats
+                for addr in &core_stats.lock().unwrap().coverage {
+                    coverage.insert(*addr);
+                }
+            });
+
+            // Reset the last sync counter
+            coverage_sync = Instant::now();
         }
 
         iters += 1;
@@ -886,6 +915,7 @@ fn start_core<FUZZER: Fuzzer>(
         let mut i = 0;
 
         // if SINGLE_STEP_DEBUG.load(Ordering::SeqCst) || fuzzvm.rng.next() % 2 == 0 {
+        /*
         if SINGLE_STEP {
             if fuzzvm.rng.next() % 2 == 0 {
                 SINGLE_STEP_DEBUG.store(true, Ordering::SeqCst);
@@ -895,6 +925,7 @@ fn start_core<FUZZER: Fuzzer>(
                 fuzzvm.disable_single_step()?;
             }
         }
+        */
 
         let mut perf = crate::fuzzvm::VmRunPerf::default();
 
@@ -920,13 +951,15 @@ fn start_core<FUZZER: Fuzzer>(
                     symbol.push_str(&curr_symbol.to_string());
                 }
 
-                instrs.push(format!(
+                let instr = format!(
                     "INSTRUCTION {:07} {:#018x} {:#010x} | {:60}\n    {instr}",
                     i,
                     rip,
                     u64::try_from(cr3.0).unwrap(),
                     symbol
-                ));
+                );
+
+                instrs.push(instr);
 
                 i += 1;
             }

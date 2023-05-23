@@ -528,6 +528,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     let mut modules = Modules::default();
     let mut binaries = Vec::new();
     let mut config = Config::default();
+    let mut update_config = true;
 
     #[cfg(feature = "redqueen")]
     let mut redqueen_available = false;
@@ -548,8 +549,16 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
 
             // If we find a config file, use this config instead of the default
             if matches!(file.file_name().to_str(), Some("config.toml")) {
-                config = toml::from_str(&std::fs::read_to_string(file.path())?)?;
+                let data = &std::fs::read_to_string(file.path())?;
+                config = toml::from_str(data)?;
                 println!("Using project config: {config:#?}");
+
+                // Check if we need to update the config if the configuration
+                // format has changed
+                let new_data = toml::to_string(&config)?;
+                if &new_data == data {
+                    update_config = false;
+                }
                 continue;
             }
 
@@ -618,6 +627,12 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
                 _ => {}
             }
         }
+    }
+
+    // Write the updated config if one wasn't found or if the configuration options
+    // have changed
+    if update_config {
+        std::fs::write(dir.join("config.toml"), &toml::to_string(&config)?)?;
     }
 
     let mut coverage_breakpoints: Option<BTreeSet<VirtAddr>> = None;
