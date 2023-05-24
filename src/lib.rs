@@ -775,7 +775,7 @@ pub fn sanity_check_kvm(kvm: &Kvm) {
 }
 
 /// Kick cores when triggered by a signal
-fn kick_cores() {
+pub(crate) fn kick_cores() {
     loop {
         if crate::FINISHED.load(Ordering::SeqCst) {
             log::info!("[kick_cores] FINISHED");
@@ -808,7 +808,7 @@ fn kick_cores() {
 }
 
 /// Block SIGALRM for this thread
-fn block_sigalrm() -> Result<()> {
+pub(crate) fn block_sigalrm() -> Result<()> {
     let mut curr_sigset = SigSet::empty();
 
     // Get the current unblocked signal set
@@ -1042,6 +1042,7 @@ pub fn snapchange_main<FUZZER: Fuzzer + 'static>() -> Result<()> {
         SubCommand::Project(args) => commands::project::run(&proj_state, &args),
         SubCommand::Coverage(args) => commands::coverage::run::<FUZZER>(&proj_state, &args),
         SubCommand::FindInput(args) => commands::find_input::run::<FUZZER>(&proj_state, &args),
+        SubCommand::CorpusMin(args) => commands::corpus_min::run::<FUZZER>(&proj_state, &args),
 
         #[cfg(feature = "redqueen")]
         SubCommand::Redqueen(args) => commands::redqueen::run::<FUZZER>(&proj_state, &args),
