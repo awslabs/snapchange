@@ -311,6 +311,9 @@ pub enum SubCommand {
     /// Find an input that hits the given address or symbol
     FindInput(FindInput),
 
+    /// Minimize the given corpus by moving files that don't add any new coverage to a trash directory
+    CorpusMin(CorpusMin),
+
     /// Gather Redqueen coverage for an input
     #[cfg(feature = "redqueen")]
     Redqueen(RedqueenAnalysis),
@@ -375,6 +378,34 @@ pub struct Minimize {
     /// stage
     #[clap(short, long, default_value_t = 50000)]
     pub(crate) iterations_per_stage: u32,
+}
+
+/// CorpusMin subcommand
+#[derive(Parser, Debug)]
+pub struct CorpusMin {
+    /// Number of cores to fuzz with. Negative numbers interpretted as MAX_CORES - CORES.
+    #[clap(short, long, allow_hyphen_values = true)]
+    pub(crate) cores: Option<i64>,
+
+    /// The path to the corpus containing input files to minimize
+    #[clap(short, long, default_value = "./snapshot/current_corpus")]
+    pub(crate) input_dir: PathBuf,
+
+    /// The path to move the discarded inputs
+    #[clap(short, long, default_value = "./snapshot/current_corpus.trash")]
+    pub(crate) trash_dir: PathBuf,
+
+    /// The number of input files, per core, to gather coverage for during a single iteration.
+    ///
+    /// For extremely large input corpi, storing the coverage for the entire corpus
+    /// can be costly. This number can reduce the memory footprint by performing
+    /// the corpus minimization algorithm over many subsets of the input.
+    #[clap(long, default_value_t = 10000)]
+    pub(crate) chunk_size: usize,
+
+    /// Set the timeout (in seconds) of the execution of the VM. [0-9]+(ns|us|ms|s|m|h)
+    #[clap(long, value_parser = parse_timeout, default_value = "60s")]
+    pub(crate) timeout: Duration,
 }
 
 /// Coverage subcommand
