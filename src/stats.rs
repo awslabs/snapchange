@@ -17,7 +17,6 @@ use x86_64::registers::rflags::RFlags;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::File;
-use std::intrinsics::discriminant_value;
 use std::path::Path;
 
 use std::rc::Rc;
@@ -114,7 +113,7 @@ pub struct Stats<FUZZER: Fuzzer> {
     pub perf_stats: PerfStats,
 
     /// Number of [`FuzzVmExit`] seen
-    pub vmexits: [u64; discriminant_value(&FuzzVmExit::COUNT) as usize],
+    pub vmexits: [u64; std::mem::variant_count::<FuzzVmExit>()],
 }
 
 impl<FUZZER: Fuzzer> Stats<FUZZER> {
@@ -172,7 +171,7 @@ pub struct GlobalStats {
     pub perfs: ([u64; PerfMark::Count as usize], u64, u64),
 
     /// Number of vmexits found across all cores
-    pub vmexits: [u64; discriminant_value(&FuzzVmExit::COUNT) as usize],
+    pub vmexits: [u64; std::mem::variant_count::<FuzzVmExit>()],
 }
 
 /// Performance statistics
@@ -535,7 +534,7 @@ impl GlobalStats {
         line.clear();
         line.push_str("| ");
 
-        for i in 0..discriminant_value(&FuzzVmExit::COUNT) {
+        for i in 0..std::mem::variant_count::<FuzzVmExit>() {
             let name = FuzzVmExit::name(i as usize);
             let val = self.vmexits[i as usize];
 
@@ -708,7 +707,7 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut dead = Vec::new();
     let mut in_redqueen = Vec::new();
     let mut perfs = vec![None; crate::MAX_CORES];
-    let mut vmexits = [0_u64; discriminant_value(&FuzzVmExit::COUNT) as usize];
+    let mut vmexits = [0_u64; std::mem::variant_count::<FuzzVmExit>()];
     let mut lcov = BTreeMap::new();
 
     // TUI log state
