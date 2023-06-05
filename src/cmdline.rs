@@ -121,8 +121,9 @@ pub struct ProjectCoverage {
 
 impl ProjectState {
     /// Return the coverage remaining from the original coverage and the previously found
-
-    /// coverage along with the previously found coverage itself
+    /// coverage along with the previously found coverage itself. Also adds breakpoints
+    /// for basic blocks as seen in SanitiverCoverage when compiling a target with
+    /// `-fsanitize-coverage=trace-pc-guard,pc-table`.
     ///
     /// # Errors
     ///
@@ -166,7 +167,11 @@ impl ProjectState {
         }
 
         if self.coverage_breakpoints.is_none() {
-            return Ok(ProjectCoverage::default());
+            return Ok(ProjectCoverage {
+                prev_coverage,
+                prev_redqueen_coverage,
+                coverage_left: BTreeSet::new(),
+            });
         }
 
         log::info!(
@@ -191,6 +196,75 @@ impl ProjectState {
             coverage_left,
             prev_redqueen_coverage,
         })
+    }
+
+    /// Add sancov coverage breakpoints if they are available in this target
+    pub fn add_sancov_breakpoints(&mut self) -> Result<()> {
+        if let Some(symbol_path) = &self.symbols {
+            // Look for the symbols for the start of the breakpoint table from sancov
+            for start_sancov_pcs in std::fs::read_to_string(symbol_path)?
+                .split('\n')
+                .filter(|x| x.contains("__start___sancov_pcs"))
+            {
+                // Sancov entry format
+                #[repr(C)]
+                struct SanCovBp {
+                    // Address of the breakpoint
+                    addr: u64,
+
+                    // Type of breakpoint
+                    typ: SanCovBpType,
+                }
+
+                #[repr(u64)]
+                #[derive(Debug)]
+                #[allow(dead_code)]
+                enum SanCovBpType {
+                    // This basic block is not the start of a function
+                    NonEntryBlock,
+
+                    // This basic block is the start of a function
+                    FunctionEntryBlock,
+                }
+
+                // Get the address for __start___sancov_pcs symbol for the start of the
+                // known basic block addresses
+                let address = start_sancov_pcs.split(" ").next().unwrap();
+                let mut start_bps = u64::from_str_radix(&address.replace("0x", ""), 16)?;
+
+                // Get a copy of the current memory to read the breakpoints
+                let mut memory = self.memory()?;
+                let mut new_covbps = BTreeSet::new();
+
+                loop {
+                    // Read the next sancov breakpoint
+                    let new_bp =
+                        memory.read::<SanCovBp>(VirtAddr(start_bps), Cr3(self.vbcpu.cr3))?;
+                    let SanCovBp { addr, typ: _ } = new_bp;
+
+                    // Zero address breakpoint signals the end of the list
+                    if addr == 0 {
+                        break;
+                    }
+
+                    // Add the new breakpoint
+                    new_covbps.insert(VirtAddr(addr));
+
+                    // Increment the to the next breakpoint
+                    start_bps += std::mem::size_of::<SanCovBp>() as u64;
+                }
+
+                log::info!("New breakpoints added from SanCov: {}", new_covbps.len());
+
+                // Add the new breakpoints found by sancov to the total coverage breakpoints
+                self.coverage_breakpoints
+                    .get_or_insert_with(BTreeSet::new)
+                    .extend(new_covbps);
+            }
+        }
+
+        // Return success
+        Ok(())
     }
 }
 
@@ -785,7 +859,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     let vbcpu = vbcpu.ok_or(Error::RegisterStateMissing)?;
     let physical_memory = physical_memory.ok_or(Error::PhysicalMemoryMissing)?;
 
-    let state = ProjectState {
+    let mut state = ProjectState {
         path: dir.to_owned(),
         vbcpu,
         physical_memory,
@@ -799,6 +873,9 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         #[cfg(feature = "redqueen")]
         redqueen_available,
     };
+
+    // Check for sancov basic blocks in the target
+    state.add_sancov_breakpoints()?;
 
     Ok(state)
 }
@@ -854,9 +931,12 @@ pub fn parse_symbols(
             // Check if this symbol matches a known reset symbol
             for (symbol, symbol_type) in LINUX_USERLAND_SYMBOLS {
                 if sym.symbol.contains(symbol) {
-                    debug!(
+                    log::info!(
                         "Linux user symbol: {} @ {:#x} {:#x} {:?}",
-                        sym.symbol, sym.address, cr3.0, symbol_type
+                        sym.symbol,
+                        sym.address,
+                        cr3.0,
+                        symbol_type
                     );
                     symbol_bps.insert((VirtAddr(sym.address), cr3), *symbol_type);
                     break;
