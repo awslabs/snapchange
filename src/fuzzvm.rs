@@ -3514,16 +3514,6 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 data: self.vbcpu.msr_kernel_gs_base,
                 ..kvm_bindings::kvm_msr_entry::default()
             },
-            kvm_msr_entry {
-                index: Msr::Ia32GsBase as u32,
-                data: self.vbcpu.gs.base,
-                ..kvm_bindings::kvm_msr_entry::default()
-            },
-            kvm_msr_entry {
-                index: Msr::Ia32FsBase as u32,
-                data: self.vbcpu.fs.base,
-                ..kvm_bindings::kvm_msr_entry::default()
-            },
             /*
             // Add the MSRs for the performance counters
             kvm_msr_entry {
