@@ -283,8 +283,9 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         .map(|_| prev_coverage.clone())
         .collect::<Vec<_>>();
     log::info!(
-        "Cloned {} previous coverage in {:?}",
+        "Cloned {} previous coverage ({}) in {:?}",
         cores,
+        prev_coverage.len(),
         start.elapsed()
     );
 
