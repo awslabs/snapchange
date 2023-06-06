@@ -657,6 +657,9 @@ impl Memory {
 
             // Read the translated physical address into the given buf
             self.read_phys_bytes(phys_addr, buf)?;
+
+            // Return from the base case
+            return Ok(());
         }
 
         let mut offset = 0_usize;
@@ -834,14 +837,14 @@ impl Memory {
     ///
     /// * If the `size_if::<T>` cannot fit in a `u64`
     pub fn write_bytes(&mut self, virt_addr: VirtAddr, cr3: Cr3, buf: &[u8]) -> Result<()> {
-        // Check if this read will straddle a page boundary
+        // Check if this write will straddle a page boundary
         self.set_page_boundaries(virt_addr, u64::try_from(buf.len()).unwrap())?;
 
         // Get the page found page boundaries to enable &mut self
         let page_boundaries = self.temp_page_boundaries.take().unwrap();
 
-        // Base case here. Not page straddling, no need to allocate and concat bytes from
-        // different physical pages
+        // Base case here. Not page straddling, no need to write bytes across multiple
+        // pages
         if page_boundaries.len() == 1 {
             let (virt_addr, _) = page_boundaries[0];
 
@@ -854,6 +857,9 @@ impl Memory {
 
             // Read the translated physical address into the given buf
             self.write_phys_bytes(phys_addr, buf)?;
+
+            // Early return from the base case
+            return Ok(());
         }
 
         // Offset into the input buffer
