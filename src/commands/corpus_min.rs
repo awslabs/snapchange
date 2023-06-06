@@ -175,6 +175,9 @@ pub(crate) fn run<FUZZER: Fuzzer>(
             // Set the core affinity for this core to always be 0
             core_affinity::set_for_current(CoreId { id: 0 });
 
+            // Reset the finished marker
+            crate::FINISHED.store(false, Ordering::SeqCst);
+
             // Start the kick cores worker
             loop {
                 if crate::FINISHED.load(Ordering::SeqCst) {
@@ -200,7 +203,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
                 }
 
                 // Minimal sleep to avoid too much processor churn
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                std::thread::sleep(std::time::Duration::from_millis(1000));
             }
         });
 
@@ -223,11 +226,13 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         kick_cores_thread.join().unwrap();
 
         // Add this chunk's coverage to the total corpus minimizer
+        log::info!("Starting to add input");
         let start = std::time::Instant::now();
         minimizer.add_inputs(chunk_coverage);
         log::info!("Add inputs: {:?}", start.elapsed());
 
         // Reduce the corpus seen thus far by removing inputs that don't add any new coverage
+        log::info!("Starting to minimize");
         let start = std::time::Instant::now();
         let trash = minimizer.reduce();
         log::info!(
@@ -250,6 +255,21 @@ pub(crate) fn run<FUZZER: Fuzzer>(
     // Gather the paths to gather the coverage for
     let new_paths = get_files(&args.input_dir)?;
     log::info!("Reduced corpus from {} to {}", paths.len(), new_paths.len());
+
+    let cov_out = project_state.path.join("coverage.addresses.min");
+    let result = minimizer
+        .addr_to_inputs
+        .keys()
+        .map(|addr| format!("{addr:#x}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    std::fs::write(&cov_out, result)?;
+
+    log::info!(
+        "Wrote coverage ({}) for minimized coverage to {cov_out:?}",
+        minimizer.addr_to_inputs.len()
+    );
 
     // Success
     Ok(())
@@ -314,6 +334,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
 
     let start = std::time::Instant::now();
     let mut result = BTreeMap::new();
+    let start_index = path_index.load(Ordering::SeqCst);
 
     loop {
         let curr_index = path_index.fetch_add(1, Ordering::SeqCst);
@@ -322,9 +343,9 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         }
 
         // Print an approximate status message
-        if curr_index > 0 && curr_index % 100 == 0 {
+        if (curr_index - start_index) > 0 && curr_index % 100 == 0 {
             let inputs_left = ending_index - curr_index;
-            let time_per_input = start.elapsed().as_secs_f64() / curr_index as f64;
+            let time_per_input = start.elapsed().as_secs_f64() / (curr_index - start_index) as f64;
             let time_left = Duration::from_secs_f64(time_per_input * inputs_left as f64);
 
             let seconds = time_left.as_secs();
