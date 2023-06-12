@@ -351,7 +351,7 @@ pub fn get_instr_containing<FUZZER: Fuzzer>(
 ) -> u64 {
     // Starting from the largest possible instruction, look for a single instruction that decodes
     // such that the second instruction is at `next_instr`
-    for offset in (0..0x12).rev() {
+    for offset in (0..=0x10).rev() {
         //
         let curr_addr = starting_addr - offset;
 
@@ -370,7 +370,7 @@ pub fn get_instr_containing<FUZZER: Fuzzer>(
         }
     }
 
-    unreachable!();
+    unreachable!("Starting addr: {starting_addr:#x} Ending: {next_instr:#x}");
 }
 
 /// Stack unwinder for a single binary
@@ -523,9 +523,13 @@ impl StackUnwinder {
                 let ret_addr =
                     state.regs[TrackedReg::Ra as usize].ok_or(UnwinderError::UnsetRaRegister)?;
 
-                // Get the beginning of the previous instruction
-                let instr_start = get_instr_containing(ret_addr - 1, ret_addr, fuzzvm);
-                state.set_rip(instr_start);
+                if ret_addr > 0 {
+                    // Get the beginning of the previous instruction
+                    let instr_start = get_instr_containing(ret_addr - 1, ret_addr, fuzzvm);
+                    state.set_rip(instr_start);
+                } else {
+                    return Err(UnwinderError::UnsetRaRegister);
+                }
 
                 // Return success
                 Ok(())
