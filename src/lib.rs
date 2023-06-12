@@ -454,7 +454,8 @@ fn handle_vmexit<FUZZER: Fuzzer>(
                 let symbol = fuzzvm.get_symbol(pc).unwrap_or_default();
                 let op = if is_write > 0 { "WRITE" } else { "READ" };
 
-                format!("ASAN_{op}{size}_pc:{pc:#x}_crashing_addr:{crashing_addr:#x}_{symbol}")
+                // format!("ASAN_{op}{size}_pc:{pc:#x}_crashing_addr:{crashing_addr:#x}_{symbol}")
+                format!("ASAN_{op}_pc:{pc:#x}_crashing_addr:{crashing_addr:#x}_{symbol}")
             } else if sym.contains("ReportOutOfMemory") {
                 let alloc = fuzzvm.rdi();
                 if alloc >= 4 * 1024 * 1024 * 1024 {
@@ -511,13 +512,16 @@ fn handle_vmexit<FUZZER: Fuzzer>(
             execution = Execution::Reset;
         }
         FuzzVmExit::IoOut(port) => {
-            log::debug!("IoOut {port:#x}");
-            execution = Execution::CrashReset {
-                path: format!(
-                    "misc/IoOut_Port_{port:#x}_current_cr3_{:x?}_original_cr3_{:x?}",
-                    fuzzvm.cr3().0,
-                    fuzzvm.vbcpu.cr3
-                ),
+            if *port == 0x3f9 {
+                execution = Execution::Continue;
+            } else {
+                execution = Execution::CrashReset {
+                    path: format!(
+                        "misc/IoOut_Port_{port:#x}_current_cr3_{:x?}_original_cr3_{:x?}",
+                        fuzzvm.cr3().0,
+                        fuzzvm.vbcpu.cr3
+                    ),
+                }
             }
         }
         FuzzVmExit::ForceSigFaultBreakpoint(signal) => {
