@@ -198,9 +198,11 @@ impl ProjectState {
         })
     }
 
-    /// Add sancov coverage breakpoints if they are available in this target
-    pub fn add_sancov_breakpoints(&mut self) -> Result<()> {
+    /// Parse sancov coverage breakpoints if they are available in this target
+    pub fn parse_sancov_breakpoints(&mut self) -> Result<Option<BTreeSet<VirtAddr>>> {
         if let Some(symbol_path) = &self.symbols {
+            let mut new_covbps = BTreeSet::new();
+
             // Look for the symbols for the start of the breakpoint table from sancov
             for start_sancov_pcs in std::fs::read_to_string(symbol_path)?
                 .split('\n')
@@ -213,7 +215,7 @@ impl ProjectState {
                     addr: u64,
 
                     // Type of breakpoint
-                    typ: SanCovBpType,
+                    typ: u64,
                 }
 
                 #[repr(u64)]
@@ -234,16 +236,14 @@ impl ProjectState {
 
                 // Get a copy of the current memory to read the breakpoints
                 let mut memory = self.memory()?;
-                let mut new_covbps = BTreeSet::new();
 
                 loop {
                     // Read the next sancov breakpoint
                     let new_bp =
                         memory.read::<SanCovBp>(VirtAddr(start_bps), Cr3(self.vbcpu.cr3))?;
-                    let SanCovBp { addr, typ: _ } = new_bp;
+                    let SanCovBp { addr, typ } = new_bp;
 
-                    // Zero address breakpoint signals the end of the list
-                    if addr == 0 {
+                    if addr == 0 || typ > 1 {
                         break;
                     }
 
@@ -255,16 +255,12 @@ impl ProjectState {
                 }
 
                 log::info!("New breakpoints added from SanCov: {}", new_covbps.len());
-
-                // Add the new breakpoints found by sancov to the total coverage breakpoints
-                self.coverage_breakpoints
-                    .get_or_insert_with(BTreeSet::new)
-                    .extend(new_covbps);
             }
-        }
 
-        // Return success
-        Ok(())
+            Ok(Some(new_covbps))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -743,7 +739,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     let mut coverage_breakpoints: Option<BTreeSet<VirtAddr>> = None;
     let mut coverage_breakpoints_src = None;
 
-    for covbps_path in covbps_paths {
+    for covbps_path in &covbps_paths {
         let covbps = coverage_breakpoints.get_or_insert(BTreeSet::new());
 
         let bps = parse_coverage_breakpoints(&covbps_path)?;
@@ -875,7 +871,25 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     };
 
     // Check for sancov basic blocks in the target
-    state.add_sancov_breakpoints()?;
+    if let Some(sancov_bps) = state.parse_sancov_breakpoints()? {
+        // Write the coverage breakpoints found in sanitizer coverage
+        let sancov_bps_file = Path::new("sancov.covbps");
+        std::fs::write(
+            state.path.join(sancov_bps_file),
+            sancov_bps
+                .iter()
+                .map(|x| format!("{:#x}", x.0))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )?;
+
+        // Add the sancov breakpoints to the total coverage breakpoints
+        if let Some(covbps) = state.coverage_breakpoints.as_mut() {
+            covbps.extend(sancov_bps);
+        } else {
+            state.coverage_breakpoints = Some(sancov_bps);
+        }
+    }
 
     Ok(state)
 }
