@@ -30,7 +30,7 @@ use crate::stats::GlobalStats;
 use crate::try_u64;
 
 /// Titles for the various tabs in the TUI
-const TAB_TITLES: &[&str] = &["Main", "Crashes", "Coverage", "Log"];
+const TAB_TITLES: &[&str] = &["Main", "Crashes", "Coverage", "Log", "TuiStats"];
 
 /// The tabs used in the TUI used to translate the `tab_index`
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
@@ -41,6 +41,7 @@ enum TuiTab {
     Crashes,
     Coverage,
     Log,
+    TuiStats,
 }
 
 /// Data used to draw the TUI
@@ -61,7 +62,7 @@ pub struct StatsApp<'a> {
     coverage_timeline: &'a [String],
 
     /// Crash directory for listing crashes
-    crash_dir: &'a PathBuf,
+    crash_paths: &'a [ListItem<'a>],
 
     /// Current tab index
     tab_index: usize,
@@ -71,6 +72,12 @@ pub struct StatsApp<'a> {
 
     /// Current state of the logger to know which types of messages to display
     log_state: &'a mut TuiWidgetState,
+
+    /// Performance stats for the TUI itself
+    tui_perf_stats: &'a [(&'a str, u64)],
+
+    /// Average time spent in the stats iteration loop
+    avg_tui_iter: f64,
 }
 
 impl<'a> StatsApp<'a> {
@@ -81,10 +88,12 @@ impl<'a> StatsApp<'a> {
         vmexits: &'a [(&'static str, u64)],
         general: &'a GlobalStats,
         coverage_timeline: &'a [String],
-        crash_dir: &'a PathBuf,
+        crash_paths: &'a [ListItem<'a>],
         tab_index: u8,
         coverage_blockers: &'a [String],
         log_state: &'a mut TuiWidgetState,
+        tui_perf_stats: &'a [(&'a str, u64)],
+        avg_tui_iter: f64,
     ) -> StatsApp<'a> {
         StatsApp {
             perf_stats,
@@ -92,10 +101,12 @@ impl<'a> StatsApp<'a> {
             vmexits,
             general,
             coverage_timeline,
-            crash_dir,
+            crash_paths,
             coverage_blockers,
             tab_index: usize::from(tab_index) % TAB_TITLES.len(),
             log_state,
+            tui_perf_stats,
+            avg_tui_iter,
         }
     }
 }
@@ -439,6 +450,46 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
     }
 }
 
+/// Draw the `stats` tab
+fn draw_stats<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
+    // Get the longest name of the stats
+    let longest_name = app
+        .tui_perf_stats
+        .iter()
+        .map(|(name, _val)| name.len())
+        .max()
+        .unwrap_or(0);
+
+    // Auto set the bar width to try and fit all bars on screen if possible
+    #[allow(clippy::cast_possible_truncation)]
+    let bar_width = std::cmp::min(
+        longest_name as u16,
+        chunk
+            .width
+            .checked_div(app.perf_stats.len() as u16)
+            .unwrap_or(1),
+    );
+
+    // Draw the bar chart for the stats metrics
+    let perf_stats = BarChart::default()
+        .block(
+            Block::default()
+                .title(Span::styled(
+                    "TUI Performance Stats (%)",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ))
+                .borders(Borders::ALL),
+        )
+        .data(app.tui_perf_stats)
+        .bar_width(bar_width)
+        .bar_style(Style::default().fg(Color::Yellow))
+        .value_style(Style::default().fg(Color::Black).bg(Color::Yellow));
+
+    f.render_widget(perf_stats, chunk);
+}
+
 /// Draw the `log` tab
 fn draw_log<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
     let tui_smart_widget = tui_logger::TuiLoggerSmartWidget::default()
@@ -480,49 +531,18 @@ fn draw_coverage<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
     f.render_widget(blockers, chunk);
 }
 
-/// Recursively search the given path for other directories. Returns `true` if the directory
-/// has file children and `false` if it only has other directories.
-fn get_subdirs(path: &PathBuf, crashes: &mut Vec<String>) -> bool {
-    let mut has_file_children = false;
-
-    if let Ok(crash_entries) = std::fs::read_dir(path) {
-        for file in crash_entries {
-            if let Ok(file) = file {
-                if !file.path().is_dir() {
-                    has_file_children = true;
-                    continue;
-                }
-
-                let has_files = get_subdirs(&file.path(), crashes);
-                if has_files {
-                    crashes.push(file.path().to_str().unwrap().to_string());
-                }
-            }
-        }
-    }
-
-    has_file_children
-}
-
 /// Draw the `crashes` tab
 fn draw_crashes<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
-    let mut crashes = Vec::new();
-    get_subdirs(app.crash_dir, &mut crashes);
-    crashes.sort();
-
-    // Remove the crash_dir prefix from the found crash dirs
-    let crash_dir_str = format!("{}/", app.crash_dir.to_str().unwrap());
-    crashes
-        .iter_mut()
-        .for_each(|path| *path = path.replace(&crash_dir_str, ""));
-
     // Create a ListItem for each crash dir
-    let crashes: Vec<_> = crashes
+    /*
+    let crashes: Vec<_> = app
+        .crash_paths
         .iter()
         .map(|x| ListItem::new(Span::raw(x)))
         .collect();
+    */
 
-    let found_crashes = List::new(crashes).block(
+    let found_crashes = List::new(app.crash_paths).block(
         Block::default()
             .title(Span::styled(
                 "Found crashes",
@@ -594,6 +614,7 @@ pub fn ui<B: Backend>(f: &mut Frame<B>, app: &StatsApp) {
         }
 
         match TuiTab::try_from(app.tab_index).unwrap() {
+            TuiTab::TuiStats => draw_stats(f, app, main_chunk),
             TuiTab::Log => draw_log(f, app, main_chunk),
             TuiTab::Coverage => draw_coverage(f, app, main_chunk),
             TuiTab::Crashes => draw_crashes(f, app, main_chunk),

@@ -12,13 +12,16 @@ use crossterm::event::KeyCode;
 use rand::seq::IteratorRandom;
 use rand::Rng as _;
 use serde::{Deserialize, Serialize};
+use tui::text::Span;
+use tui::widgets::ListItem;
 use tui_logger::{TuiWidgetEvent, TuiWidgetState};
 use x86_64::registers::rflags::RFlags;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs::File;
+use std::fs::{DirEntry, File};
 use std::path::Path;
 
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -44,19 +47,6 @@ const PRINT_SLEEP: Duration = std::time::Duration::from_secs(1);
 
 /// The number of coverage blockers to print during ASCII stats
 const ASCII_COVERAGE_BLOCKERS: usize = 20;
-
-/// Time the $expr and return the (result of $expr, elapsed time)
-macro_rules! time {
-    ($expr:expr) => {{
-        let start = std::time::Instant::now();
-
-        // Execute the given expression
-        let result = $expr;
-
-        // Return the result from the expression
-        (result, start.elapsed())
-    }};
-}
 
 /// Stats available from each core
 #[derive(Default)]
@@ -114,6 +104,9 @@ pub struct Stats<FUZZER: Fuzzer> {
 
     /// Number of [`FuzzVmExit`] seen
     pub vmexits: [u64; std::mem::variant_count::<FuzzVmExit>()],
+
+    /// Performance metrics for the stats loop itself
+    pub tui_perf_stats: [f64; std::mem::variant_count::<TuiPerfStats>()],
 }
 
 impl<FUZZER: Fuzzer> Stats<FUZZER> {
@@ -337,6 +330,30 @@ impl_enum!(
 
         /// Time taken to gather redqueen breakpoints
         Redqueen,
+    }
+);
+
+impl_enum!(
+    /// TUI Performance Stats
+    #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+    pub enum TuiPerfStats {
+        Poll,
+        AccumulateStats,
+        AccumulateTimeline,
+        AccumulateTimelineSource,
+        AccumulateAppendCoverage,
+        AccumulateCoverageDifference,
+        NewInput,
+        WriteGraphs,
+        UpdateTotalStats,
+        GatherCrashes,
+        WriteStatsData,
+        MergeCoverage,
+        CoverageLighthouse,
+        CoverageAddress,
+        CoverageSource,
+        Lcov,
+        Total,
     }
 );
 
@@ -605,6 +622,30 @@ pub fn get_binary_contexts(
     Ok(contexts)
 }
 
+/// Recursively search the given path for other directories. Returns `true` if the directory
+/// has file children and `false` if it only has other directories.
+fn get_subdirs(path: &PathBuf, crashes: &mut Vec<String>) -> bool {
+    let mut has_file_children = false;
+
+    if let Ok(crash_entries) = std::fs::read_dir(path) {
+        for file in crash_entries {
+            if let Ok(file) = file {
+                if !file.path().is_dir() {
+                    has_file_children = true;
+                    continue;
+                }
+
+                let has_files = get_subdirs(&file.path(), crashes);
+                if has_files {
+                    crashes.push(file.path().to_str().unwrap().to_string());
+                }
+            }
+        }
+    }
+
+    has_file_children
+}
+
 /// The worker function to display the statistics of the fuzzing cores
 #[allow(clippy::too_many_lines)]
 pub fn worker<FUZZER: Fuzzer>(
@@ -657,11 +698,14 @@ pub fn worker<FUZZER: Fuzzer>(
 
     // Create the web directory for displaying stats via the browser
     let crash_dir = project_dir.join("crashes");
+    if !crash_dir.exists() {
+        std::fs::create_dir(&crash_dir)?;
+    }
 
     // Get the filenames for the various output files
     let lighthouse_file = project_dir.join("coverage.lighthouse");
     let coverage_addrs = project_dir.join("coverage.addresses");
-    let coverage_src = project_dir.join("coverage.src");
+    // let coverage_src = project_dir.join("coverage.src");
     let coverage_lcov = project_dir.join("coverage.lcov");
     let coverage_in_order = project_dir.join("coverage.in_order");
     let coverage_redqueen = project_dir.join("coverage.redqueen");
@@ -696,6 +740,7 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut sum_dirty_pages = [0_u64; ITERS_WINDOW_SIZE];
     let mut iters_index = 0;
     let mut lighthouse_data = String::new();
+    let mut cov_addrs = String::new();
 
     // Init graph data
     let mut graph_exec_per_sec = vec![0];
@@ -768,74 +813,43 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut coverage_timeline = Vec::new();
     let mut tab_index = 0_u8;
 
-    let mut crashes = Vec::new();
+    let mut crashes: Vec<DirEntry> = Vec::new();
+    let mut crash_path_strs: Vec<String> = Vec::new();
+    let mut crash_paths: Vec<_> = Vec::new();
+    let mut num_crashes = 0_u32;
 
     // Initialize the coverage analysis with the current toal coverage
     let mut coverage_blockers = Vec::new();
 
-    let mut iter_start = std::time::Instant::now();
-
     let mut scratch_string = String::new();
+
+    let mut tui_perf_stats = [0_f64; std::mem::variant_count::<TuiPerfStats>()];
+
+    let mut poll_start = std::time::Instant::now();
+    let mut tui_start = std::time::Instant::now();
+    let mut perf_stats = Vec::new();
+    let mut curr_tui_perf_stats = Vec::new();
+    let mut vmexit_stats = Vec::new();
+    let mut diffs: Vec<VirtAddr> = Vec::new();
+
+    /// Time the $expr and return the result of $expr
+    macro_rules! time {
+        ($stat:ident, $expr:expr) => {{
+            let start = std::time::Instant::now();
+
+            // Execute the given expression
+            let result = $expr;
+
+            tui_perf_stats[TuiPerfStats::$stat as usize] += start.elapsed().as_secs_f64();
+
+            // Return the result from the expression
+            result
+        }};
+    }
 
     // Stats loop
     'finish: for iter in 0.. {
-        // Delay displaying stats for one second
-        'draw: loop {
-            while crossterm::event::poll(Duration::from_millis(1))? {
-                let ev = crossterm::event::read()?;
-                if let crossterm::event::Event::Key(key) = ev {
-                    match key.code {
-                        KeyCode::Char('q') => {
-                            // Restore the terminal to the original state
-                            crate::stats_tui::restore_terminal()?;
-
-                            // Signal cores to terminate
-                            for core_stats in stats.iter() {
-                                core_stats.lock().unwrap().forced_shutdown = true;
-                                core_stats.lock().unwrap().alive = false;
-                            }
-
-                            // Signal stats display to terminate
-                            crate::FINISHED.store(true, Ordering::SeqCst);
-                        }
-                        KeyCode::Right | KeyCode::Char('l') => {
-                            tab_index = tab_index.wrapping_add(1);
-                            break 'draw;
-                        }
-                        KeyCode::Left | KeyCode::Char('h') => {
-                            tab_index = tab_index.wrapping_sub(1);
-                            break 'draw;
-                        }
-                        KeyCode::Char('H') => {
-                            tui_log_state.transition(&TuiWidgetEvent::LeftKey);
-                            break 'draw;
-                        }
-                        KeyCode::Char('L') => {
-                            tui_log_state.transition(&TuiWidgetEvent::RightKey);
-                            break 'draw;
-                        }
-                        KeyCode::Char('J') => {
-                            tui_log_state.transition(&TuiWidgetEvent::DownKey);
-                            break 'draw;
-                        }
-                        KeyCode::Char('K') => {
-                            tui_log_state.transition(&TuiWidgetEvent::UpKey);
-                            break 'draw;
-                        }
-                        _ => {
-                            // log::info!("Not impl: {:?}", key);
-                        }
-                    }
-                }
-            }
-
-            // If the print timer has elapsed, break out of the key polling loop
-            if iter == 0 || iter_start.elapsed() >= PRINT_SLEEP {
-                break;
-            }
-        }
-
-        iter_start = std::time::Instant::now();
+        tui_start = std::time::Instant::now();
 
         if iter == 0
             || coverage_timer.elapsed() > config.stats.merge_coverage_timer
@@ -856,51 +870,8 @@ pub fn worker<FUZZER: Fuzzer>(
         dead.clear();
         in_redqueen.clear();
 
-        // If something has triggered FINISH, close out all stats and return from this
-        // thread
-        if crate::FINISHED.load(Ordering::SeqCst) {
-            // Restore the terminal to the original state
-            crate::stats_tui::restore_terminal()?;
-
-            // Sanity check all cores are dead before exiting
-            let iters = 20;
-            println!("Stats waiting for threads to terminate");
-            for iter in 0..iters {
-                alive = 0;
-
-                // Calculate the current statistics
-                for (_core_id, core_stats) in stats.iter().enumerate() {
-                    let mut stats = core_stats.lock().unwrap();
-
-                    // Add this core's corpus to the total corpus
-                    if let Some(corpus) = stats.old_corpus.take() {
-                        for input in corpus {
-                            total_corpus.insert(input);
-                        }
-                    }
-
-                    if stats.alive {
-                        alive += 1;
-                        continue;
-                    }
-                }
-
-                if alive == 0 {
-                    println!("All cores are dead..");
-                    break;
-                }
-
-                println!("{iter}/{iters}: Cores still alive: {alive}");
-
-                std::thread::sleep(std::time::Duration::from_millis(500));
-            }
-
-            println!("Stats breaking from finish..");
-
-            break 'finish;
-        }
-
-        let (_, _accum_elapsed) = time!(
+        time!(
+            AccumulateStats,
             // Calculate the current statistics
             for (core_id, core_stats) in stats.iter().enumerate() {
                 // Attempt to get this core's stats. If it fails, continue the next core
@@ -941,19 +912,82 @@ pub fn worker<FUZZER: Fuzzer>(
 
                 // Reset the alive stat for this core
                 stats.alive = false;
+            }
+        );
 
-                // Add any new coverage to the timeline
+        // Clear the differences accumulator
+        time!(AccumulateTimeline, {
+            diffs.clear();
+        });
+
+        // Calculate the current statistics
+        for (core_id, core_stats) in stats.iter().enumerate() {
+            // Attempt to get this core's stats. If it fails, continue the next core
+            // and get the stats on the next loop iteration
+            let Ok(mut stats) = core_stats.try_lock() else {
+                // log::info!("Core {core_id} holding stats lock");
+                continue;
+            };
+
+            // Gather the differences while holding the lock, and then process
+            // the difference after releasing the lock
+            time!(AccumulateTimeline, {
                 for addr in stats.coverage.difference(&total_coverage) {
-                    let addr = addr.0;
+                    diffs.push(*addr);
+                }
+            });
 
-                    if let Some(sym_data) = symbols {
-                        if let Some(symbol) = crate::symbols::get_symbol(addr, sym_data) {
-                            let mut found = false;
+            // Collect the coverage for this core to the total coverage
+            time!(AccumulateAppendCoverage, {
+                total_coverage.append(&mut stats.coverage);
+            });
 
-                            // Add the source line for this address in the coverage timeline
-                            for context in &contexts {
-                                // Try to get the addr2line information for the current address
-                                if let Some(loc) = context.find_location(addr)? {
+            time!(AccumulateCoverageDifference, {
+                assert!(
+                    stats.coverage.difference(&total_coverage).count() == 0,
+                    "stats.coverage difference not applied properly"
+                );
+            });
+
+            // Add this core's stats to the display table
+            perfs[core_id] = Some(stats.perf_stats.elapsed);
+
+            // Add the vmexits to the total vmexits seen by the fuzzer
+            for (i, val) in stats.vmexits.iter().enumerate() {
+                vmexits[i] += val;
+            }
+        }
+
+        // Add any new coverage to the timeline
+        time!(AccumulateTimeline, {
+            for addr in &diffs {
+                let addr = addr.0;
+
+                if let Some(sym_data) = symbols {
+                    if let Some(symbol) = crate::symbols::get_symbol(addr, sym_data) {
+                        let mut found = false;
+
+                        for context in &contexts {
+                            // Try to get the addr2line information for the current address
+                            if let Some(loc) = context.find_location(addr)? {
+                                let src = format!(
+                                    "{symbol} -- {}:{}:{}",
+                                    loc.file.unwrap_or("??unknownfile??"),
+                                    loc.line.unwrap_or(0),
+                                    loc.column.unwrap_or(0)
+                                );
+
+                                coverage_timeline.push(src);
+                                found = true;
+                            } else if let Some(module_start) =
+                                modules.get_module_start_containing(addr)
+                            {
+                                // If not found, check if the module that contains this address
+                                // is compiled with Position Independent code (PIE) and subtract
+                                // the module start address to check for
+                                if let Some(loc) =
+                                    context.find_location(addr.saturating_sub(module_start))?
+                                {
                                     let src = format!(
                                         "{symbol} -- {}:{}:{}",
                                         loc.file.unwrap_or("??unknownfile??"),
@@ -963,63 +997,25 @@ pub fn worker<FUZZER: Fuzzer>(
 
                                     coverage_timeline.push(src);
                                     found = true;
-                                } else if let Some(module_start) =
-                                    modules.get_module_start_containing(addr)
-                                {
-                                    // If not found, check if the module that contains this address
-                                    // is compiled with Position Independent code (PIE) and subtract
-                                    // the module start address to check for
-                                    if let Some(loc) =
-                                        context.find_location(addr.saturating_sub(module_start))?
-                                    {
-                                        let src = format!(
-                                            "{symbol} -- {}:{}:{}",
-                                            loc.file.unwrap_or("??unknownfile??"),
-                                            loc.line.unwrap_or(0),
-                                            loc.column.unwrap_or(0)
-                                        );
-
-                                        coverage_timeline.push(src);
-                                        found = true;
-                                    }
                                 }
                             }
+                        }
 
-                            // If the source code wasn't found, add the raw symbol instead
-                            if !found {
-                                // Add the found symbol the symbol timeline
-                                coverage_timeline.push(symbol);
-                            }
-                        } else {
-                            // Symbol not found, add the address
-                            coverage_timeline.push(format!("{addr:#x}"));
+                        // If the source code wasn't found, add the raw symbol instead
+                        if !found {
+                            // Add the found symbol the symbol timeline
+                            coverage_timeline.push(symbol);
                         }
                     } else {
                         // Symbol not found, add the address
                         coverage_timeline.push(format!("{addr:#x}"));
                     }
-                }
-
-                // Collect the coverage for this core to the total coverage
-                total_coverage.append(&mut stats.coverage);
-
-                assert!(
-                    stats.coverage.difference(&total_coverage).count() == 0,
-                    "stats.coverage difference not applied properly"
-                );
-
-                // Add this core's stats to the display table
-                perfs[core_id] = Some(stats.perf_stats.elapsed);
-
-                // Add the vmexits to the total vmexits seen by the fuzzer
-                for (i, val) in stats.vmexits.iter().enumerate() {
-                    vmexits[i] += val;
+                } else {
+                    // Symbol not found, add the address
+                    coverage_timeline.push(format!("{addr:#x}"));
                 }
             }
-        );
-
-        // Set the new index
-        iters_index = (iters_index + 1) % ITERS_WINDOW_SIZE;
+        });
 
         let time_window = ITERS_WINDOW_SIZE as u64 * PRINT_SLEEP.as_secs();
 
@@ -1046,76 +1042,69 @@ pub fn worker<FUZZER: Fuzzer>(
         let mut remaining = 0;
 
         // Accumulate the stats for all cores
-        for curr_perf_stats in perfs.iter().flatten() {
-            // Get the total cycles for this core
-            let curr_total = curr_perf_stats[PerfMark::Total as usize];
+        time!(UpdateTotalStats, {
+            for curr_perf_stats in perfs.iter().flatten() {
+                // Get the total cycles for this core
+                let curr_total = curr_perf_stats[PerfMark::Total as usize];
 
-            // Add the current total to the total across all cores
-            total += curr_total;
+                // Add the current total to the total across all cores
+                total += curr_total;
 
-            // Init the unaccounted for cycles to the total
-            let mut curr_remaining = curr_total;
+                // Init the unaccounted for cycles to the total
+                let mut curr_remaining = curr_total;
 
-            // Display each marker as a percentage of total time
-            for (i, elem) in PerfMark::elements().iter().enumerate() {
-                // No need to print the total time
-                if i == PerfMark::Total as usize {
-                    continue;
+                // Display each marker as a percentage of total time
+                for (i, elem) in PerfMark::elements().iter().enumerate() {
+                    // No need to print the total time
+                    if i == PerfMark::Total as usize {
+                        continue;
+                    }
+
+                    // Get the current stat
+                    let curr_stat = curr_perf_stats[*elem as usize];
+
+                    // Add the stat for this core for this element into the totals
+                    totals[*elem as usize] = totals[*elem as usize].checked_add(curr_stat).unwrap();
+
+                    // Remove this stat from the total to display the percentage of work
+                    // that hasn't been accomodated for
+                    curr_remaining = curr_remaining.saturating_sub(curr_stat);
                 }
 
-                // Get the current stat
-                let curr_stat = curr_perf_stats[*elem as usize];
-
-                // Add the stat for this core for this element into the totals
-                totals[*elem as usize] = totals[*elem as usize].checked_add(curr_stat).unwrap();
-
-                // Remove this stat from the total to display the percentage of work
-                // that hasn't been accomodated for
-                curr_remaining = curr_remaining.saturating_sub(curr_stat);
+                remaining += curr_remaining;
             }
-
-            remaining += curr_remaining;
-        }
+        });
 
         // Get the avg coverage left from all cores
         coverage_left /= std::cmp::max(alive, 1);
 
         // If the crash directory doesn't exist, or was deleted, create it
-        if !crash_dir.exists() {
-            std::fs::create_dir(&crash_dir)?;
-        }
+        time!(GatherCrashes, {
+            if iter % 4 == 0 {
+                num_crashes = 0;
+                crash_paths.clear();
 
-        crashes.clear();
-        if let Ok(curr_crashes) = std::fs::read_dir(&crash_dir) {
-            for curr_crash_dir in curr_crashes {
-                if curr_crash_dir.is_err() {
-                    continue;
-                }
+                crash_path_strs.clear();
+                get_subdirs(&crash_dir, &mut crash_path_strs);
+                crash_path_strs.sort();
 
-                let curr_crash_dir = curr_crash_dir.unwrap();
-
-                if let Ok(files) = std::fs::read_dir(curr_crash_dir.path()) {
-                    for file in files {
-                        if let Ok(file) = file {
-                            if let Some(filename) = file.path().file_name() {
-                                if let Some(filename) = filename.to_str() {
-                                    if filename.contains('_') || filename.contains("console") {
-                                        continue;
-                                    }
-
-                                    crashes.push(file);
-                                }
-                            }
-                        }
+                for path in &crash_path_strs {
+                    if let Ok(dir) = std::fs::read_dir(path) {
+                        num_crashes += dir.count() as u32;
                     }
                 }
-            }
-        }
 
-        // log::info!("{crashes:?}");
+                // Remove the crash_dir prefix from the found crash dirs
+                let crash_dir_str = format!("{}/", crash_dir.to_str().unwrap());
+                crash_paths = crash_path_strs
+                    .iter()
+                    .map(|path| ListItem::new(Span::raw(path.replace(&crash_dir_str, ""))))
+                    .collect();
+            }
+        });
 
         // Calculate the performance stats for the totals that are >1%
-        let mut perf_stats = Vec::new();
+        perf_stats.clear();
         for (index, &val) in totals.iter().enumerate() {
             if val == 0 {
                 continue;
@@ -1133,7 +1122,41 @@ pub fn worker<FUZZER: Fuzzer>(
         }
         perf_stats.sort_by(|x, y| y.1.cmp(&x.1));
 
-        let mut vmexit_stats = Vec::new();
+        // Calculate the performance stats for the totals that are >1%
+        curr_tui_perf_stats.clear();
+        let tui_total = tui_perf_stats[TuiPerfStats::Total as usize];
+        let mut other = 100.0;
+        let avg_tui_iter = tui_total / iter as f64;
+        for (index, &val) in tui_perf_stats.iter().enumerate() {
+            if index == TuiPerfStats::Total as usize {
+                continue;
+            }
+
+            if val == 0.0 {
+                continue;
+            }
+
+            // Calculate the percentage for this value
+            let res = (val / tui_total * 100.).round();
+
+            if res == 0.0 {
+                continue;
+            }
+
+            // '_' denote a subcategory in a stat, don't subtract the subcategory
+            // from the entire missing time
+            if !TuiPerfStats::names()[index].contains(&"_") {
+                other -= res;
+            }
+
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            curr_tui_perf_stats.push((TuiPerfStats::names()[index], res as u64));
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        curr_tui_perf_stats.push(("Other", other as u64));
+        curr_tui_perf_stats.sort_by(|x, y| y.1.cmp(&x.1));
+
+        vmexit_stats.clear();
         let total_vmexits: u64 = vmexits.iter().sum();
         for (index, &val) in vmexits.iter().enumerate() {
             if val == 0 {
@@ -1154,7 +1177,7 @@ pub fn worker<FUZZER: Fuzzer>(
             graph_coverage.push(total_coverage.len() as u64);
             graph_seconds.push(iter);
             graph_iters.push(total_iters);
-            graph_crashes.push(crashes.len() as u64);
+            graph_crashes.push(crash_paths.len() as u64);
         }
 
         let coverage: Vec<(u64, u64)> = graph_iters
@@ -1213,197 +1236,164 @@ pub fn worker<FUZZER: Fuzzer>(
             }
         }
 
-        // Get the current stats ready to print in tabular form
-        let table = GlobalStats {
-            time: format!("{hours:02}:{minutes:02}:{seconds:02}"),
-            iterations: total_iters,
-            coverage: total_coverage.len(),
-            last_coverage: last_coverage.elapsed().as_secs(),
-            exec_per_sec,
-            timeouts: sum_timeouts,
-            coverage_left,
-            dirty_pages,
-            corpus: u32::try_from(total_corpus.len()).unwrap(),
-            alive,
-            crashes: u32::try_from(crashes.len()).unwrap(),
-            dead: dead.clone(),
-            in_redqueen: in_redqueen.clone(),
-            perfs: (totals, total, remaining),
-            vmexits,
-        };
-
-        if let Ok(data) = serde_json::to_string(&table) {
-            let _ = std::fs::write(data_dir.join("stats.json"), &data);
-        }
-        if let Ok(data) = toml::to_string(&table) {
-            let _ = std::fs::write(data_dir.join("stats.toml"), &data);
-        }
-
-        if tui {
-            // Draw the stats TUI in the terminal
-            let app = StatsApp::new(
-                perf_stats.as_slice(),
-                coverage.as_slice(),
-                vmexit_stats.as_slice(),
-                &table,
-                &coverage_timeline,
-                &crash_dir,
-                tab_index,
-                &coverage_blockers,
-                &mut tui_log_state,
-            );
-
-            if let Some(ref mut term) = terminal {
-                term.draw(|f| crate::stats_tui::ui(f, &app))?;
-            }
-        } else {
-            // Ascii stats display
-            table.display();
-
-            // Display coverage blockers for ascii stats
-            for line in coverage_blockers.iter().take(ASCII_COVERAGE_BLOCKERS) {
-                println!("{line:?}");
-            }
-        }
-
         // If merge coverage timer has elapsed, set the total coverage across all cores
         // and give each core a new corpus to fuzz with
-        if merge_coverage {
-            // First, gather all the corpi from all cores
-            for (_core_id, core_stats) in stats.iter().enumerate() {
-                let mut curr_stats = core_stats.lock().unwrap();
-
-                if let Some(corpus) = curr_stats.old_corpus.take() {
-                    // Check if any input in the current corpus is new by calculating the
-                    // hash of each input
-                    for input in corpus {
-                        total_corpus.insert(input);
-                    }
-                }
-            }
-
-            for (core_id, core_stats) in stats.iter().enumerate() {
-                // Attempt to lock this core's stats for updating. If the lock is taken,
-                // skip it and update the core on the next iteration
-                let Ok(mut curr_stats) = core_stats.try_lock() else {
-                    continue;
-                };
-
-                // Update the total coverage for this core
-                curr_stats.coverage = total_coverage.clone();
-
-                // Update the redqueen rules and coverage for this core
-                // if core_id as u64 <= REDQUEEN_CORES {
-                // total_redqueen_coverage.append(&mut curr_stats.redqueen_coverage);
-                // total_redqueen_rules.append(&mut curr_stats.redqueen_rules);
-
-                // curr_stats.redqueen_coverage = total_redqueen_coverage.clone();
-                // curr_stats.redqueen_rules = total_redqueen_rules.clone();
-                // }
-
-                let corpus_len = total_corpus.len();
-
-                // Give each new core a small percentage (between 10% and 50%) of the total corpus
-                let mut new_corpus_len = corpus_len;
-                if corpus_len > 100 {
-                    // Get the minimum number of files to add for this new corpus
-                    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                    let min = ((corpus_len as f64
-                        * (config.stats.minimum_total_corpus_percentage_sync as f64 / 100.))
-                        as usize)
-                        .min(config.stats.maximum_new_corpus_size);
-
-                    // Get the maximum number of files to add for this new corpus
-                    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                    let max = ((corpus_len as f64
-                        * (config.stats.maximum_total_corpus_percentage_sync as f64 / 100.))
-                        as usize)
-                        .min(config.stats.maximum_new_corpus_size + 1);
-
-                    // Get a random number of files for this corpus from min to max
-                    if min < max {
-                        new_corpus_len = rng.gen_range(min..max);
-                    }
-                }
-
-                // New corpus defaults to None. Set the Option to Some to start adding to
-                // the new corpus
-                if curr_stats.new_corpus.is_none() {
-                    curr_stats.new_corpus = Some(Vec::with_capacity(new_corpus_len));
-                }
-
-                assert!(corpus_len > 0);
-
-                // Give the core worker a new corpus if it hasn't picked up the existing
-                // corpus already.
-                if let Some(ref mut new_corpus) = &mut curr_stats.new_corpus {
-                    if !new_corpus.is_empty() {
-                        // Core hasn't yet picked up the old corpus
+        time!(MergeCoverage, {
+            if merge_coverage {
+                // First, gather all the corpi from all cores
+                for (core_id, core_stats) in stats.iter().enumerate() {
+                    let Ok(mut curr_stats) = core_stats.try_lock() else {
                         continue;
+                    };
+
+                    if let Some(corpus) = curr_stats.old_corpus.take() {
+                        // Check if any input in the current corpus is new by calculating the
+                        // hash of each input
+                        for input in corpus {
+                            total_corpus.insert(input);
+                        }
                     }
-
-                    let cap = new_corpus.capacity();
-                    if cap < new_corpus_len {
-                        new_corpus.reserve_exact(new_corpus_len - cap);
-                    }
-
-                    log::debug!("{core_id} New corpus len: {new_corpus_len}");
-
-                    // Add the new corpus to the core, this should be O(n)
-                    new_corpus.extend(
-                        total_corpus
-                            .iter()
-                            .choose_multiple(&mut rng, new_corpus_len)
-                            .into_iter()
-                            .cloned(),
-                    );
                 }
+
+                for (core_id, core_stats) in stats.iter().enumerate() {
+                    // Attempt to lock this core's stats for updating. If the lock is taken,
+                    // skip it and update the core on the next iteration
+                    let Ok(mut curr_stats) = core_stats.try_lock() else {
+                        continue;
+                    };
+
+                    // Update the total coverage for this core
+                    curr_stats.coverage = total_coverage.clone();
+
+                    // Update the redqueen rules and coverage for this core
+                    // if core_id as u64 <= REDQUEEN_CORES {
+                    // total_redqueen_coverage.append(&mut curr_stats.redqueen_coverage);
+                    // total_redqueen_rules.append(&mut curr_stats.redqueen_rules);
+
+                    // curr_stats.redqueen_coverage = total_redqueen_coverage.clone();
+                    // curr_stats.redqueen_rules = total_redqueen_rules.clone();
+                    // }
+
+                    let corpus_len = total_corpus.len();
+
+                    // Give each new core a small percentage (between 10% and 50%) of the total corpus
+                    let mut new_corpus_len = corpus_len;
+                    if corpus_len > 100 {
+                        // Get the minimum number of files to add for this new corpus
+                        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                        let min = ((corpus_len as f64
+                            * (config.stats.minimum_total_corpus_percentage_sync as f64 / 100.))
+                            as usize)
+                            .min(config.stats.maximum_new_corpus_size);
+
+                        // Get the maximum number of files to add for this new corpus
+                        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                        let max = ((corpus_len as f64
+                            * (config.stats.maximum_total_corpus_percentage_sync as f64 / 100.))
+                            as usize)
+                            .min(config.stats.maximum_new_corpus_size + 1);
+
+                        // Get a random number of files for this corpus from min to max
+                        if min < max {
+                            new_corpus_len = rng.gen_range(min..max);
+                        }
+                    }
+
+                    // New corpus defaults to None. Set the Option to Some to start adding to
+                    // the new corpus
+                    if curr_stats.new_corpus.is_none() {
+                        curr_stats.new_corpus = Some(Vec::with_capacity(new_corpus_len));
+                    }
+
+                    assert!(corpus_len > 0);
+
+                    // Give the core worker a new corpus if it hasn't picked up the existing
+                    // corpus already.
+                    if let Some(ref mut new_corpus) = &mut curr_stats.new_corpus {
+                        if !new_corpus.is_empty() {
+                            log::info!("{core_id} hasn't picked up old corpus");
+
+                            // Core hasn't yet picked up the old corpus
+                            continue;
+                        }
+
+                        let cap = new_corpus.capacity();
+                        if cap < new_corpus_len {
+                            new_corpus.reserve_exact(new_corpus_len - cap);
+                        }
+
+                        // Add the new corpus to the core, this should be O(n)
+                        new_corpus.extend(
+                            total_corpus
+                                .iter()
+                                .choose_multiple(&mut rng, new_corpus_len)
+                                .into_iter()
+                                .cloned(),
+                        );
+                    }
+                }
+
+                // Reset the coverage timer if we merged coverage
+                coverage_timer = std::time::Instant::now();
+
+                // Reset the merge coverage flag
+                merge_coverage = false;
             }
+        });
 
-            // Reset the coverage timer if we merged coverage
-            coverage_timer = std::time::Instant::now();
+        if iter % 4 == 0 {
+            time!(CoverageLighthouse, {
+                // Clear old lighthouse data
+                lighthouse_data.clear();
 
-            // Reset the merge coverage flag
-            merge_coverage = false;
-        }
+                // Collect the lighthouse coverage data
+                for addr in &total_coverage {
+                    if let Some((module, offset)) = modules.contains(addr.0) {
+                        lighthouse_data.push_str(&format!("{module}+{offset:x}\n"));
+                    } else {
+                        lighthouse_data.push_str(&format!("{:x}\n", addr.0));
+                    }
+                }
 
-        // Clear old lighthouse data
-        lighthouse_data.clear();
+                // Write the lighthouse coverage data
+                #[allow(clippy::needless_borrow)]
+                std::fs::write(&lighthouse_file, &lighthouse_data)
+                    .expect("Failed to write lighthouse file");
+            });
 
-        // Collect the lighthouse coverage data
-        for addr in &total_coverage {
-            if let Some((module, offset)) = modules.contains(addr.0) {
-                lighthouse_data.push_str(&format!("{module}+{offset:x}\n"));
-            } else {
-                lighthouse_data.push_str(&format!("{:x}\n", addr.0));
+            time!(CoverageAddress, {
+                // Clear old address data
+                cov_addrs.clear();
+
+                for addr in &total_coverage {
+                    cov_addrs.push_str(&format!("{:#x}\n", addr.0));
+                }
+
+                // Write the coverage raw addresses file (used with addr2line to get source cov)
+                #[allow(clippy::needless_borrow)]
+                std::fs::write(&coverage_addrs, &cov_addrs)
+                    .expect("Failed to write coverage addresses");
+
+                // Write the coverage raw addresses file (used with addr2line to get source cov)
+                #[allow(clippy::needless_borrow)]
+                std::fs::write(&coverage_in_order, coverage_timeline.join("\n"))
+                    .expect("Failed to write coverage in order file");
+            });
+
+            #[cfg(feature = "redqueen")]
+            {
+                let redqueen_cov = total_redqueen_coverage
+                    .iter()
+                    .map(|(addr, rflags)| format!("{:#x} {:#x}", addr.0, rflags.bits()))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                // Write the coverage raw addresses file (used with addr2line to get source cov)
+                #[allow(clippy::needless_borrow)]
+                std::fs::write(&coverage_redqueen, redqueen_cov)
+                    .expect("Failed to write redqueen cov file");
             }
         }
-
-        // Write the lighthouse coverage data
-        #[allow(clippy::needless_borrow)]
-        std::fs::write(&lighthouse_file, &lighthouse_data)
-            .expect("Failed to write lighthouse file");
-
-        let cov_addrs = &total_coverage
-            .iter()
-            .map(|addr| format!("{:#x}", addr.0))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // Write the coverage raw addresses file (used with addr2line to get source cov)
-        #[allow(clippy::needless_borrow)]
-        std::fs::write(&coverage_addrs, cov_addrs).expect("Failed to write coverage addresses");
-
-        let redqueen_cov = total_redqueen_coverage
-            .iter()
-            .map(|(addr, rflags)| format!("{:#x} {:#x}", addr.0, rflags.bits()))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // Write the coverage raw addresses file (used with addr2line to get source cov)
-        #[allow(clippy::needless_borrow)]
-        std::fs::write(&coverage_redqueen, redqueen_cov)
-            .expect("Failed to write redqueen cov file");
 
         // Write the redqueen rules
         /*
@@ -1412,41 +1402,17 @@ pub fn worker<FUZZER: Fuzzer>(
         }
         */
 
-        // Write the coverage raw addresses file (used with addr2line to get source cov)
-        #[allow(clippy::needless_borrow)]
-        std::fs::write(&coverage_in_order, coverage_timeline.join("\n"))
-            .expect("Failed to write coverage in order file");
+        time!(CoverageSource, {
+            for context in &contexts {
+                // Write the source and lcov coverage files if vmlinux exists
+                // let mut result = Vec::new();
 
-        for context in &contexts {
-            // Write the source and lcov coverage files if vmlinux exists
-            let mut result = Vec::new();
+                for rip in &total_coverage {
+                    let addr = *rip;
 
-            for rip in &total_coverage {
-                let addr = *rip;
-
-                // Try to get the addr2line information for the current address
-                if let Some(loc) = context.find_location(addr.0)? {
-                    let kernel_sym = format!(
-                        "{}:{}:{} {:#x}",
-                        loc.file.unwrap_or("??"),
-                        loc.line.unwrap_or(0),
-                        loc.column.unwrap_or(0),
-                        addr.0,
-                    );
-
-                    result.push(kernel_sym);
-
-                    // Insert valid file:line into the BTreeMap for producing lcov
-                    if let (Some(file), Some(line)) = (loc.file, loc.line) {
-                        lcov.entry(file)
-                            .or_insert_with(BTreeMap::new)
-                            .insert(line, 1);
-                    }
-                } else if let Some(module_start) = modules.get_module_start_containing(addr.0) {
-                    // If not found, check if the module that contains this address
-                    // is compiled with Position Independent code (PIE) and subtract
-                    // the module start address to check for
-                    if let Some(loc) = context.find_location(addr.saturating_sub(module_start))? {
+                    // Try to get the addr2line information for the current address
+                    if let Some(loc) = context.find_location(addr.0)? {
+                        /*
                         let kernel_sym = format!(
                             "{}:{}:{} {:#x}",
                             loc.file.unwrap_or("??"),
@@ -1456,6 +1422,7 @@ pub fn worker<FUZZER: Fuzzer>(
                         );
 
                         result.push(kernel_sym);
+                        */
 
                         // Insert valid file:line into the BTreeMap for producing lcov
                         if let (Some(file), Some(line)) = (loc.file, loc.line) {
@@ -1463,15 +1430,42 @@ pub fn worker<FUZZER: Fuzzer>(
                                 .or_insert_with(BTreeMap::new)
                                 .insert(line, 1);
                         }
+                    } else if let Some(module_start) = modules.get_module_start_containing(addr.0) {
+                        // If not found, check if the module that contains this address
+                        // is compiled with Position Independent code (PIE) and subtract
+                        // the module start address to check for
+                        if let Some(loc) =
+                            context.find_location(addr.saturating_sub(module_start))?
+                        {
+                            /*
+                            let kernel_sym = format!(
+                                "{}:{}:{} {:#x}",
+                                loc.file.unwrap_or("??"),
+                                loc.line.unwrap_or(0),
+                                loc.column.unwrap_or(0),
+                                addr.0,
+                            );
+
+                            result.push(kernel_sym);
+                            */
+
+                            // Insert valid file:line into the BTreeMap for producing lcov
+                            if let (Some(file), Some(line)) = (loc.file, loc.line) {
+                                lcov.entry(file)
+                                    .or_insert_with(BTreeMap::new)
+                                    .insert(line, 1);
+                            }
+                        }
                     }
                 }
+
+                // result.sort();
+                // #[allow(clippy::needless_borrow)]
+                // std::fs::write(&coverage_src, result.join("\n"))?;
             }
+        });
 
-            result.sort();
-
-            #[allow(clippy::needless_borrow)]
-            std::fs::write(&coverage_src, result.join("\n"))?;
-
+        time!(Lcov, {
             // Write the lcov output format
             let mut lcov_res = String::new();
             lcov_res.push_str("TN:\n");
@@ -1484,7 +1478,7 @@ pub fn worker<FUZZER: Fuzzer>(
             }
             #[allow(clippy::needless_borrow)]
             std::fs::write(&coverage_lcov, &lcov_res)?;
-        }
+        });
 
         /*
         let (_, _write_corpus_elapsed) = time!(
@@ -1496,6 +1490,7 @@ pub fn worker<FUZZER: Fuzzer>(
         */
 
         // Check for a new file dropped into `current_corpus`
+        /*
         let (_, _newinput_elapsed) = time!(for entry in corpus_dir.read_dir()? {
             // Limit how long we monitor the `current_corpus` for this iteration to not
             // lock the TUI for too long
@@ -1530,20 +1525,185 @@ pub fn worker<FUZZER: Fuzzer>(
                 }
             }
         });
+        tui_perf_stats[TuiPerfStats::NewInput as usize] += _newinput_elapsed.as_secs_f64();
+        */
 
-        // Write the graph data to disk
-        scratch_string.clear();
-        graph_exec_per_sec
-            .iter()
-            .for_each(|val| scratch_string.push_str(&format!("{val}\n")));
-        std::fs::write(&plot_exec_per_sec, &scratch_string)?;
+        time!(WriteGraphs, {
+            // Write the graph data to disk
+            scratch_string.clear();
+            graph_exec_per_sec
+                .iter()
+                .for_each(|val| scratch_string.push_str(&format!("{val}\n")));
+            std::fs::write(&plot_exec_per_sec, &scratch_string)?;
 
-        // Write the coverage data to disk
-        scratch_string.clear();
-        graph_coverage
-            .iter()
-            .for_each(|val| scratch_string.push_str(&format!("{val}\n")));
-        std::fs::write(&plot_coverage, &scratch_string)?;
+            // Write the coverage data to disk
+            scratch_string.clear();
+            graph_coverage
+                .iter()
+                .for_each(|val| scratch_string.push_str(&format!("{val}\n")));
+            std::fs::write(&plot_coverage, &scratch_string)?;
+        });
+
+        // Get the current stats ready to print in tabular form
+        let table = GlobalStats {
+            time: format!("{hours:02}:{minutes:02}:{seconds:02}"),
+            iterations: total_iters,
+            coverage: total_coverage.len(),
+            last_coverage: last_coverage.elapsed().as_secs(),
+            exec_per_sec,
+            timeouts: sum_timeouts,
+            coverage_left,
+            dirty_pages,
+            corpus: u32::try_from(total_corpus.len()).unwrap(),
+            alive,
+            crashes: num_crashes,
+            dead: dead.clone(),
+            in_redqueen: in_redqueen.clone(),
+            perfs: (totals, total, remaining),
+            vmexits,
+        };
+
+        time!(WriteStatsData, {
+            if let Ok(data) = serde_json::to_string(&table) {
+                let _ = std::fs::write(data_dir.join("stats.json"), &data);
+            }
+            if let Ok(data) = toml::to_string(&table) {
+                let _ = std::fs::write(data_dir.join("stats.toml"), &data);
+            }
+        });
+
+        // Sleep to pad for the rest of the frame
+        let time_left = PRINT_SLEEP.saturating_sub(tui_start.elapsed());
+        if time_left == std::time::Duration::from_secs(0) {
+            log::info!("Missed stat time window!");
+        }
+
+        time!(Poll, {
+            'draw: while crossterm::event::poll(time_left)? {
+                let ev = crossterm::event::read()?;
+                if let crossterm::event::Event::Key(key) = ev {
+                    match key.code {
+                        KeyCode::Char('q') => {
+                            // Restore the terminal to the original state
+                            crate::stats_tui::restore_terminal()?;
+
+                            // Signal cores to terminate
+                            for core_stats in stats.iter() {
+                                core_stats.lock().unwrap().forced_shutdown = true;
+                                core_stats.lock().unwrap().alive = false;
+                            }
+
+                            // Signal stats display to terminate
+                            crate::FINISHED.store(true, Ordering::SeqCst);
+                        }
+                        KeyCode::Right | KeyCode::Char('l') => {
+                            tab_index = tab_index.wrapping_add(1);
+                            break 'draw;
+                        }
+                        KeyCode::Left | KeyCode::Char('h') => {
+                            tab_index = tab_index.wrapping_sub(1);
+                            break 'draw;
+                        }
+                        KeyCode::Char('H') => {
+                            tui_log_state.transition(&TuiWidgetEvent::LeftKey);
+                            break 'draw;
+                        }
+                        KeyCode::Char('L') => {
+                            tui_log_state.transition(&TuiWidgetEvent::RightKey);
+                            break 'draw;
+                        }
+                        KeyCode::Char('J') => {
+                            tui_log_state.transition(&TuiWidgetEvent::DownKey);
+                            break 'draw;
+                        }
+                        KeyCode::Char('K') => {
+                            tui_log_state.transition(&TuiWidgetEvent::UpKey);
+                            break 'draw;
+                        }
+                        _ => {
+                            // log::info!("Not impl: {:?}", key);
+                        }
+                    }
+                }
+            }
+        });
+
+        // If something has triggered FINISH, close out all stats and return from this
+        // thread
+        if crate::FINISHED.load(Ordering::SeqCst) {
+            // Restore the terminal to the original state
+            crate::stats_tui::restore_terminal()?;
+
+            // Sanity check all cores are dead before exiting
+            let iters = 20;
+            println!("Stats waiting for threads to terminate");
+            for iter in 0..iters {
+                alive = 0;
+
+                // Calculate the current statistics
+                for (_core_id, core_stats) in stats.iter().enumerate() {
+                    let mut stats = core_stats.lock().unwrap();
+
+                    // Add this core's corpus to the total corpus
+                    if let Some(corpus) = stats.old_corpus.take() {
+                        for input in corpus {
+                            total_corpus.insert(input);
+                        }
+                    }
+
+                    if stats.alive {
+                        alive += 1;
+                        continue;
+                    }
+                }
+
+                if alive == 0 {
+                    println!("All cores are dead..");
+                    break;
+                }
+
+                println!("{iter}/{iters}: Cores still alive: {alive}");
+
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+
+            println!("Stats breaking from finish..");
+
+            break 'finish;
+        }
+
+        if tui {
+            let app = StatsApp::new(
+                perf_stats.as_slice(),
+                coverage.as_slice(),
+                vmexit_stats.as_slice(),
+                &table,
+                &coverage_timeline,
+                &crash_paths,
+                tab_index,
+                &coverage_blockers,
+                &mut tui_log_state,
+                &curr_tui_perf_stats,
+                avg_tui_iter,
+            );
+
+            if let Some(ref mut term) = terminal {
+                term.draw(|f| crate::stats_tui::ui(f, &app))?;
+            }
+
+            tui_perf_stats[TuiPerfStats::Total as usize] += tui_start.elapsed().as_secs_f64();
+        } else {
+            // Ascii stats display
+            table.display();
+
+            // Display coverage blockers for ascii stats
+            for line in coverage_blockers.iter().take(ASCII_COVERAGE_BLOCKERS) {
+                println!("{line:?}");
+            }
+        }
+
+        // Set the new index
+        iters_index = (iters_index + 1) % ITERS_WINDOW_SIZE;
     } // Start of iteration loop
 
     // Restore the terminal to the original state
@@ -1596,3 +1756,59 @@ pub fn worker<FUZZER: Fuzzer>(
 
     Ok(())
 }
+
+/*
+pub fn source_from_address(
+    addr: u64,
+    contexts: Vec<Context<EndianReader<RunTimeEndian, Rc<[u8]>>>>,
+    modules: &Modules,
+    lcov: &mut BTreeMap<usize, usize>,
+) {
+    for context in &contexts {
+        // Write the source and lcov coverage files if vmlinux exists
+        let mut result = Vec::new();
+
+        // Try to get the addr2line information for the current address
+        if let Some(loc) = context.find_location(addr.0)? {
+            let kernel_sym = format!(
+                "{}:{}:{} {:#x}",
+                loc.file.unwrap_or("??"),
+                loc.line.unwrap_or(0),
+                loc.column.unwrap_or(0),
+                addr.0,
+            );
+
+            result.push(kernel_sym);
+
+            // Insert valid file:line into the BTreeMap for producing lcov
+            if let (Some(file), Some(line)) = (loc.file, loc.line) {
+                lcov.entry(file)
+                    .or_insert_with(BTreeMap::new)
+                    .insert(line, 1);
+            }
+        } else if let Some(module_start) = modules.get_module_start_containing(addr.0) {
+            // If not found, check if the module that contains this address
+            // is compiled with Position Independent code (PIE) and subtract
+            // the module start address to check for
+            if let Some(loc) = context.find_location(addr.saturating_sub(module_start))? {
+                let kernel_sym = format!(
+                    "{}:{}:{} {:#x}",
+                    loc.file.unwrap_or("??"),
+                    loc.line.unwrap_or(0),
+                    loc.column.unwrap_or(0),
+                    addr.0,
+                );
+
+                result.push(kernel_sym);
+
+                // Insert valid file:line into the BTreeMap for producing lcov
+                if let (Some(file), Some(line)) = (loc.file, loc.line) {
+                    lcov.entry(file)
+                        .or_insert_with(BTreeMap::new)
+                        .insert(line, 1);
+                }
+            }
+        }
+    }
+}
+*/
