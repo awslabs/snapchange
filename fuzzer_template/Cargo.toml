@@ -8,3 +8,4 @@ exclude = ["qemu_snapshot", "snapshot"]
 
 [dependencies]
 anyhow = "1.0.68"
+snapchange = { git = "https://github.com/awslabs/snapchange" }
