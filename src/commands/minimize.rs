@@ -4,6 +4,7 @@ use anyhow::{anyhow, ensure, Context, Result};
 use std::collections::{BTreeMap, VecDeque};
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use core_affinity::CoreId;
@@ -14,6 +15,7 @@ use crate::config::Config;
 use crate::fuzz_input::FuzzInput;
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::FuzzVm;
+use crate::memory::Memory;
 use crate::stack_unwinder::StackUnwinders;
 use crate::{cmdline, fuzzvm, unblock_sigalrm, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
@@ -38,7 +40,7 @@ fn start_core<FUZZER: Fuzzer>(
     vbcpu: &VbCpu,
     cpuid: &CpuId,
     snapshot_fd: i32,
-    clean_snapshot: u64,
+    clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<VecDeque<Symbol>>,
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
     coverage_breakpoints: Option<BTreeMap<VirtAddr, u8>>,
@@ -336,7 +338,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         kvm,
         cpuids,
         physmem_file,
-        clean_snapshot_addr,
+        clean_snapshot,
         symbols,
         symbol_breakpoints,
     } = init_environment(project_state)?;
@@ -356,7 +358,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         &project_state.vbcpu,
         &cpuids,
         physmem_file.as_raw_fd(),
-        clean_snapshot_addr,
+        clean_snapshot,
         &symbols,
         symbol_breakpoints,
         None, // No need to apply coverage breakpoints for minimize

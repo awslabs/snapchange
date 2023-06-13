@@ -4,10 +4,11 @@ use anyhow::{ensure, Context, Result};
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
+use std::mem::size_of;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use core_affinity::CoreId;
@@ -18,7 +19,8 @@ use crate::config::Config;
 use crate::fuzz_input::FuzzInput;
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::{FuzzVm, FuzzVmExit};
-use crate::{cmdline, fuzzvm, memory, unblock_sigalrm, THREAD_IDS};
+use crate::memory::Memory;
+use crate::{cmdline, fuzzvm, unblock_sigalrm, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
 use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
 
@@ -73,7 +75,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         kvm,
         cpuids,
         physmem_file,
-        clean_snapshot_addr,
+        clean_snapshot,
         symbols,
         symbol_breakpoints,
     } = init_environment(project_state)?;
@@ -81,15 +83,17 @@ pub(crate) fn run<FUZZER: Fuzzer>(
     // Init the coverage breakpoints mapping to byte
     let mut covbp_bytes = BTreeMap::new();
     //
-    let mut mem = memory::Memory::from_addr(clean_snapshot_addr);
     let cr3 = Cr3(project_state.vbcpu.cr3);
     let mut total_coverage = Vec::new();
 
     // Gather the total coverage for this project
-    for addr in project_state.coverage_breakpoints.as_ref().unwrap() {
-        if let Ok(orig_byte) = mem.read::<u8>(*addr, cr3) {
-            covbp_bytes.insert(*addr, orig_byte);
-            total_coverage.push(addr.0);
+    {
+        let mut curr_clean_snapshot = clean_snapshot.read().unwrap();
+        for addr in project_state.coverage_breakpoints.as_ref().unwrap() {
+            if let Ok(orig_byte) = curr_clean_snapshot.read_byte(*addr, cr3) {
+                covbp_bytes.insert(*addr, orig_byte);
+                total_coverage.push(addr.0);
+            }
         }
     }
 
@@ -121,7 +125,6 @@ pub(crate) fn run<FUZZER: Fuzzer>(
     for chunk in (0..paths.len()).step_by(chunk_size) {
         let ending_index = (chunk + chunk_size).min(paths.len());
         log::info!("Chunk: {chunk} Ending: {ending_index}");
-
         let path_index = Arc::new(AtomicUsize::new(chunk));
 
         let mut threads = Vec::new();
@@ -143,6 +146,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
             let symbol_breakpoints = symbol_breakpoints.clone();
             let covbp_bytes = covbp_bytes.clone();
             let timeout = args.timeout.clone();
+            let clean_snapshot = clean_snapshot.clone();
 
             // Start executing on this core
             let t = std::thread::spawn(move || {
@@ -152,7 +156,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
                     &vbcpu,
                     &cpuids,
                     physmem_file_fd,
-                    clean_snapshot_addr,
+                    clean_snapshot,
                     &symbols,
                     symbol_breakpoints,
                     covbp_bytes,
@@ -282,7 +286,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     vbcpu: &VbCpu,
     cpuid: &CpuId,
     snapshot_fd: i32,
-    clean_snapshot: u64,
+    clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<VecDeque<Symbol>>,
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
     coverage_breakpoints: BTreeMap<VirtAddr, u8>,
@@ -455,13 +459,44 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
 #[derive(Default)]
 struct CorpusMinimizer {
     /// Mapping of coverage addresses to the path index the input that hits this address
-    addr_to_inputs: BTreeMap<u64, BTreeSet<usize>>,
+    pub addr_to_inputs: BTreeMap<u64, BTreeSet<usize>>,
 
     /// Directory of all input path indexes and their respective coverage
-    input_coverage: BTreeMap<usize, BTreeSet<u64>>,
+    pub input_coverage: BTreeMap<usize, BTreeSet<u64>>,
+}
+
+// Get a human readable string of the given number of bytes
+fn get_byte_size(size: u64) -> String {
+    let units = ["B", "KB", "MB", "GB"];
+
+    let mut size = size as f64;
+    let mut unit_index = 0;
+
+    while size >= 1024.0 && unit_index < units.len() - 1 {
+        size /= 1024.0;
+        unit_index += 1;
+    }
+
+    format!("{:.2} {}", size, units[unit_index])
 }
 
 impl CorpusMinimizer {
+    pub fn size(&self) {
+        let sum: usize = self
+            .addr_to_inputs
+            .iter()
+            .map(|(k, v)| std::mem::size_of::<u64>() + v.len() * size_of::<usize>())
+            .sum();
+        log::info!("Size of addr_to_inputs: {}", get_byte_size(sum as u64));
+
+        let sum: usize = self
+            .input_coverage
+            .iter()
+            .map(|(k, v)| std::mem::size_of::<u64>() + v.len() * size_of::<u64>())
+            .sum();
+        log::info!("Size of input_coverage: {}", get_byte_size(sum as u64));
+    }
+
     /// Add the given set of inputs to this minimizer.
     pub fn add_inputs(&mut self, mut inputs: BTreeMap<usize, BTreeSet<u64>>) {
         while let Some((path_index, coverage)) = inputs.pop_first() {
@@ -484,6 +519,7 @@ impl CorpusMinimizer {
         let mut curr_path_index;
 
         log::info!("Starting inputs: {}", self.input_coverage.len());
+        self.size();
 
         let mut heap = BinaryHeap::new();
 

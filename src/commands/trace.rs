@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use core_affinity::CoreId;
@@ -16,6 +17,7 @@ use crate::fuzz_input::FuzzInput;
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::{FuzzVm, FuzzVmExit};
 use crate::interrupts::IdtEntry;
+use crate::memory::Memory;
 use crate::{cmdline, fuzzvm, symbols, unblock_sigalrm, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
 use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
@@ -31,7 +33,7 @@ fn start_core<FUZZER: Fuzzer>(
     vbcpu: &VbCpu,
     cpuid: &CpuId,
     snapshot_fd: i32,
-    clean_snapshot: u64,
+    clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<VecDeque<Symbol>>,
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
     coverage_breakpoints: Option<BTreeMap<VirtAddr, u8>>,
@@ -572,7 +574,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         kvm,
         cpuids,
         physmem_file,
-        clean_snapshot_addr,
+        clean_snapshot,
         symbols,
         symbol_breakpoints,
     } = init_environment(project_state)?;
@@ -586,6 +588,23 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         .first()
         .ok_or_else(|| anyhow!("No valid cores"))?;
 
+    let mut covbp_bytes = BTreeMap::new();
+
+    /*
+    // Apply coverage breakpoints or not
+    let mut mem = crate::memory::Memory::from_addr(clean_snapshot_addr);
+    {
+        let curr_clean_snapshot = clean_snapshot.write().unwrap();
+        let cr3 = Cr3(project_state.vbcpu.cr3);
+        for addr in project_state.coverage_breakpoints.as_ref().unwrap() {
+            if let Ok(orig_byte) = curr_clean_snapshot.read::<u8>(*addr, cr3) {
+                covbp_bytes.insert(*addr, orig_byte);
+                curr_clean_snapshot.write::<u8>(*addr, cr3, 0xcc, crate::memory::WriteMem::Dirty);
+            }
+        }
+    }
+    */
+
     // Start executing on this core
     start_core::<FUZZER>(
         core_id,
@@ -593,10 +612,10 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         &project_state.vbcpu,
         &cpuids,
         physmem_file.as_raw_fd(),
-        clean_snapshot_addr,
+        clean_snapshot,
         &symbols,
         symbol_breakpoints,
-        None, // No need to apply coverage breakpoints for tracing
+        Some(covbp_bytes), // No need to apply coverage breakpoints for tracing
         &args.input,
         args.timeout,
         !args.no_single_step,

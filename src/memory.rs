@@ -25,6 +25,9 @@ pub struct Memory {
     /// Address to the memory backing
     memory_backing: u64,
 
+    /// Size of this memory backing
+    size: u64,
+
     /// Pages that have been dirtied by writes
     pub dirty_pages: BTreeSet<PhysAddr>,
 
@@ -44,6 +47,14 @@ pub struct Memory {
 
     /// Next available physical address to allocate
     pub next_avail_phys_page: Option<PhysAddr>,
+}
+
+impl Drop for Memory {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.memory_backing as *mut libc::c_void, self.size as usize);
+        }
+    }
 }
 
 /// Custom errors [`FuzzVm`](crate::fuzzvm::FuzzVm) can throw
@@ -158,6 +169,7 @@ impl ProjectState {
 
         Ok(Memory {
             memory_backing: mem_ptr as u64,
+            size: guest_memory_size as u64,
             dirty_pages: BTreeSet::new(),
             temp_page_boundaries: Some(Vec::new()),
             used_phys_pages: BTreeSet::new(),
@@ -179,9 +191,10 @@ pub enum WriteMem {
 impl Memory {
     /// Create a `Memory` from the given backing
     #[must_use]
-    pub fn from_addr(memory_backing: u64) -> Self {
+    pub fn from_addr(memory_backing: u64, size: u64) -> Self {
         Self {
             memory_backing,
+            size,
             dirty_pages: BTreeSet::new(),
             temp_page_boundaries: Some(Vec::new()),
             used_phys_pages: BTreeSet::new(),
@@ -190,11 +203,45 @@ impl Memory {
         }
     }
 
+    /// Create a `Memory` from an existing file descriptor
+    #[must_use]
+    pub fn from_fd(snapshot_fd: i32, guest_memory_size: u64) -> Result<Self> {
+        // Create the memory backing from the file descriptor
+        let mem_ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                guest_memory_size as usize,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE,
+                snapshot_fd,
+                0,
+            )
+        };
+
+        // If mmap fails, return an error
+        if mem_ptr as usize == usize::MAX {
+            return Err(anyhow::anyhow!("mmap failed"));
+        }
+
+        unsafe {
+            libc::madvise(mem_ptr, guest_memory_size as usize, libc::MADV_MERGEABLE);
+        }
+
+        Ok(Memory::from_addr(mem_ptr as u64, guest_memory_size as u64))
+    }
+
     /// Get the underlying backing address
     #[must_use]
     pub fn backing(&self) -> u64 {
         self.memory_backing
     }
+
+    /// Get the underlying backing address
+    #[must_use]
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
     /// Get a translation from the opened memory
     ///
     /// # Panics
@@ -483,7 +530,7 @@ impl Memory {
     pub fn read_phys_bytes<T: Copy>(&mut self, phys_addr: PhysAddr, buf: &mut [T]) -> Result<()> {
         if let Some(last_addr) = phys_addr.0.checked_add(buf.len() as u64) {
             ensure!(
-                last_addr <= GUEST_MEMORY_SIZE,
+                last_addr <= self.memory_backing + self.size as u64,
                 Error::ReadPhysicalAddressOutOfBounds
             );
 
@@ -528,7 +575,7 @@ impl Memory {
 
         if let Some(last_addr) = phys_addr.0.checked_add(std::mem::size_of::<T>() as u64) {
             ensure!(
-                last_addr <= GUEST_MEMORY_SIZE,
+                last_addr <= self.memory_backing + self.size as u64,
                 Error::ReadPhysicalAddressOutOfBounds
             );
 
@@ -543,6 +590,35 @@ impl Memory {
             // Would attempt to read out of bounds
             Err(Error::ReadPhysicalAddressOutOfBounds.into())
         }
+    }
+
+    /// Read a single byte from the given [`VirtAddr`] using the [`Cr3`] page table
+    ///
+    /// # Errors
+    ///
+    /// * Read from an unmapped virtual address
+    pub fn read_byte(&self, virt_addr: VirtAddr, cr3: Cr3) -> Result<u8> {
+        let cr3 = Cr3(cr3.0 & !0xfff);
+
+        // Get the size of the T for this read
+        let ret_size = 1;
+
+        // Ensure the read won't overflow the address space
+        ensure!(
+            virt_addr.0.checked_add(ret_size as u64).is_some(),
+            Error::ReadOverflow
+        );
+
+        // Translate the virtual address to physical address
+        let translation = self.translate(virt_addr, cr3);
+
+        // Get the physical address from this translation
+        let phys_addr = translation
+            .phys_addr()
+            .context(Error::ReadFromUnmappedVirtualAddress(virt_addr, cr3))?;
+
+        // Read the requested type from the translated physical address
+        Ok(self.read_phys(phys_addr)?)
     }
 
     /// Read the requested type from the given [`VirtAddr`] using the [`Cr3`] page table

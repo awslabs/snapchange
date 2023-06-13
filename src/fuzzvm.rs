@@ -43,6 +43,7 @@ use crate::{cmp_analysis::RedqueenRule, fuzz_input::FuzzInput};
 use std::collections::{BTreeMap, VecDeque};
 use std::convert::TryInto;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "redqueen")]
@@ -527,7 +528,7 @@ pub struct FuzzVm<'a, FUZZER: Fuzzer> {
     pub restore_breakpoint: Option<(VirtAddr, Cr3)>,
 
     /// Clean snapshot buffer to restore the dirty pages from
-    pub clean_snapshot: u64,
+    pub clean_snapshot: Arc<RwLock<Memory>>,
 
     /// Memory regions backing this VM (used for deleting the regions to reset the memory
     /// on VM reset)
@@ -612,7 +613,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         virtualbox_cpu: &VbCpu,
         cpuid: &CpuId,
         snapshot_fd: i32,
-        clean_snapshot: u64,
+        clean_snapshot: Arc<RwLock<Memory>>,
         coverage_breakpoints: Option<BTreeMap<VirtAddr, u8>>,
         reset_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
         symbols: &'a Option<VecDeque<Symbol>>,
@@ -663,7 +664,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             .context("Failed to set guest debug mode")?;
 
         // Create the memory backing for the guest VM using the existing snapshot
-        let mem_ptr = crate::create_guest_memory_backing(snapshot_fd)?;
+        let memory = Memory::from_fd(snapshot_fd, config.guest_memory_size)?;
 
         // Sanity check only `syscall_whitelist` or `syscall_blacklist` is set and not
         // both
@@ -694,7 +695,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             vcpu_events: vcpu.get_vcpu_events()?,
             rng: Rng::new(),
             single_step: false,
-            memory: Memory::from_addr(mem_ptr as u64),
+            memory,
             vm,
             vcpu,
             vbcpu: *virtualbox_cpu,
@@ -2537,11 +2538,14 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             }
         }
 
+        // Grab the READ lock for the clean snapshot
+        let clean_snapshot = self.clean_snapshot.read().unwrap();
+
         // Reset the pages currently in the scratch reset buffer
         for curr_phys_addr in &self.scratch_reset_buffer {
             // Calculate the address into the memory and snapshot pages
             let memory_addr = self.memory.backing() + curr_phys_addr;
-            let snapshot_addr = self.clean_snapshot + curr_phys_addr;
+            let snapshot_addr = clean_snapshot.backing() + curr_phys_addr;
 
             unsafe {
                 std::ptr::copy_nonoverlapping(
@@ -2606,8 +2610,11 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     ///
     /// * Fails to register guest memory
     fn init_guest_memory_backing(&mut self) -> Result<()> {
-        self.memory_regions =
-            crate::register_guest_memory(self.vm, self.memory.backing() as *mut libc::c_void)?;
+        self.memory_regions = crate::register_guest_memory(
+            self.vm,
+            self.memory.backing() as *mut libc::c_void,
+            self.memory.size(),
+        )?;
 
         // Setup the dirty bitmaps for each memory region
         for (slot, mem_region) in self.memory_regions.iter().enumerate() {
@@ -3107,7 +3114,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         // Apply the newly generated cache (should only execute once)
         for (virt_addr, cr3, bp_type, bp_hook) in &cache {
             if self.core_id == 1 {
-                log::info!(
+                log::debug!(
                     "Setting fuzzer breakpoint: {virt_addr:x?} {:?}",
                     self.get_symbol(**virt_addr)
                 );
@@ -3391,11 +3398,14 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     pub unsafe fn reset_custom_guest_memory(&mut self) -> Result<u32> {
         use std::arch::x86_64::__m512;
 
+        // Grab the READ lock for the clean snapshot
+        let clean_snapshot = self.clean_snapshot.read().unwrap();
+
         // Restore the pages that were written to by us
         for custom_dirty_page in &self.memory.dirty_pages {
             // Calculate the address into the memory and snapshot pages
             let memory_addr = self.memory.backing() + custom_dirty_page.0;
-            let snapshot_addr = self.clean_snapshot + custom_dirty_page.0;
+            let snapshot_addr = clean_snapshot.backing() + custom_dirty_page.0;
 
             if cfg!(target_feature = "avx512f") {
                 /// memcpy via avx512 via 4-step unrolling (RRRRWWWW)
@@ -3865,7 +3875,6 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                     // If the current address can be removed from the coverage database, then
                     // we have hit a new coverage address. Return a CoverageBreakpoint exit.
                     let virt_addr = VirtAddr(rip);
-                    let mut clean_mem = Memory::from_addr(self.clean_snapshot);
 
                     if let Some(orig_byte) = cov_bps.get(&virt_addr) {
                         // This breakpoint is a coverage breakpoint. Restore the VM
@@ -3873,7 +3882,13 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                         // other VM has to cover this breakpoint either
                         let orig_byte = *orig_byte;
                         let cr3 = Cr3(self.vbcpu.cr3);
-                        clean_mem.write_bytes(virt_addr, cr3, &[orig_byte])?;
+
+                        // Grab the WRITE lock for the clean snapshot since we are modifying
+                        // the clean snapshot
+                        let mut clean_snapshot = self.clean_snapshot.write().unwrap();
+                        clean_snapshot.write_bytes(virt_addr, cr3, &[orig_byte])?;
+                        drop(clean_snapshot);
+
                         self.write_bytes(virt_addr, cr3, &[orig_byte])?;
 
                         perf.post_run_vm = rdtsc() - start;

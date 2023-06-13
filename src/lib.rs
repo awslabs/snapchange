@@ -129,7 +129,7 @@ use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, RwLock};
 
 pub mod fuzzvm;
 pub use fuzzvm::{FuzzVm, FuzzVmExit};
@@ -175,7 +175,7 @@ mod kvm;
 pub mod linux;
 
 pub mod memory;
-pub use memory::GUEST_MEMORY_SIZE;
+pub use memory::Memory;
 
 mod colors;
 mod commands;
@@ -658,6 +658,7 @@ fn handle_vmexit<FUZZER: Fuzzer>(
 pub fn register_guest_memory(
     vm: &VmFd,
     memory: *mut libc::c_void,
+    guest_memory_size: u64,
 ) -> Result<[kvm_userspace_memory_region; 3]> {
     ensure!(fuzzvm::APIC_BASE < fuzzvm::TSS_BASE);
 
@@ -709,7 +710,7 @@ pub fn register_guest_memory(
     memory_regions[1] = mem_region;
 
     // Calculate the length of the remaining memory after the APIC page
-    size_remainder = GUEST_MEMORY_SIZE - fuzzvm::TSS_BASE - 0x1000;
+    size_remainder = guest_memory_size - fuzzvm::TSS_BASE - 0x1000;
 
     // Allocate memory from [TSS_BASE + 0x1000..] in the guest
     let mem_region = kvm_userspace_memory_region {
@@ -866,42 +867,13 @@ struct KvmEnvironment {
 
     /// The address of the clean snapshot with coverage breakpoints applied. This is the
     /// memory region that the cores will use to restore the original snapshot during fuzzing
-    clean_snapshot_addr: u64,
+    clean_snapshot: Arc<RwLock<Memory>>,
 
     /// Parsed symbols if the project has symbols available
     symbols: Option<VecDeque<Symbol>>,
 
     /// Parsed symbol breakpoints if any coverage breakpoints are avilable in the project
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
-}
-
-/// Create the guest memory backing for the VM using the given snapshot file
-/// descriptor.
-///
-/// # Errors
-///
-/// * Guest memory size is too small to fit in a `usize`
-fn create_guest_memory_backing(snapshot_fd: i32) -> Result<*mut libc::c_void> {
-    // Ensure the expected guest memory size can fit on this system
-    let guest_memory_size: usize = GUEST_MEMORY_SIZE.try_into()?;
-
-    // Create the memory backing from the file descriptor
-    let mem_ptr = unsafe {
-        libc::mmap(
-            std::ptr::null_mut(),
-            guest_memory_size,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_PRIVATE,
-            snapshot_fd,
-            0,
-        )
-    };
-
-    unsafe {
-        libc::madvise(mem_ptr, guest_memory_size, libc::MADV_MERGEABLE);
-    }
-
-    Ok(mem_ptr)
 }
 
 /// Perform KVM initialization routines and common project setup steps for all
@@ -933,15 +905,17 @@ fn init_environment(project_state: &ProjectState) -> Result<KvmEnvironment> {
         .read(true)
         .open(&project_state.physical_memory)?;
 
+    let guest_memory_size = project_state.config.guest_memory_size;
+
     // Ensure the mmap'ed memory for the snapshot is large enough
     ensure!(
-        GUEST_MEMORY_SIZE >= physmem_file.metadata()?.len(),
+        guest_memory_size >= physmem_file.metadata()?.len(),
         "Snapshot physical memory is larger than expected. \
          Increase guest_memory::GUEST_MEMORY_SIZE"
     );
 
     // Ensure the expected guest memory size can fit on this system
-    let guest_memory_size = GUEST_MEMORY_SIZE
+    let guest_memory_size: usize = guest_memory_size
         .try_into()
         .expect("Guest memory size too large");
 
@@ -962,14 +936,17 @@ fn init_environment(project_state: &ProjectState) -> Result<KvmEnvironment> {
         "Failed to mmap clean snapshot"
     );
 
-    let clean_snapshot_addr = clean_snapshot_buff as u64;
+    let clean_snapshot = Arc::new(RwLock::new(Memory::from_addr(
+        clean_snapshot_buff as u64,
+        guest_memory_size.try_into().unwrap(),
+    )));
 
     // Return the created environment
     Ok(KvmEnvironment {
         kvm,
         cpuids,
         physmem_file,
-        clean_snapshot_addr,
+        clean_snapshot,
         symbols,
         symbol_breakpoints,
     })

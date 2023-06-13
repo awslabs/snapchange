@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::File;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use core_affinity::CoreId;
@@ -16,7 +17,8 @@ use crate::config::Config;
 use crate::fuzz_input::FuzzInput;
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::{FuzzVm, FuzzVmExit};
-use crate::{cmdline, fuzzvm, memory, unblock_sigalrm, Modules, THREAD_IDS};
+use crate::memory::Memory;
+use crate::{cmdline, fuzzvm, unblock_sigalrm, Modules, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
 use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
 
@@ -34,7 +36,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         kvm,
         cpuids,
         physmem_file,
-        clean_snapshot_addr,
+        clean_snapshot,
         symbols,
         symbol_breakpoints,
     } = init_environment(project_state)?;
@@ -50,8 +52,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
 
     // Init the coverage breakpoints mapping to byte
     let mut covbp_bytes = BTreeMap::new();
-    //
-    let mut mem = memory::Memory::from_addr(clean_snapshot_addr);
+
     let cr3 = Cr3(project_state.vbcpu.cr3);
 
     log::info!(
@@ -59,9 +60,14 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         project_state.coverage_breakpoints.as_ref().unwrap().len()
     );
 
-    for addr in project_state.coverage_breakpoints.as_ref().unwrap() {
-        if let Ok(orig_byte) = mem.read::<u8>(*addr, cr3) {
-            covbp_bytes.insert(*addr, orig_byte);
+    // Small scope to drop the clean snapshot lock after populating the
+    // coverage bytes
+    {
+        let mut curr_clean_snapshot = clean_snapshot.read().unwrap();
+        for addr in project_state.coverage_breakpoints.as_ref().unwrap() {
+            if let Ok(orig_byte) = curr_clean_snapshot.read_byte(*addr, cr3) {
+                covbp_bytes.insert(*addr, orig_byte);
+            }
         }
     }
 
@@ -74,7 +80,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         &project_state.vbcpu,
         &cpuids,
         physmem_file.as_raw_fd(),
-        clean_snapshot_addr,
+        clean_snapshot,
         &symbols,
         symbol_breakpoints,
         covbp_bytes,
@@ -97,7 +103,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     vbcpu: &VbCpu,
     cpuid: &CpuId,
     snapshot_fd: i32,
-    clean_snapshot: u64,
+    clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<VecDeque<Symbol>>,
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
     coverage_breakpoints: BTreeMap<VirtAddr, u8>,

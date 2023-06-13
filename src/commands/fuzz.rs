@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use core_affinity::CoreId;
@@ -30,9 +30,10 @@ use crate::try_u64;
 use crate::utils::save_input_in_dir;
 use crate::{block_sigalrm, kick_cores, Stats, FINISHED};
 
+use crate::memory::Memory;
 use crate::{fuzzvm, unblock_sigalrm, write_crash_input, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
-use crate::{memory, Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
+use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
 
 #[cfg(feature = "redqueen")]
 use x86_64::registers::rflags::RFlags;
@@ -55,7 +56,7 @@ pub static SINGLE_STEP_DEBUG: AtomicBool = AtomicBool::new(false);
 
 /// Execute the fuzz subcommand to fuzz the given project
 pub(crate) fn run<FUZZER: Fuzzer + 'static>(
-    project_state: ProjectState,
+    mut project_state: ProjectState,
     args: &cmdline::Fuzz,
 ) -> Result<()> {
     log::info!("{:x?}", project_state.config);
@@ -64,7 +65,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         kvm,
         cpuids,
         physmem_file,
-        clean_snapshot_addr,
+        clean_snapshot,
         symbols,
         symbol_breakpoints,
     } = init_environment(&project_state)?;
@@ -220,14 +221,18 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
     let start = Instant::now();
 
     // Write the remaining coverage breakpoints into the "clean" snapshot
-    let mut mem = memory::Memory::from_addr(clean_snapshot_addr);
     let mut count = 0;
     let cr3 = Cr3(project_state.vbcpu.cr3);
-    for addr in &coverage_left {
-        if let Ok(orig_byte) = mem.read::<u8>(*addr, cr3) {
-            mem.write_bytes(*addr, cr3, &[0xcc])?;
-            covbp_bytes.insert(*addr, orig_byte);
-            count += 1;
+
+    {
+        // Small scope to drop the clean snapshot lock
+        let mut curr_clean_snapshot = clean_snapshot.write().unwrap();
+        for addr in &coverage_left {
+            if let Ok(orig_byte) = curr_clean_snapshot.read::<u8>(*addr, cr3) {
+                curr_clean_snapshot.write_bytes(*addr, cr3, &[0xcc])?;
+                covbp_bytes.insert(*addr, orig_byte);
+                count += 1;
+            }
         }
     }
 
@@ -390,6 +395,8 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
             println!("Starting core: {}/{}", core_id.id, cores);
         }
 
+        let clean_snapshot = clean_snapshot.clone();
+
         // Start executing on this core
         let thread = std::thread::spawn(move || -> Result<()> {
             let result = std::panic::catch_unwind(|| -> Result<()> {
@@ -399,7 +406,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
                     &project_state.vbcpu,
                     &cpuids,
                     physmem_file_fd,
-                    clean_snapshot_addr,
+                    clean_snapshot,
                     &curr_symbols,
                     symbol_breakpoints,
                     coverage_breakpoints,
@@ -623,7 +630,7 @@ fn start_core<FUZZER: Fuzzer>(
     vbcpu: &VbCpu,
     cpuid: &CpuId,
     snapshot_fd: i32,
-    clean_snapshot: u64,
+    clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<VecDeque<Symbol>>,
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
     coverage_breakpoints: Option<BTreeMap<VirtAddr, u8>>,
@@ -704,6 +711,7 @@ fn start_core<FUZZER: Fuzzer>(
     )?;
 
     let mut coverage = prev_coverage;
+    log::info!("Starting with {} coverage", coverage.len());
 
     #[cfg(feature = "redqueen")]
     let mut redqueen_coverage = prev_redqueen_coverage;
@@ -722,7 +730,7 @@ fn start_core<FUZZER: Fuzzer>(
     let mut iters = 0;
 
     // Sanity warn that all cores are in single step when debugging
-    if SINGLE_STEP && SINGLE_STEP_DEBUG.load(Ordering::SeqCst) && core_id.id == 1 {
+    if SINGLE_STEP && SINGLE_STEP_DEBUG.load(Ordering::SeqCst) {
         log::warn!("SINGLE STEP FUZZING ENABLED");
         log::warn!("SINGLE STEP FUZZING ENABLED");
         log::warn!("SINGLE STEP FUZZING ENABLED");
@@ -987,7 +995,7 @@ fn start_core<FUZZER: Fuzzer>(
 
             core_stats.lock().unwrap().inc_vmexit(&ret);
 
-            // Get the RIP immediately after returning from run()
+            // Get the RIP to check for coverage
             let rip = VirtAddr(fuzzvm.rip());
 
             // Handle the FuzzVmExit to determine if the VM should continue or reset
@@ -998,7 +1006,7 @@ fn start_core<FUZZER: Fuzzer>(
 
             // If we hit a coverage execution, add the RIP to
             if matches!(execution, Execution::CoverageContinue) && coverage.insert(rip) {
-                // log::info!("New cov: {rip:#x}");
+                // log::info!("New cov: {rip:x?}");
                 new_coverage_for_input.insert(rip);
             }
 
@@ -1048,6 +1056,7 @@ fn start_core<FUZZER: Fuzzer>(
 
         /*
         if SINGLE_STEP && SINGLE_STEP_DEBUG.load(Ordering::SeqCst) {
+            log::info!("Writing {} instrs", instrs.len());
             std::fs::write(format!("/tmp/instrs_{}", instrs.len()), instrs.join("\n"));
         }
         */

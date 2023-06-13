@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use core_affinity::CoreId;
@@ -17,6 +17,7 @@ use crate::config::Config;
 use crate::fuzz_input::FuzzInput;
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::{FuzzVm, FuzzVmExit};
+use crate::memory::Memory;
 use crate::stack_unwinder::StackUnwinders;
 use crate::{cmdline, fuzzvm, unblock_sigalrm, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
@@ -31,7 +32,7 @@ fn start_core<FUZZER: Fuzzer>(
     vbcpu: &VbCpu,
     cpuid: &CpuId,
     snapshot_fd: i32,
-    clean_snapshot: u64,
+    clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<VecDeque<Symbol>>,
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
     vm_timeout: Duration,
@@ -197,7 +198,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         kvm,
         cpuids,
         physmem_file,
-        clean_snapshot_addr,
+        clean_snapshot,
         symbols,
         symbol_breakpoints,
     } = init_environment(project_state)?;
@@ -273,6 +274,8 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         let next_file_index = next_file_index.clone();
         let finished = finished.clone();
 
+        let clean_snapshot = clean_snapshot.clone();
+
         // Start executing on this core
         let t = std::thread::spawn(move || {
             start_core::<FUZZER>(
@@ -281,7 +284,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
                 &vbcpu,
                 &cpuids,
                 physmem_file_fd,
-                clean_snapshot_addr,
+                clean_snapshot,
                 &curr_symbols,
                 symbol_breakpoints,
                 timeout,
