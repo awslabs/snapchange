@@ -328,6 +328,13 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         start.elapsed()
     );
 
+    // number of retries when launching a KVM VM
+    const RETRY_MAX: u32 = 10;
+    // wait time after kvm create failed and retrying
+    const RETRY_WAIT_FOR_MILLIES: u64 = 1000;
+    // wait time after creating a kvm vm
+    const BETWEEN_WAIT_FOR_MILLIES: u64 = 100;
+
     // Create a thread for each active CPU core.
     for id in 1..=cores {
         let core_id = CoreId {
@@ -335,7 +342,33 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         };
 
         // Create the VM for this core
-        let vm = kvm.create_vm().context("Failed to create VM from KVM")?;
+        let vm = {
+            // multiple tries
+            let mut tries = 0u32;
+            loop {
+                let r = kvm.create_vm();
+                if Err(e) = r {
+                    tries += 1;
+                    log::warn!(
+                        "KVM create_vm error on core {} ({}/{} tries): {}",
+                        id,
+                        tries,
+                        RETRY_MAX,
+                        e
+                    );
+                    if tries <= RETRY_MAX {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            RETRY_WAIT_FOR_MILLIES,
+                        ));
+                    } else {
+                        break r;
+                    }
+                } else {
+                    break r;
+                }
+            }
+        }
+        .context("Failed to create VM from KVM")?;
 
         // Enable dirty bits
         enable_manual_dirty_log_protect(&vm)?;
@@ -452,7 +485,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         });
 
         // Sleep to let the system catch up to the threads being created
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(BETWEEN_WAIT_FOR_MILLIES));
 
         // Add this thread to the total list of threads
         threads.push(Some(thread));
