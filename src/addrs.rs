@@ -49,7 +49,7 @@ impl std::ops::Deref for PhysAddr {
 
 /// A virtual address
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Hash)]
 pub struct VirtAddr(pub u64);
 
 impl From<u64> for VirtAddr {

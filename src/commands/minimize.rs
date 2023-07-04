@@ -114,13 +114,13 @@ fn start_core<FUZZER: Fuzzer>(
         let ret = fuzzvm.run(&mut perf)?;
 
         // Handle the FuzzVmExit to determine
-        execution = handle_vmexit(&ret, &mut fuzzvm, &mut fuzzer, None, &input)?;
+        execution = handle_vmexit(&ret, &mut fuzzvm, &mut fuzzer, None, &input, None)?;
 
         // During single step, breakpoints aren't triggered. For this reason,
         // we need to check if the instruction is a breakpoint regardless in order to
         // apply fuzzer specific breakpoint logic. We can ignore the "unknown breakpoint"
         // error that is thrown if a breakpoint is not found;
-        if let Ok(new_execution) = fuzzvm.handle_breakpoint(&mut fuzzer, &input) {
+        if let Ok(new_execution) = fuzzvm.handle_breakpoint(&mut fuzzer, &input, None) {
             execution = new_execution;
         } else {
             // Ignore the unknown breakpoint case since we check every instruction due to
@@ -260,13 +260,13 @@ fn start_core<FUZZER: Fuzzer>(
                 let ret = fuzzvm.run(&mut perf)?;
 
                 // Handle the FuzzVmExit to determine
-                execution = handle_vmexit(&ret, &mut fuzzvm, &mut fuzzer, None, &curr_input)?;
+                execution = handle_vmexit(&ret, &mut fuzzvm, &mut fuzzer, None, &curr_input, None)?;
 
                 // During single step, breakpoints aren't triggered. For this reason,
                 // we need to check if the instruction is a breakpoint regardless in order to
                 // apply fuzzer specific breakpoint logic. We can ignore the "unknown breakpoint"
                 // error that is thrown if a breakpoint is not found;
-                if let Ok(new_execution) = fuzzvm.handle_breakpoint(&mut fuzzer, &input) {
+                if let Ok(new_execution) = fuzzvm.handle_breakpoint(&mut fuzzer, &input, None) {
                     execution = new_execution;
                 } else {
                     // Ignore the unknown breakpoint case since we check every instruction

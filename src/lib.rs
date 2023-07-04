@@ -109,6 +109,7 @@
 #![allow(rustdoc::invalid_rust_codeblocks)]
 #![deny(missing_docs)]
 
+use feedback::FeedbackTracker;
 use kvm_bindings::{
     kvm_cpuid2, kvm_userspace_memory_region, CpuId, KVM_MAX_CPUID_ENTRIES, KVM_MEM_LOG_DIRTY_PAGES,
     KVM_SYNC_X86_EVENTS, KVM_SYNC_X86_REGS, KVM_SYNC_X86_SREGS,
@@ -185,6 +186,7 @@ pub mod expensive_mutators;
 mod filesystem;
 pub mod fuzz_input;
 pub mod mutators;
+pub mod feedback;
 
 mod stats_tui;
 pub mod utils;
@@ -235,6 +237,10 @@ pub enum Execution {
     /// Hit coverage event and continue execution of the current VM
     CoverageContinue,
 
+    #[cfg(feature = "custom_feedback")]
+    /// Custom Coverage Info
+    CustomCoverageContinue,
+    
     /// Continue execution of the current VM
     Continue,
 
@@ -356,13 +362,14 @@ fn handle_vmexit<FUZZER: Fuzzer>(
     fuzzer: &mut FUZZER,
     crash_dir: Option<&Path>,
     input: &FUZZER::Input,
+    feedback: Option<&mut FeedbackTracker>,
 ) -> Result<Execution> {
     let execution;
 
     // Determine what to do with the VMExit
     match vmexit {
         FuzzVmExit::Breakpoint(rip) => {
-            match fuzzvm.handle_breakpoint(fuzzer, input) {
+            match fuzzvm.handle_breakpoint(fuzzer, input, feedback) {
                 Err(err) => {
                     // log::warn!("Breakpoint fail.. reset: {err:?}");
 

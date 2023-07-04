@@ -37,6 +37,7 @@ use crate::utils::rdtsc;
 use crate::vbcpu::VbCpu;
 use crate::{handle_vmexit, Execution, DIRTY_BITMAPS};
 use crate::{try_u32, try_u64, try_u8, try_usize};
+use crate::feedback::{FeedbackLog, FeedbackTracker};
 
 #[cfg(feature = "redqueen")]
 use crate::{cmp_analysis::RedqueenRule, fuzz_input::FuzzInput};
@@ -73,8 +74,12 @@ pub enum BreakpointMemory {
 }
 
 /// Hook function protoype
-pub type HookFn<F> =
-    fn(fuzzvm: &mut FuzzVm<F>, input: &<F as Fuzzer>::Input, fuzzer: &mut F) -> Result<Execution>;
+pub type HookFn<F> = fn(
+    fuzzvm: &mut FuzzVm<F>,
+    input: &<F as Fuzzer>::Input,
+    fuzzer: &mut F,
+    feedback: Option<&mut crate::feedback::FeedbackTracker>,
+) -> Result<Execution>;
 
 /// Type of custom hook to call when a breakpoint is triggered
 pub enum BreakpointHook<FUZZER: Fuzzer> {
@@ -917,7 +922,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 cr3,
                 BreakpointType::Repeated,
                 BreakpointMemory::NotDirty,
-                BreakpointHook::Func(|_, _, _| Ok(Execution::Continue)),
+                BreakpointHook::Func(|_, _, _, _| Ok(Execution::Continue)),
             )?;
         }
 
@@ -945,6 +950,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             fuzzvm: &mut FuzzVm<FUZZER>,
             _input: &FUZZER::Input,
             _fuzzer: &mut FUZZER,
+            _feedback: Option<&mut crate::feedback::FeedbackTracker>
         ) -> Result<Execution> {
             let mut rflags = RFlags::from_bits_truncate(fuzzvm.rflags());
             rflags.insert(RFlags::TRAP_FLAG);
@@ -2435,6 +2441,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         &mut self,
         fuzzer: &mut FUZZER,
         input: &FUZZER::Input,
+        feedback: Option<&mut FeedbackTracker>,
     ) -> Result<Execution> {
         // Get the current address
         let (virt_addr, cr3) = self.current_address();
@@ -2599,7 +2606,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 .get(bp_index)
                 .ok_or(Error::InvalidBreakpointIndex)?
             {
-                execution = bp_func(self, input, fuzzer)?;
+                execution = bp_func(self, input, fuzzer, feedback)?;
             } else {
                 let sym = self.get_symbol(virt_addr.0);
                 return Err(Error::BreakpointHookNotSet(virt_addr, sym).into());
@@ -3421,8 +3428,8 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 self.cr3(),
                 BreakpointType::Repeated,
                 BreakpointMemory::NotDirty,
-                BreakpointHook::Func(|_, _, _| {
-                    println!("Hit LSTAR breakpoint!");
+                BreakpointHook::Func(|_, _, _, _| {
+                    log::warn!("Hit LSTAR breakpoint!");
                     Ok(Execution::Continue)
                 }),
             )?;
@@ -4117,7 +4124,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             let ret = self.run(&mut perf)?;
 
             // Handle the FuzzVmExit to determine
-            let ret = handle_vmexit(&ret, self, fuzzer, None, input);
+            let ret = handle_vmexit(&ret, self, fuzzer, None, input, None);
             execution = match ret {
                 Err(e) => {
                     return Err(e);
@@ -4130,7 +4137,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             // apply fuzzer specific breakpoint logic. We can ignore the "unknown breakpoint"
             // error that is thrown if a breakpoint is not found;
             if self.single_step {
-                if let Ok(new_execution) = self.handle_breakpoint(fuzzer, input) {
+                if let Ok(new_execution) = self.handle_breakpoint(fuzzer, input, None) {
                     execution = new_execution;
                 } else {
                     // Ignore the unknown breakpoint case since we check every instruction due to
@@ -4302,7 +4309,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             }
 
             // Handle the FuzzVmExit to determine
-            let ret = handle_vmexit(&ret, self, fuzzer, None, input);
+            let ret = handle_vmexit(&ret, self, fuzzer, None, input, None);
             execution = match ret {
                 Err(e) => {
                     return Err(e);
@@ -4458,7 +4465,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                                     cov
                                 );
 
-                                new_coverage.push(*cov.0);
+                                new_coverage.push(FeedbackLog::VAddr(VirtAddr(*cov.0)));
                             }
                         }
 

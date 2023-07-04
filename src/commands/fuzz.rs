@@ -35,11 +35,14 @@ use crate::{fuzzvm, unblock_sigalrm, write_crash_input, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
 use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
 
-#[cfg(feature = "redqueen")]
-use x86_64::registers::rflags::RFlags;
+use crate::feedback::{FeedbackLog, FeedbackTracker};
 
 #[cfg(feature = "redqueen")]
 use crate::cmp_analysis::RedqueenRule;
+#[cfg(feature = "redqueen")]
+use crate::feedback::RedqueenFeedback;
+#[cfg(feature = "redqueen")]
+use x86_64::registers::rflags::RFlags;
 
 use crate::stack_unwinder::StackUnwinders;
 
@@ -548,7 +551,14 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         // Set the core affinity for this core to always be 0
         core_affinity::set_for_current(first_core);
 
-        // let prev_coverage = prev_coverage.iter().map(|x| x.0).collect();
+        let mut tmp = BTreeSet::new();
+        for x in prev_coverage.iter() {
+            // TODO: handle other previous coverage?
+            // if let FeedbackLog::VAddr(addr) = *x {
+            tmp.insert(*x);
+            // }
+        }
+        let prev_coverage = tmp;
 
         // Start the stats worker
         let res = stats::worker(
@@ -659,7 +669,7 @@ fn start_core<FUZZER: Fuzzer>(
     stop_after_time: Option<Duration>,
     stop_after_first_crash: bool,
     unwinders: StackUnwinders,
-    #[cfg(feature = "redqueen")] prev_redqueen_coverage: BTreeSet<(VirtAddr, RFlags)>,
+    #[cfg(feature = "redqueen")] prev_redqueen_coverage: RedqueenFeedback,
     #[cfg(feature = "redqueen")] redqueen_rules: BTreeMap<u64, BTreeSet<RedqueenRule>>,
     #[cfg(feature = "redqueen")] redqueen_availble: bool,
 ) -> Result<()> {
@@ -727,14 +737,19 @@ fn start_core<FUZZER: Fuzzer>(
         redqueen_rules,
     )?;
 
-    let mut coverage = prev_coverage;
-    log::info!("Starting with {} coverage", coverage.len());
+    log::info!("Starting with {} coverage", prev_coverage.len());
+
+    let mut feedback: FeedbackTracker = FeedbackTracker::from_prev(prev_coverage);
 
     #[cfg(feature = "redqueen")]
-    let mut redqueen_coverage = prev_redqueen_coverage;
+    {
+        feedback.redqueen = prev_redqueen_coverage;
+    }
+    // #[cfg(feature = "redqueen")]
+    // let mut redqueen_coverage = prev_redqueen_coverage;
 
     // Addresses covered by the current input
-    let mut new_coverage_for_input = BTreeSet::new();
+    // let mut new_coverage_for_input = BTreeSet::new();
 
     // Number of iterations before syncing stats
     let mut coverage_sync = std::time::Instant::now();
@@ -830,14 +845,17 @@ fn start_core<FUZZER: Fuzzer>(
         if coverage_sync.elapsed() >= config.stats.coverage_sync_timer {
             time!(SyncCov1, {
                 // Append the current coverage
-                core_stats.lock().unwrap().coverage.append(&mut coverage);
+                core_stats.lock().unwrap().coverage.merge(&feedback);
             });
 
             time!(SyncCov2, {
                 // Reset the local coverage to match the global coverage set in stats
-                for addr in &core_stats.lock().unwrap().coverage {
-                    coverage.insert(*addr);
-                }
+                // for addr in &core_stats.lock().unwrap().coverage {
+                //     // coverage.insert(*addr);
+                //     feedback.record_codecov(*addr);
+                // }
+                let global = &core_stats.lock().unwrap().coverage;
+                feedback.merge(global);
             });
 
             // Reset the last sync counter
@@ -847,7 +865,7 @@ fn start_core<FUZZER: Fuzzer>(
         iters += 1;
 
         // Reset new coverage marker
-        new_coverage_for_input.clear();
+        // new_coverage_for_input.clear();
 
         // Reset the fuzzer state
         fuzzer.reset_fuzzer_state();
@@ -855,13 +873,13 @@ fn start_core<FUZZER: Fuzzer>(
         // Get a random input from the corpus
         let mut input = time!(
             ScheduleInput,
-            fuzzer.schedule_next_input(&corpus, &mut rng, dictionary)
+            fuzzer.schedule_next_input(&corpus, &mut feedback, &mut rng, dictionary)
         );
 
         let original_file = input.fuzz_hash();
 
         let orig_corpus_len = corpus.len();
-        let orig_coverage_len = coverage.len();
+        let orig_coverage_len = feedback.len();
 
         // Gather redqueen for this input if there aren't already replacement rules found
         #[cfg(feature = "redqueen")]
@@ -887,8 +905,8 @@ fn start_core<FUZZER: Fuzzer>(
                         &mut fuzzer,
                         vm_timeout,
                         &mut corpus,
-                        &mut coverage,
-                        &mut redqueen_coverage,
+                        &mut feedback.code_cov,
+                        &mut feedback.redqueen,
                         redqueen_time_spent,
                         &project_dir.join("metadata"),
                     )?;
@@ -920,10 +938,10 @@ fn start_core<FUZZER: Fuzzer>(
             log::info!("Redqueen new corpus! {orig_corpus_len} -> {}", corpus.len());
         }
 
-        if coverage.len() != orig_coverage_len {
+        if feedback.len() != orig_coverage_len {
             log::info!(
                 "Redqueen new coverage! {orig_coverage_len} -> {}",
-                coverage.len()
+                feedback.len()
             );
         }
 
@@ -1020,13 +1038,22 @@ fn start_core<FUZZER: Fuzzer>(
             // Handle the FuzzVmExit to determine if the VM should continue or reset
             execution = time!(
                 HandleVmExit,
-                handle_vmexit(&ret, &mut fuzzvm, &mut fuzzer, Some(&crash_dir), &input)?
+                handle_vmexit(
+                    &ret,
+                    &mut fuzzvm,
+                    &mut fuzzer,
+                    Some(&crash_dir),
+                    &input,
+                    Some(&mut feedback)
+                )?
             );
 
             // If we hit a coverage execution, add the RIP to
-            if matches!(execution, Execution::CoverageContinue) && coverage.insert(rip) {
-                // log::info!("New cov: {rip:x?}");
-                new_coverage_for_input.insert(rip);
+            match execution {
+                Execution::CoverageContinue => {
+                    feedback.record_codecov(rip);
+                }
+                _ => {}
             }
 
             // If we hit a coverage execution, add the RIP to
@@ -1036,10 +1063,8 @@ fn start_core<FUZZER: Fuzzer>(
                     .as_ref()
                     .unwrap()
                     .contains_key(&rip)
-                && coverage.insert(rip)
             {
-                // log::info!("New cov: {rip:#x}");
-                new_coverage_for_input.insert(rip);
+                feedback.record_codecov(rip);
             }
 
             if SINGLE_STEP {
@@ -1047,7 +1072,9 @@ fn start_core<FUZZER: Fuzzer>(
                 // we need to check if the instruction is a breakpoint regardless in order to
                 // apply fuzzer specific breakpoint logic. We can ignore the "unknown breakpoint"
                 // error that is thrown if a breakpoint is not found;
-                if let Ok(new_execution) = fuzzvm.handle_breakpoint(&mut fuzzer, &input) {
+                if let Ok(new_execution) =
+                    fuzzvm.handle_breakpoint(&mut fuzzer, &input, Some(&mut feedback))
+                {
                     execution = new_execution;
                 }
             }
@@ -1056,15 +1083,24 @@ fn start_core<FUZZER: Fuzzer>(
                 execution = Execution::TimeoutReset;
             }
 
-            match execution {
-                Execution::Reset | Execution::CrashReset { .. } | Execution::TimeoutReset => {
-                    // Reset the VM if requested
-                    break;
-                }
-                Execution::Continue | Execution::CoverageContinue => {
-                    // Nothing to do for continuing execution
-                }
+            // Reset the VM if requested
+            if matches!(
+                execution,
+                Execution::Reset | Execution::CrashReset { .. } | Execution::TimeoutReset
+            ) {
+                break;
             }
+            // match execution {
+            //     Execution::Reset | Execution::CrashReset { .. } | Execution::TimeoutReset => {
+            //         // Reset the VM if requested
+            //         break;
+            //     }
+            // Execution::Continue
+            // | Execution::CoverageContinue
+            // | Execution::CustomCoverageContinue(_) => {
+            //     // Nothing to do for continuing execution
+            // }
+            // }
         }
 
         // Exit the fuzz loop if told to
@@ -1137,7 +1173,8 @@ fn start_core<FUZZER: Fuzzer>(
                 }
             }
 
-            let new_coverage: Vec<u64> = new_coverage_for_input.iter().map(|x| x.0).collect();
+            // let new_coverage: Vec<u64> = new_coverage_for_input.iter().map(|x| x.0).collect();
+            let new_coverage = feedback.take_log();
 
             let mut input_bytes = Vec::new();
             input.to_bytes(&mut input_bytes)?;
@@ -1176,12 +1213,11 @@ fn start_core<FUZZER: Fuzzer>(
             if stop_after_first_crash {
                 break;
             }
-        }
+        } else if feedback.has_new() {
+            // If this input generated new coverage, add the input to the corpus
 
-        // If this input generated new coverage, add the input to the corpus
-        if !new_coverage_for_input.is_empty() {
             // Gather the mutation metadata for this iteration
-            let new_coverage: Vec<u64> = new_coverage_for_input.iter().map(|x| x.0).collect();
+            let new_coverage = feedback.take_log();
 
             let mutation_metadata = InputMetadata {
                 original_file,
@@ -1206,6 +1242,8 @@ fn start_core<FUZZER: Fuzzer>(
             // Add the input to the corpus
             corpus.push(input);
         }
+
+        feedback.ensure_clean();
 
         if !fuzzvm.console_output.is_empty() {
             log::debug!("Console output!");
@@ -1282,7 +1320,7 @@ fn start_core<FUZZER: Fuzzer>(
     *THREAD_IDS[core_id.id].lock().unwrap() = None;
 
     // Append the current coverage
-    core_stats.lock().unwrap().coverage.append(&mut coverage);
+    core_stats.lock().unwrap().coverage.merge(&feedback);
     // core_stats.lock().unwrap().redqueen_coverage.append(&mut redqueen_coverage);
 
     // Write this current corpus to disk

@@ -31,7 +31,7 @@ use crate::addrs::VirtAddr;
 use crate::cmdline::Modules;
 use crate::config::Config;
 use crate::coverage_analysis::CoverageAnalysis;
-use crate::fuzz_input::FuzzInput;
+use crate::feedback::FeedbackTracker;
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::FuzzVmExit;
 use crate::rng::Rng;
@@ -63,8 +63,11 @@ pub struct Stats<FUZZER: Fuzzer> {
     /// Signals that this core is in redqueen
     pub in_redqueen: bool,
 
+    /// Current coverage feedback
+    pub coverage: FeedbackTracker,
+
     /// Current address coverage found by this core
-    pub coverage: BTreeSet<VirtAddr>,
+    // pub coverage: BTreeSet<VirtAddr>,
 
     /// Current redqueen coverage seen by this core
     // pub redqueen_coverage: BTreeSet<(VirtAddr, RFlags)>,
@@ -721,7 +724,11 @@ pub fn worker<FUZZER: Fuzzer>(
     // let coverage_src = project_dir.join("coverage.src");
     let coverage_lcov = project_dir.join("coverage.lcov");
     let coverage_in_order = project_dir.join("coverage.in_order");
+    #[cfg(feature = "redqueen")]
     let coverage_redqueen = project_dir.join("coverage.redqueen");
+    #[cfg(feature = "custom_feedback")]
+    let coverage_custom = project_dir.join("coverage.custom");
+
     // let redqueen_rules_path = project_dir.join("redqueen.rules");
     let plot_exec_per_sec = data_dir.join("exec_per_sec.plot");
     let plot_dirty_page_per_sec = data_dir.join("dirty_page_per_sec.plot");
@@ -742,7 +749,9 @@ pub fn worker<FUZZER: Fuzzer>(
 
     let mut merge_coverage = false;
 
-    let mut total_coverage = prev_coverage;
+    let mut total_coverage = FeedbackTracker::from_prev(prev_coverage);
+
+    #[cfg(feature = "redqueen")]
     let total_redqueen_coverage = prev_redqueen_coverage;
     // let mut total_redqueen_rules = redqueen_rules;
 
@@ -959,19 +968,25 @@ pub fn worker<FUZZER: Fuzzer>(
             // Gather the differences while holding the lock, and then process
             // the difference after releasing the lock
             time!(AccumulateTimeline, {
-                for addr in stats.coverage.difference(&total_coverage) {
+                for addr in stats.coverage.code_cov.difference(&total_coverage.code_cov) {
                     diffs.push(*addr);
                 }
             });
 
             // Collect the coverage for this core to the total coverage
             time!(AccumulateAppendCoverage, {
-                total_coverage.append(&mut stats.coverage);
+                // total_coverage.code_cov.append(&mut stats.coverage.code_cov);
+                total_coverage.merge(&stats.coverage);
             });
 
             time!(AccumulateCoverageDifference, {
                 assert!(
-                    stats.coverage.difference(&total_coverage).count() == 0,
+                    stats
+                        .coverage
+                        .code_cov
+                        .difference(&total_coverage.code_cov)
+                        .count()
+                        == 0,
                     "stats.coverage difference not applied properly"
                 );
             });
@@ -1227,7 +1242,7 @@ pub fn worker<FUZZER: Fuzzer>(
 
         // Update the coverage blockers
         if let Some(cov_analysis) = &mut coverage_analysis {
-            for addr in &total_coverage {
+            for addr in &total_coverage.code_cov {
                 cov_analysis.hit(addr.0);
             }
 
@@ -1386,7 +1401,7 @@ pub fn worker<FUZZER: Fuzzer>(
                 lighthouse_data.clear();
 
                 // Collect the lighthouse coverage data
-                for addr in &total_coverage {
+                for addr in &total_coverage.code_cov {
                     if let Some((module, offset)) = modules.contains(addr.0) {
                         lighthouse_data.push_str(&format!("{module}+{offset:x}\n"));
                     } else {
@@ -1404,7 +1419,7 @@ pub fn worker<FUZZER: Fuzzer>(
                 // Clear old address data
                 cov_addrs.clear();
 
-                for addr in &total_coverage {
+                for addr in &total_coverage.code_cov {
                     cov_addrs.push_str(&format!("{:#x}\n", addr.0));
                 }
 
@@ -1432,6 +1447,13 @@ pub fn worker<FUZZER: Fuzzer>(
                 std::fs::write(&coverage_redqueen, redqueen_cov)
                     .expect("Failed to write redqueen cov file");
             }
+
+            #[cfg(feature = "custom_feedback")]
+            {
+                // dump custom coverage as json
+                let w = File::create(&coverage_custom).unwrap();
+                serde_json::to_writer(w, &total_coverage).unwrap();
+            }
         }
 
         // Write the redqueen rules
@@ -1446,7 +1468,7 @@ pub fn worker<FUZZER: Fuzzer>(
                 // Write the source and lcov coverage files if vmlinux exists
                 // let mut result = Vec::new();
 
-                for rip in &total_coverage {
+                for rip in &total_coverage.code_cov {
                     let addr = *rip;
 
                     // Try to get the addr2line information for the current address
