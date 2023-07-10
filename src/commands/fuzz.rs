@@ -328,17 +328,28 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         start.elapsed()
     );
 
+    const BETWEEN_WAIT_FOR_MILLIES: u64 = 100;
+
     // Create a thread for each active CPU core.
     for id in 1..=cores {
         let core_id = CoreId {
             id: usize::try_from(id)?,
         };
 
+        // there is a bit of a race condition here: if the sigalarm timer hits exactly while we are
+        // in the `KVM_CREATE_VM` ioctl (via kvm.create_vm() below), the ioctl will be interrupted
+        // and return EINTR. We don't really want that to happen, so we block SIGALRM for the
+        // current thread until we are done with the kvm ioctl.
+        block_sigalrm()?;
+
         // Create the VM for this core
         let vm = kvm.create_vm().context("Failed to create VM from KVM")?;
 
         // Enable dirty bits
         enable_manual_dirty_log_protect(&vm)?;
+
+        // restore previous state.
+        unblock_sigalrm()?;
 
         // Copy the CPUIDs for this core
         let cpuids = cpuids.clone();
@@ -452,7 +463,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         });
 
         // Sleep to let the system catch up to the threads being created
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(BETWEEN_WAIT_FOR_MILLIES));
 
         // Add this thread to the total list of threads
         threads.push(Some(thread));
