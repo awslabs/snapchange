@@ -399,6 +399,14 @@ pub struct Fuzz {
     /// Set the timeout (in seconds) of the execution of the VM. [0-9]+(ns|us|ms|s|m|h)
     #[clap(long, value_parser = parse_timeout, default_value = "1s")]
     pub(crate) timeout: Duration,
+   
+    /// Set a maximum duration that each core spends on fuzzing.
+    #[clap(long, value_parser = parse_timeout)]
+    pub(crate) stop_after_time: Option<Duration>,
+   
+    /// Stop after the first crash is found
+    #[clap(long)]
+    pub(crate) stop_after_first_crash: bool,
 
     /// Directory to populate the initial input corpus. Defaults to `<project_dir>/input`
     #[clap(short, long)]

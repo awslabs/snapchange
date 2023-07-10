@@ -397,6 +397,10 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
 
         let clean_snapshot = clean_snapshot.clone();
 
+        // make a Copy of those two that will be moved into the thread closure
+        let stop_after_time = args.stop_after_time;
+        let stop_after_first_crash = args.stop_after_first_crash;
+
         // Start executing on this core
         let thread = std::thread::spawn(move || -> Result<()> {
             let result = std::panic::catch_unwind(|| -> Result<()> {
@@ -417,6 +421,8 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
                     &dictionary,
                     prev_coverage,
                     &config,
+                    stop_after_time,
+                    stop_after_first_crash,
                     unwinders,
                     #[cfg(feature = "redqueen")]
                     prev_redqueen_coverage,
@@ -529,6 +535,8 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         coverage_analysis = Some(analysis);
     };
 
+    let stop_after_first_crash = args.stop_after_first_crash;
+
     // Spawn the stats thread if there isn't a single step trace happening
     let curr_stats = stats;
     let stats_thread = std::thread::spawn(move || {
@@ -553,6 +561,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
             coverage_analysis,
             tui,
             &project_state.config,
+            stop_after_first_crash,
         );
 
         if let Err(e) = res {
@@ -613,6 +622,10 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
+    // if all threads exiting on their own, we need to make sure to signal the stats and kick
+    // threads to stop.
+    FINISHED.store(true, Ordering::SeqCst);
+
     println!("Stats thread: {:?}", stats_thread.join());
     println!("Kick thread: {:?}", kick_cores_thread.join());
 
@@ -641,6 +654,8 @@ fn start_core<FUZZER: Fuzzer>(
     dictionary: &Option<Vec<Vec<u8>>>,
     prev_coverage: BTreeSet<VirtAddr>,
     config: &Config,
+    stop_after_time: Option<Duration>,
+    stop_after_first_crash: bool,
     unwinders: StackUnwinders,
     #[cfg(feature = "redqueen")] prev_redqueen_coverage: BTreeSet<(VirtAddr, RFlags)>,
     #[cfg(feature = "redqueen")] redqueen_rules: BTreeMap<u64, BTreeSet<RedqueenRule>>,
@@ -743,7 +758,9 @@ fn start_core<FUZZER: Fuzzer>(
     // Get the corpus dir for this project
     let corpus_dir = project_dir.join("current_corpus");
 
-    'finish: for _iter in 0.. {
+    let fuzz_start_time = std::time::Instant::now();
+
+    'finish: for _iter in 0usize.. {
         // Signal that this core is alive
         core_stats.lock().unwrap().alive = true;
 
@@ -1105,6 +1122,9 @@ fn start_core<FUZZER: Fuzzer>(
                 // Useful for things like syscall fuzzer to write a C file from the input
                 fuzzer.handle_crash(&input, &mut fuzzvm, &crash_file)?;
             }
+            if stop_after_first_crash {
+                break;
+            }
         } else if let Execution::CrashReset { path } = execution {
             // Inc the number of crashes found
             core_stats.lock().unwrap().crashes += 1;
@@ -1149,6 +1169,10 @@ fn start_core<FUZZER: Fuzzer>(
                 let hash = input.fuzz_hash();
                 let filepath = metadata_path.join(format!("crash_{hash:016x}"));
                 std::fs::write(filepath, serde_json::to_string(&mutation_metadata)?)?;
+            }
+
+            if stop_after_first_crash {
+                break;
             }
         }
 
@@ -1243,7 +1267,16 @@ fn start_core<FUZZER: Fuzzer>(
             }
         }
         */
+
+        if let Some(t) = stop_after_time {
+            if fuzz_start_time.elapsed() >= t {
+                break;
+            }
+        }
     }
+
+    // remove this thread from the list to avoid being "kicked" by the kick_cores_thread
+    *THREAD_IDS[core_id.id].lock().unwrap() = None;
 
     // Append the current coverage
     core_stats.lock().unwrap().coverage.append(&mut coverage);
