@@ -328,11 +328,6 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         start.elapsed()
     );
 
-    // number of retries when launching a KVM VM
-    const RETRY_MAX: u32 = 10;
-    // wait time after kvm create failed and retrying
-    const RETRY_WAIT_FOR_MILLIES: u64 = 1000;
-    // wait time after creating a kvm vm
     const BETWEEN_WAIT_FOR_MILLIES: u64 = 100;
 
     // Create a thread for each active CPU core.
@@ -341,37 +336,20 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
             id: usize::try_from(id)?,
         };
 
+        // there is a bit of a race condition here: if the sigalarm timer hits exactly while we are
+        // in the `KVM_CREATE_VM` ioctl (via kvm.create_vm() below), the ioctl will be interrupted
+        // and return EINTR. We don't really want that to happen, so we block SIGALRM for the
+        // current thread until we are done with the kvm ioctl.
+        block_sigalrm()?;
+
         // Create the VM for this core
-        let vm = {
-            // multiple tries
-            let mut tries = 0u32;
-            loop {
-                let r = kvm.create_vm();
-                if Err(e) = r {
-                    tries += 1;
-                    log::warn!(
-                        "KVM create_vm error on core {} ({}/{} tries): {}",
-                        id,
-                        tries,
-                        RETRY_MAX,
-                        e
-                    );
-                    if tries <= RETRY_MAX {
-                        std::thread::sleep(std::time::Duration::from_millis(
-                            RETRY_WAIT_FOR_MILLIES,
-                        ));
-                    } else {
-                        break r;
-                    }
-                } else {
-                    break r;
-                }
-            }
-        }
-        .context("Failed to create VM from KVM")?;
+        let vm = kvm.create_vm().context("Failed to create VM from KVM")?;
 
         // Enable dirty bits
         enable_manual_dirty_log_protect(&vm)?;
+
+        // restore previous state.
+        unblock_sigalrm()?;
 
         // Copy the CPUIDs for this core
         let cpuids = cpuids.clone();
