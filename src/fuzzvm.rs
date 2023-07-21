@@ -873,18 +873,18 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             }
         }
 
+        // Add all of the reset/crash breakpoints given by the fuzzer
+        if let Some(ref mut reset_bps) = fuzzvm.reset_breakpoints {
+            reset_bps.append(&mut new_reset_bps);
+        }
+
         // Remove all reset breakpoints from the coverage breakpoints if they exist
         // Reset breakpoints take precedence over the coverage breakpoints since they
         // are used to signal resets or crashes
         if let Some(ref mut cov_bps) = fuzzvm.coverage_breakpoints {
-            for (addr, _cr3) in new_reset_bps.keys() {
+            for (addr, _cr3) in fuzzvm.reset_breakpoints.as_ref().unwrap().keys() {
                 cov_bps.remove(addr);
             }
-        }
-
-        // Add all of the reset/crash breakpoints given by the fuzzer
-        if let Some(ref mut reset_bps) = fuzzvm.reset_breakpoints {
-            reset_bps.append(&mut new_reset_bps);
         }
 
         // Init the VM based on the given fuzzer
