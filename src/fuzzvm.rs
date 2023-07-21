@@ -427,8 +427,11 @@ pub struct GuestResetPerf {
     /// Amount of time spent during gathering dirty logs from KVM
     pub get_dirty_logs: u64,
 
-    /// Number of pages restored
-    pub restored_pages: u32,
+    /// Number of pages restored from kvm dirty log
+    pub restored_kvm_pages: u32,
+
+    /// Number of pages restored from custom dirty log
+    pub restored_custom_pages: u32,
 
     /// Amount of time during running `fuzzvm.init_guest`
     pub init_guest: InitGuestPerf,
@@ -3301,10 +3304,10 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         time!(get_dirty_logs, self.get_dirty_logs()?);
 
         // Always just restore the dirty pages
-        perf.restored_pages = time!(reset_guest_memory_restore, self.restore_dirty_pages());
+        perf.restored_kvm_pages = time!(reset_guest_memory_restore, self.restore_dirty_pages());
 
         // Reset the guest memory and get the number of pages restored
-        perf.restored_pages += time!(reset_guest_memory_custom, unsafe {
+        perf.restored_custom_pages = time!(reset_guest_memory_custom, unsafe {
             self.reset_custom_guest_memory()?
         });
 
