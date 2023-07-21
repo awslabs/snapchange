@@ -1261,7 +1261,8 @@ fn start_core<FUZZER: Fuzzer>(
         log_fuzzvm_perf_stats!(ApplyResetBreakpoint, apply_reset_breakpoints);
         log_fuzzvm_perf_stats!(ApplyCoverageBreakpoint, apply_coverage_breakpoints);
         log_fuzzvm_perf_stats!(InitVm, init_vm);
-        core_stats.lock().unwrap().dirty_pages += try_u64!(guest_reset_perf.restored_pages);
+        core_stats.lock().unwrap().dirty_pages_kvm += try_u64!(guest_reset_perf.restored_kvm_pages);
+        core_stats.lock().unwrap().dirty_pages_custom += try_u64!(guest_reset_perf.restored_custom_pages);
 
         /*
         if guest_reset_perf.restored_pages > 60000 {

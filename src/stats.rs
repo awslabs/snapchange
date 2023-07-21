@@ -79,8 +79,11 @@ pub struct Stats<FUZZER: Fuzzer> {
     pub timeouts: u32,
 
     /// Number of dirty pages during each reset used to show the average number of dirty
-    /// pages per reset
-    pub dirty_pages: u64,
+    /// pages per reset reported by kvm's dirty log.
+    pub dirty_pages_kvm: u64,
+
+    /// Number of dirty pages that are reported by custom dirty logs.
+    pub dirty_pages_custom: u64,
 
     /// Remaining number of breakpoints
     pub cov_left: u32,
@@ -144,6 +147,12 @@ pub struct GlobalStats {
 
     /// Average number of dirty pages restored on each reset
     pub dirty_pages: u64,
+
+    /// number of pages in dirty_pages that are reported by kvm dirty log
+    pub dirty_pages_kvm: u64,
+
+    /// number of pages in dirty_pages that are reported by custom dirty logs
+    pub dirty_pages_custom: u64,
 
     /// Size of the total corpus
     pub corpus: u32,
@@ -405,7 +414,10 @@ impl GlobalStats {
 
         let line = format!(
             " {} | {} | {} ",
-            format!("{:>10}: {:9}", "Dirty Pages", self.dirty_pages),
+            format!(
+                "{:>10}: {:9} (K: {} F: {})",
+                "Dirty Pages", self.dirty_pages, self.dirty_pages_kvm, self.dirty_pages_custom
+            ),
             format!("{:>10}: {:?}", "Dead cores", self.dead),
             format!("{:>10}: {:?}", "Cores in Redqueen", self.in_redqueen),
         );
@@ -712,6 +724,7 @@ pub fn worker<FUZZER: Fuzzer>(
     let coverage_redqueen = project_dir.join("coverage.redqueen");
     // let redqueen_rules_path = project_dir.join("redqueen.rules");
     let plot_exec_per_sec = data_dir.join("exec_per_sec.plot");
+    let plot_dirty_page_per_sec = data_dir.join("dirty_page_per_sec.plot");
     let plot_coverage = data_dir.join("coverage.plot");
     let plot_crash_groups = data_dir.join("crashes.plot");
 
@@ -721,6 +734,8 @@ pub fn worker<FUZZER: Fuzzer>(
     // Average stats used for the stats TUI
     let mut exec_per_sec;
     let mut dirty_pages = 0;
+    let mut dirty_pages_kvm = 0;
+    let mut dirty_pages_custom = 0;
 
     // Init the coverage time to sync coverage between the cores
     let mut coverage_timer = std::time::Instant::now();
@@ -739,6 +754,8 @@ pub fn worker<FUZZER: Fuzzer>(
     // Rolling window to calculate most recent iterations
     let mut sum_iters = [0_u64; ITERS_WINDOW_SIZE];
     let mut sum_dirty_pages = [0_u64; ITERS_WINDOW_SIZE];
+    let mut sum_dirty_pages_kvm = [0_u64; ITERS_WINDOW_SIZE];
+    let mut sum_dirty_pages_custom = [0_u64; ITERS_WINDOW_SIZE];
     let mut iters_index = 0;
     let mut lighthouse_data = String::new();
     let mut cov_addrs = String::new();
@@ -749,6 +766,7 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut graph_seconds = vec![0];
     let mut graph_iters = vec![0];
     let mut graph_crashes = vec![0];
+    let mut graph_dirty_pages_per_sec = vec![[0u64, 0, 0]];
 
     // Init the total corpus across all cores
     let mut total_corpus = ahash::AHashSet::with_capacity(input_corpus.len() * 2);
@@ -863,6 +881,8 @@ pub fn worker<FUZZER: Fuzzer>(
         // Reset the time window stats for this iteration window
         sum_iters[iters_index] = 0;
         sum_dirty_pages[iters_index] = 0;
+        sum_dirty_pages_custom[iters_index] = 0;
+        sum_dirty_pages_kvm[iters_index] = 0;
 
         let mut sum_timeouts = 0;
         let mut coverage_left = 0_u64;
@@ -891,7 +911,11 @@ pub fn worker<FUZZER: Fuzzer>(
 
                 // Add the dirty pages per iteration
                 if stats.iterations > 0 {
-                    sum_dirty_pages[iters_index] += stats.dirty_pages / stats.iterations;
+                    let stats_dirty_pages = stats.dirty_pages_kvm + stats.dirty_pages_custom;
+                    sum_dirty_pages[iters_index] += stats_dirty_pages / stats.iterations;
+                    sum_dirty_pages_kvm[iters_index] += stats.dirty_pages_kvm / stats.iterations;
+                    sum_dirty_pages_custom[iters_index] +=
+                        stats.dirty_pages_custom / stats.iterations;
                 }
 
                 // Add the core stats to the total stats across all cores
@@ -902,7 +926,8 @@ pub fn worker<FUZZER: Fuzzer>(
 
                 // Reset the iterations for the core
                 stats.iterations = 0;
-                stats.dirty_pages = 0;
+                stats.dirty_pages_kvm = 0;
+                stats.dirty_pages_custom = 0;
 
                 if stats.in_redqueen {
                     in_redqueen.push(core_id);
@@ -1024,6 +1049,8 @@ pub fn worker<FUZZER: Fuzzer>(
         exec_per_sec = sum_iters.iter().sum::<u64>() / time_window;
         if alive > 0 {
             dirty_pages = sum_dirty_pages.iter().sum::<u64>() / time_window / alive;
+            dirty_pages_kvm = sum_dirty_pages_kvm.iter().sum::<u64>() / time_window / alive;
+            dirty_pages_custom = sum_dirty_pages_custom.iter().sum::<u64>() / time_window / alive;
         }
 
         // Get the elapsed time in hours:minutes:seconds
@@ -1189,6 +1216,7 @@ pub fn worker<FUZZER: Fuzzer>(
             graph_seconds.push(iter);
             graph_iters.push(total_iters);
             graph_crashes.push(crash_paths.len() as u64);
+            graph_dirty_pages_per_sec.push([dirty_pages, dirty_pages_kvm, dirty_pages_custom]);
         }
 
         let coverage: Vec<(u64, u64)> = graph_iters
@@ -1547,6 +1575,12 @@ pub fn worker<FUZZER: Fuzzer>(
                 .for_each(|val| scratch_string.push_str(&format!("{val}\n")));
             std::fs::write(&plot_exec_per_sec, &scratch_string)?;
 
+            scratch_string.clear();
+            graph_dirty_pages_per_sec.iter().for_each(|val| {
+                scratch_string.push_str(&format!("{},{},{}\n", val[0], val[1], val[2]))
+            });
+            std::fs::write(&plot_dirty_page_per_sec, &scratch_string)?;
+
             // Write the coverage data to disk
             scratch_string.clear();
             graph_coverage
@@ -1565,6 +1599,8 @@ pub fn worker<FUZZER: Fuzzer>(
             timeouts: sum_timeouts,
             coverage_left,
             dirty_pages,
+            dirty_pages_kvm,
+            dirty_pages_custom,
             corpus: u32::try_from(total_corpus.len()).unwrap(),
             alive,
             crashes: num_crashes,
@@ -1727,6 +1763,15 @@ pub fn worker<FUZZER: Fuzzer>(
         graph_exec_per_sec
             .iter()
             .map(|x| format!("{x}"))
+            .collect::<Vec<String>>()
+            .join("\n"),
+    )?;
+
+    std::fs::write(
+        plot_dirty_page_per_sec,
+        graph_dirty_pages_per_sec
+            .iter()
+            .map(|x| format!("{},{},{}", x[0], x[1], x[2]))
             .collect::<Vec<String>>()
             .join("\n"),
     )?;
