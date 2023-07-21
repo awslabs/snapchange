@@ -600,6 +600,57 @@ pub struct FuzzVm<'a, FUZZER: Fuzzer> {
     pub redqueen_rules: BTreeMap<u64, BTreeSet<RedqueenRule>>,
 }
 
+/// copy a whole page.
+unsafe fn copy_page(source: u64, dest: u64) {
+    debug_assert!(source & 0xfff == 0, "source addr not a page!");
+    debug_assert!(dest & 0xfff == 0, "dest addr not a page!");
+
+    if cfg!(target_feature = "avx512f") {
+        use std::arch::x86_64::__m512;
+        /// memcpy via avx512 via 4-step unrolling (RRRRWWWW)
+        macro_rules! avx512move_unrolled {
+            ($i:expr) => {
+                let in_addr1 = (source + 64 * ($i * 4 + 0)) as *const __m512;
+                let in_addr2 = (source + 64 * ($i * 4 + 1)) as *const __m512;
+                let in_addr3 = (source + 64 * ($i * 4 + 2)) as *const __m512;
+                let in_addr4 = (source + 64 * ($i * 4 + 3)) as *const __m512;
+                let out_addr1 = (dest + 64 * ($i * 4 + 0)) as *mut __m512;
+                let out_addr2 = (dest + 64 * ($i * 4 + 1)) as *mut __m512;
+                let out_addr3 = (dest + 64 * ($i * 4 + 2)) as *mut __m512;
+                let out_addr4 = (dest + 64 * ($i * 4 + 3)) as *mut __m512;
+                let read_val1 = std::ptr::read_unaligned(in_addr1);
+                let read_val2 = std::ptr::read_unaligned(in_addr2);
+                let read_val3 = std::ptr::read_unaligned(in_addr3);
+                let read_val4 = std::ptr::read_unaligned(in_addr4);
+                std::ptr::write_unaligned(out_addr1, read_val1);
+                std::ptr::write_unaligned(out_addr2, read_val2);
+                std::ptr::write_unaligned(out_addr3, read_val3);
+                std::ptr::write_unaligned(out_addr4, read_val4);
+            };
+        }
+
+        avx512move_unrolled!(0);
+        avx512move_unrolled!(1);
+        avx512move_unrolled!(2);
+        avx512move_unrolled!(3);
+        avx512move_unrolled!(4);
+        avx512move_unrolled!(5);
+        avx512move_unrolled!(6);
+        avx512move_unrolled!(7);
+        avx512move_unrolled!(8);
+        avx512move_unrolled!(9);
+        avx512move_unrolled!(10);
+        avx512move_unrolled!(11);
+        avx512move_unrolled!(12);
+        avx512move_unrolled!(13);
+        avx512move_unrolled!(14);
+        avx512move_unrolled!(15);
+    } else {
+        // Copy the snapshot bytes into the guest memory
+        std::ptr::copy_nonoverlapping(source as *const u8, dest as *mut u8, 0x1000);
+    }
+}
+
 impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     /// Create a [`FuzzVm`] using the given [`VmFd`] and snapshot registers from
     /// [`VbCpu`] with a memory backing at address `memory_backing`
@@ -2550,57 +2601,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             let memory_addr = self.memory.backing() + curr_phys_addr;
             let snapshot_addr = clean_snapshot.backing() + curr_phys_addr;
 
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    snapshot_addr as *const u8,
-                    memory_addr as *mut u8,
-                    0x1000,
-                );
-            }
-
-            /*
-            /// memcpy via avx512 via 4-step unrolling (RRRRWWWW)
-            macro_rules! avx512move_unrolled {
-                ($i:expr) => {
-                    let in_addr1  = (snapshot_addr + 64 * ($i * 4 + 0)) as *const __m512;
-                    let in_addr2  = (snapshot_addr + 64 * ($i * 4 + 1)) as *const __m512;
-                    let in_addr3  = (snapshot_addr + 64 * ($i * 4 + 2)) as *const __m512;
-                    let in_addr4  = (snapshot_addr + 64 * ($i * 4 + 3)) as *const __m512;
-                    let out_addr1 = (memory_addr   + 64 * ($i * 4 + 0)) as *mut   __m512;
-                    let out_addr2 = (memory_addr   + 64 * ($i * 4 + 1)) as *mut   __m512;
-                    let out_addr3 = (memory_addr   + 64 * ($i * 4 + 2)) as *mut   __m512;
-                    let out_addr4 = (memory_addr   + 64 * ($i * 4 + 3)) as *mut   __m512;
-                    unsafe {
-                        let read_val1 = std::ptr::read_unaligned(in_addr1);
-                        let read_val2 = std::ptr::read_unaligned(in_addr2);
-                        let read_val3 = std::ptr::read_unaligned(in_addr3);
-                        let read_val4 = std::ptr::read_unaligned(in_addr4);
-                        std::ptr::write_unaligned(out_addr1, read_val1);
-                        std::ptr::write_unaligned(out_addr2, read_val2);
-                        std::ptr::write_unaligned(out_addr3, read_val3);
-                        std::ptr::write_unaligned(out_addr4, read_val4);
-                    }
-                }
-            }
-
-            // Copy the snapshot bytes into the guest memory
-            avx512move_unrolled!(0);
-            avx512move_unrolled!(1);
-            avx512move_unrolled!(2);
-            avx512move_unrolled!(3);
-            avx512move_unrolled!(4);
-            avx512move_unrolled!(5);
-            avx512move_unrolled!(6);
-            avx512move_unrolled!(7);
-            avx512move_unrolled!(8);
-            avx512move_unrolled!(9);
-            avx512move_unrolled!(10);
-            avx512move_unrolled!(11);
-            avx512move_unrolled!(12);
-            avx512move_unrolled!(13);
-            avx512move_unrolled!(14);
-            avx512move_unrolled!(15);
-            */
+            unsafe { copy_page(snapshot_addr, memory_addr) };
         }
 
         try_u32!(self.scratch_reset_buffer.len())
@@ -3399,7 +3400,6 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     ///
     /// * Unsafe due to the avx512 4KiB memcpy
     pub unsafe fn reset_custom_guest_memory(&mut self) -> Result<u32> {
-        use std::arch::x86_64::__m512;
 
         // Grab the READ lock for the clean snapshot
         let clean_snapshot = self.clean_snapshot.read().unwrap();
@@ -3410,53 +3410,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             let memory_addr = self.memory.backing() + custom_dirty_page.0;
             let snapshot_addr = clean_snapshot.backing() + custom_dirty_page.0;
 
-            if cfg!(target_feature = "avx512f") {
-                /// memcpy via avx512 via 4-step unrolling (RRRRWWWW)
-                macro_rules! avx512move_unrolled {
-                    ($i:expr) => {
-                        let in_addr1 = (snapshot_addr + 64 * ($i * 4 + 0)) as *const __m512;
-                        let in_addr2 = (snapshot_addr + 64 * ($i * 4 + 1)) as *const __m512;
-                        let in_addr3 = (snapshot_addr + 64 * ($i * 4 + 2)) as *const __m512;
-                        let in_addr4 = (snapshot_addr + 64 * ($i * 4 + 3)) as *const __m512;
-                        let out_addr1 = (memory_addr + 64 * ($i * 4 + 0)) as *mut __m512;
-                        let out_addr2 = (memory_addr + 64 * ($i * 4 + 1)) as *mut __m512;
-                        let out_addr3 = (memory_addr + 64 * ($i * 4 + 2)) as *mut __m512;
-                        let out_addr4 = (memory_addr + 64 * ($i * 4 + 3)) as *mut __m512;
-                        let read_val1 = std::ptr::read_unaligned(in_addr1);
-                        let read_val2 = std::ptr::read_unaligned(in_addr2);
-                        let read_val3 = std::ptr::read_unaligned(in_addr3);
-                        let read_val4 = std::ptr::read_unaligned(in_addr4);
-                        std::ptr::write_unaligned(out_addr1, read_val1);
-                        std::ptr::write_unaligned(out_addr2, read_val2);
-                        std::ptr::write_unaligned(out_addr3, read_val3);
-                        std::ptr::write_unaligned(out_addr4, read_val4);
-                    };
-                }
-
-                avx512move_unrolled!(0);
-                avx512move_unrolled!(1);
-                avx512move_unrolled!(2);
-                avx512move_unrolled!(3);
-                avx512move_unrolled!(4);
-                avx512move_unrolled!(5);
-                avx512move_unrolled!(6);
-                avx512move_unrolled!(7);
-                avx512move_unrolled!(8);
-                avx512move_unrolled!(9);
-                avx512move_unrolled!(10);
-                avx512move_unrolled!(11);
-                avx512move_unrolled!(12);
-                avx512move_unrolled!(13);
-                avx512move_unrolled!(14);
-                avx512move_unrolled!(15);
-            } else {
-                // Copy the snapshot bytes into the guest memory
-                std::ptr::copy_nonoverlapping(
-                    snapshot_addr as *const u8,
-                    memory_addr as *mut u8,
-                    0x1000,
-                );
-            }
+            unsafe { copy_page(snapshot_addr, memory_addr) };
         }
 
         // Add the fuzzer custom dirty pages to the number of pages restored
