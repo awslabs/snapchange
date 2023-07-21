@@ -600,7 +600,7 @@ pub struct FuzzVm<'a, FUZZER: Fuzzer> {
     pub redqueen_rules: BTreeMap<u64, BTreeSet<RedqueenRule>>,
 }
 
-/// copy a whole page.
+/// Copy 4096 bytes of the page at `source` to the page at `dest`
 unsafe fn copy_page(source: u64, dest: u64) {
     debug_assert!(source & 0xfff == 0, "source addr not a page!");
     debug_assert!(dest & 0xfff == 0, "dest addr not a page!");
@@ -3400,7 +3400,6 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     ///
     /// * Unsafe due to the avx512 4KiB memcpy
     pub unsafe fn reset_custom_guest_memory(&mut self) -> Result<u32> {
-
         // Grab the READ lock for the clean snapshot
         let clean_snapshot = self.clean_snapshot.read().unwrap();
 
