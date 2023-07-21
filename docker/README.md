@@ -1,80 +1,77 @@
-# Snapshot in a docker
+# Bundling QEMU-based snapshotting in docker
 
-## Build the docker container
+### Step 1: Prepare your root FS
 
-Execute the build script. This will copy the `fuzzer_template` locally and build the raw
-linux image. This image will then be copied into the guest to be used as a basis for
-each snapshot. The docker image will then be built.
+You can utilize docker to prepare your root filesystem for snapchange's snapshoting mechanism. If you already have a Dockerfile for your application then you should be able to re-use that.
+We recommend to keep that you keep the root filesystem as small as possible.
 
-_TODO: Figure out if building the entire image in a single Docker is feesible._
+For example, to create a snapshot for a simple hello world program in C you can utilize a `Dockerfile` akin to this:
 
-```
-./build.sh
-```
+```Dockerfile
+FROM alpine:edge as base
 
-## Taking a snapshot
+# install dependencies (gdb and python3 are required for snapshoting)
+RUN apk add --no-cache --initramfs-diskless-boot python3 gdb build-base
 
-The `start.sh` script (the entrypoint of the docker) is used in the container to take the snapshot. This script expects 
-the command used to take the snapshot as arguments to executing the containing. 
+# copy source code and invoke make
+COPY ./src/ /opt/
+RUN cd /opt/ && make clean && make
 
-We can take a snapshot of [Example 1](../examples/01_getpid) as the following.
-
-```
-clang ../examples/01_getpid/harness/example1.c -o example1
-docker run --rm -t -v $PWD:/out snapchange /out/example1
+[...]
 ```
 
-We need to map a local directory into the container and then use that directory as the command
-in the container.
+#### Harness Root Filesystem Requirements
 
-In this example:
+* **You must install gdb with python inside of your root filesystem.**
+    * We use gdb with a custom gdb script to obtain symbols of the snapshot'ed binary.
+* For best results, make sure that symbols are available for your target binary and all loaded library.
+    * Ubuntu works out-of-the-box as they ship a libc with symbols.
+    * For alpine we found that `apk --no-cache upgrade && apk add --no-cache --initramfs-diskless-boot python3 gdb build-base musl-dbg` works best.
 
-* We build the `./example1` binary in the current directory
-* We map the current directory as `/out` in the container
-* Execute the `/out/example1` in the container to take the snapshot
 
-After taking the snapshot, there is a `fuzzer` directory with the snapshot and a fuzzing template.
+### Step 2: Prepare the snapshoting container
 
-```
-fuzzer/Cargo.toml
-fuzzer/snapshot
-fuzzer/snapshot/example1.bin
-fuzzer/snapshot/fuzzvm.physmem
-fuzzer/snapshot/fuzzvm.qemuregs
-fuzzer/snapshot/gdb.modules
-fuzzer/snapshot/gdb.symbols
-fuzzer/snapshot/gdb.vmmap
-fuzzer/snapshot/reset.sh
-fuzzer/snapshot/vmlinux
-fuzzer/src
-fuzzer/src/fuzzer.rs
-fuzzer/src/main.rs
+Now that we have prepared a root filesystem, we can now build the snapshoting container. In the same `Dockerfile`, you can now specify the snapshot parameters.
+First, you switch to the snapchange docker image and then copy the root filesystem from the previous step to the snapchange container.
+
+```Dockerfile
+[...]
+
+FROM snapchange
+
+COPY --from=base / "$SNAPSHOT_INPUT"
 ```
 
-The `fuzzer.rs` will populate the following:
+And you are almost done. Now you just need to specify the "entry point" to your
+fuzzing image, i.e., the program that you want to fuzz. You do this by
+specifying the environment variable `SNAPSHOT_ENTRYPOINT`.
 
-* CR3 found in the `fuzzvm.qemuregs`
-* RIP found in the `fuzzvm.qemuregs`
-* Any output that contains SNAPSHOT from the execution of the binary
+You can do this by adding the following to your `Dockerfile`:
 
-```
-// [   22.891946] rc.local[190]: SNAPSHOT Data buffer: 0x555555556004
-const CR3: Cr3 = Cr3(0x0000000107c86000);
-const START_ADDRESS: u64 = 0x0000555555555365;
+```Dockerfile
+env SNAPSHOT_ENTRYPOINT="/full/path/to/your/binary"
 ```
 
-## Libfuzzer snapshot
-
-The container can also take a snapshot of a binary built with libfuzzer by adding 
-the `LIBFUZZER` environment variable.
-
-```
-docker run --rm -t -v $PWD:/out -e LIBFUZZER=1 snapchange /out/example1
-```
-
-A `vmcall ; int3` is written at the beginning of the `LLVMFuzzerTestOneInput` to facilitate 
-the snapshot. Those instructions are then overwritten to the original instructions after the 
-snapshot has been taken.
+You can also specify this on the docker commandline with `-e SNAPSHOT_ENTRYPOINT=...`.
 
 
-The same `fuzzer` directory is written in the same way as above.
+#### Snapchange Snapshoting Options
+
+There are several environment options that control how snapchange creates a snapshot.
+
+* `SNAPSHOT_ENTRYPOINT` - **REQUIRED** full path to the binary that is being fuzzed/snapshotted.
+* `SNAPSHOT_ENTRYPOINT_ARGUMENTS=""` - cli arguments passed to the snapshot entry point
+* `SNAPSHOT_USER="root"` - the user that runs the binary.
+* `SNAPSHOT_EXTRACT=""` - a space separated list of paths to extract along with the snapshotting (e.g., additional binaries etc.)
+  * for example: `SNAPSHOT_EXTRACT="/etc/fstab /usr/lib/libc.so"`
+* `SNAPSHOT_INPUT="/image/"` - the path where the snapshot input is stored. Ususally you don't need to change that.
+* `SNAPSHOT_CHOWN_TO="1000"` - the snapshot is `chown -R`'ed for convenience. Set to `""` to disable.
+* to specify a custom kernel:
+  * `SNAPSHOT_KERNEL_IMG` - path to bootable kernel image ("bzimage") passed to qemu's direct kernel boot.
+  * `SNAPSHOT_KERNEL_ELF` - path to unstripped kernel ELF file - used to lookup kernel symbols.
+
+There are some more specialized options that you can pass to the snapshoting.
+
+* `LIBFUZZER=0` - set to 1 to enable special handling of creating snapshots from libfuzzer fuzzing harnesses.
+* `KASAN=0` - set to 1 to use a KASAN-enabled kernel.
+* `TEMPLATE_OUT="/out/"` - if you run the container with `template` as first argument, it will copy a rust fuzzer template into this directory.

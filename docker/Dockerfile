@@ -1,25 +1,77 @@
 FROM ubuntu:20.04
 
 # Install prereqs
-RUN apt update && DEBIAN_FRONTEND=noninteractive TZ="America/Chicago" apt install -y \
-  curl sudo tzdata git gcc g++ bc lcov libattr1 libattr1-dev libcap-ng0 libcap-ng-dev e2tools unzip
+ARG DEBIAN_FRONTEND=noninteractive 
+ARG TZ="America/Chicago" 
+RUN apt-get update -q \
+  && apt-get install -y --no-install-recommends -q \
+    build-essential \
+    curl sudo tzdata git gcc g++ bc lcov libattr1 libattr1-dev libcap-ng0 libcap-ng-dev e2tools unzip \
+    libglib2.0-dev libgcrypt20-dev zlib1g-dev autoconf automake libtool \
+    bison flex libpixman-1-dev \
+    clang make ninja-build debootstrap libelf-dev \
+    libssl-dev pkg-config \
+    radare2 \
+    openjdk-17-jdk unzip wget \
+    libguestfs-tools \
+    lz4 \
+    linux-image-generic \
+    busybox-static \
+  && apt-get clean -y \
+  && rm -rf /var/lib/apt/lists/*
 
-COPY fuzzer_template/qemu_snapshot /qemu_snapshot
-COPY install_linux_qemu.sh /qemu_snapshot/install_linux_qemu.sh
+WORKDIR /snapchange
 
-WORKDIR /qemu_snapshot
+COPY ./fuzzer_template ./fuzzer_template
 
-# Init the linux and patched qemu to start a snapshot
-RUN /qemu_snapshot/install_linux_qemu.sh
+COPY ./install ./install
+RUN chmod +x ./install/*
 
-# Install r2 for fixing the libfuzzer snapshot
-RUN git clone https://github.com/radareorg/radare2 && \
-  radare2/sys/install.sh
+ARG DEPTH="--depth=1"
+ARG LINUX_VERSION=""
 
-# Copy the runner
-COPY start.sh /qemu_snapshot/start.sh
+ARG KASAN=0
+ENV KASAN="$KASAN"
 
-# Copy the fuzzer src template
-COPY src /qemu_snapshot/src
+ARG BUSYBOX_STATIC="/busybox.static"
+ENV BUSYBOX_STATIC="$BUSYBOX_STATIC"
 
-ENTRYPOINT ["/qemu_snapshot/start.sh"]
+RUN ./install/qemu.sh \
+  && ./install/ghidra.sh \
+  && ./install/linux.sh \
+  && ls -al /snapchange/ \
+  && test -e /snapchange/vmlinux \
+  && test -e /snapchange/linux.bzImage \
+  && test -e /snapchange/vmlinux.kasan \
+  && test -e /snapchange/linux.kasan.bzImage
+
+COPY ./utils/* /snapchange/
+RUN chmod +x *.sh && test -x go.sh
+
+ARG SNAPSHOT_USER="root"
+ENV SNAPSHOT_USER="$USER"
+
+ARG SNAPSHOT_EXTRACT=""
+ENV SNAPSHOT_EXTRACT="$SNAPSHOT_EXTRACT"
+
+ARG SNAPSHOT_OUTPUT="/snapshot/"
+ENV SNAPSHOT_OUTPUT="$SNAPSHOT_OUTPUT"
+
+ARG SNAPSHOT_INPUT="/image/"
+ENV SNAPSHOT_INPUT="$SNAPSHOT_INPUT"
+
+ARG SNAPSHOT_ENTRYPOINT_ARGUMENTS=""
+ENV SNAPSHOT_ENTRYPOINT_ARGUMENTS="$SNAPSHOT_ENTRYPOINT_ARGUMENTS"
+
+ARG SNAPSHOT_ENTRYPOINT
+ENV SNAPSHOT_ENTRYPOINT="$SNAPSHOT_ENTRYPOINT"
+
+ARG SNAPSHOT_CHOWN_TO="1000"
+ENV SNAPSHOT_CHOWN_TO="$SNAPSHOT_CHOWN_TO"
+
+ARG TEMPLATE_OUT="/out/"
+ENV TEMPLATE_OUT="$TEMPLATE_OUT"
+
+ENV SNAPSHOT_CHECK_FOR_GDB=1
+
+ENTRYPOINT ["/snapchange/go.sh"]

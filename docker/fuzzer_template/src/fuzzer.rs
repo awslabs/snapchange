@@ -11,9 +11,8 @@ use snapchange::fuzzer::{Breakpoint, BreakpointLookup, BreakpointType, Fuzzer};
 use snapchange::fuzzvm::FuzzVm;
 use snapchange::Execution;
 
-REPLACEMECOMMENTS
-
-const CR3: Cr3 = Cr3(REPLACEMECR3);
+// crate::constants is generated using the `build.rs` script.
+const CR3: Cr3 = Cr3(crate::constants::CR3);
 
 #[derive(Default)]
 pub struct TemplateFuzzer {
@@ -22,13 +21,29 @@ pub struct TemplateFuzzer {
 
 impl Fuzzer for TemplateFuzzer {
     type Input = Vec<u8>;
-    const START_ADDRESS: u64 = REPLACEMERIP;
+    const START_ADDRESS: u64 = crate::constants::RIP;
     const MAX_INPUT_LENGTH: usize = 1024;
     const MAX_MUTATIONS: u64 = 16;
 
     fn set_input(&mut self, input: &Self::Input, fuzzvm: &mut FuzzVm<Self>) -> Result<()> {
-        // Write the mutated input
+        // TODO: Write the mutated input to the target.
         // fuzzvm.write_bytes_dirty(VirtAddr(0x402004), CR3, &input)?;
+
+        /* 
+        // If the target is a binary compiled with libfuzzer, the snapshoting should be pretty much
+        // automated and the following code can be used to set the input.
+        
+        // Restore RIP to before the `int3 ; vmcall` snapshot point
+        fuzzvm.set_rip(fuzzvm.rip() - 4);
+
+        // Set the data buffer to the current mutated input
+        let buffer = fuzzvm.rdi();
+        fuzzvm.write_bytes_dirty(VirtAddr(buffer), fuzzvm.cr3(), input)?;
+
+        // Set the length of the input
+        fuzzvm.set_rsi(input.len() as u64);
+
+        */
 
         Ok(())
     }
