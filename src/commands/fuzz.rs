@@ -72,16 +72,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
 
     // Get the number of cores to fuzz with
     let mut cores = args.cores.unwrap_or(1);
-    if cores < 0 {
-        if let Some(core_ids) = core_affinity::get_core_ids() {
-            cores += core_ids.len() as i64;
-        } else {
-            log::warn!("Unable to get core ids. Defaulting to 1 core");
-            cores = 1;
-        }
-    }
-
-    if cores < 0 {
+    if cores == 0 {
         log::warn!("No cores given. Defaulting to 1 core");
         cores = 1;
     }
