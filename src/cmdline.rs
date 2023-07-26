@@ -151,8 +151,12 @@ impl ProjectState {
                 .split('\n')
                 .filter_map(|line| {
                     let mut iter = line.split(' ');
-                    let Some(addr) = iter.next() else { return None; };
-                    let Some(rflags) = iter.next() else { return None; };
+                    let Some(addr) = iter.next() else {
+                        return None;
+                    };
+                    let Some(rflags) = iter.next() else {
+                        return None;
+                    };
 
                     let addr = u64::from_str_radix(addr.trim_start_matches("0x"), 16);
                     let rflags = u64::from_str_radix(rflags.trim_start_matches("0x"), 16);
@@ -399,11 +403,11 @@ pub struct Fuzz {
     /// Set the timeout (in seconds) of the execution of the VM. [0-9]+(ns|us|ms|s|m|h)
     #[clap(long, value_parser = parse_timeout, default_value = "1s")]
     pub(crate) timeout: Duration,
-   
+
     /// Set a maximum duration that each core spends on fuzzing.
     #[clap(long, value_parser = parse_timeout)]
     pub(crate) stop_after_time: Option<Duration>,
-   
+
     /// Stop after the first crash is found
     #[clap(long)]
     pub(crate) stop_after_first_crash: bool,
@@ -456,6 +460,11 @@ pub struct Minimize {
     /// stage
     #[clap(short, long, default_value_t = 50000)]
     pub(crate) iterations_per_stage: u32,
+
+    /// Only check the RIP register for checking if the register state is the same after
+    /// minimizing an input
+    #[clap(long)]
+    pub(crate) rip_only: bool,
 }
 
 /// CorpusMin subcommand
@@ -841,8 +850,12 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         let mut unwinders = StackUnwinders::default();
 
         for bin_file in &binaries {
-            let Some(bin_name) = bin_file.file_name() else { continue };
-            let Some(bin_name) = bin_name.to_str() else { continue };
+            let Some(bin_name) = bin_file.file_name() else {
+                continue;
+            };
+            let Some(bin_name) = bin_name.to_str() else {
+                continue;
+            };
             let bin_name = bin_name.replace(".bin", "");
 
             // Get the module range and rebase the stack unwinder if we have known module range

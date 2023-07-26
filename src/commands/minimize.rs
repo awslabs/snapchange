@@ -48,6 +48,7 @@ fn start_core<FUZZER: Fuzzer>(
     vm_timeout: Duration,
     max_iterations: u32,
     config: Config,
+    rip_only: bool,
 ) -> Result<()> {
     // Use the current fuzzer
     let mut fuzzer = FUZZER::default();
@@ -153,7 +154,15 @@ fn start_core<FUZZER: Fuzzer>(
         }
     }
 
-    let orig_reg_state = *fuzzvm.regs();
+    let orig_reg_state = if rip_only {
+        kvm_bindings::kvm_regs {
+            rip: fuzzvm.rip(),
+            ..Default::default()
+        }
+    } else {
+        *fuzzvm.regs()
+    };
+
     let orig_output = fuzzvm.console_output.clone();
 
     // Create a random number generatr
@@ -285,7 +294,14 @@ fn start_core<FUZZER: Fuzzer>(
         // Check if the VM resulted in the same crashing state. If so, keep the minimized input as the
         // current best input
         time!(CheckResult, {
-            let curr_reg_state = *fuzzvm.regs();
+            let curr_reg_state = if rip_only {
+                kvm_bindings::kvm_regs {
+                    rip: fuzzvm.rip(),
+                    ..Default::default()
+                }
+            } else {
+                *fuzzvm.regs()
+            };
             let mut curr_stack = vec![0u64; stack_size];
             fuzzvm.read_bytes(VirtAddr(fuzzvm.rsp()), fuzzvm.cr3(), &mut curr_stack)?;
 
@@ -366,6 +382,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         args.timeout,
         args.iterations_per_stage,
         project_state.config.clone(),
+        args.rip_only,
     )?;
 
     // Success
