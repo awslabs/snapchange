@@ -7,7 +7,7 @@
 use anyhow::Result;
 
 use snapchange::addrs::{Cr3, VirtAddr};
-use snapchange::fuzzer::{Breakpoint, BreakpointLookup, BreakpointType, Fuzzer};
+use snapchange::fuzzer::{Breakpoint, AddressLookup, BreakpointType, Fuzzer};
 use snapchange::fuzzvm::FuzzVm;
 use snapchange::Execution;
 
@@ -35,30 +35,30 @@ impl Fuzzer for Example02Fuzzer {
         Ok(())
     }
 
-    fn reset_breakpoints(&self) -> Option<&[BreakpointLookup]> {
+    fn reset_breakpoints(&self) -> Option<&[AddressLookup]> {
         Some(&[
             // Resolve reset breakpoints by address
-            // BreakpointLookup::Address(VirtAddr(0x401371), CR3),
+            // AddressLookup::Virtual(VirtAddr(0x401371), CR3),
 
             // .. or by symbol lookup
-            // BreakpointLookup::SymbolOffset("main", 0x1234)
+            // AddressLookup::SymbolOffset("main", 0x1234)
         ])
     }
 
-    fn crash_breakpoints(&self) -> Option<&[BreakpointLookup]> {
+    fn crash_breakpoints(&self) -> Option<&[AddressLookup]> {
         Some(&[
             // Resolve crash breakpoints by address
-            // BreakpointLookup::Address((VirtAddr(0x401371), CR3),
+            // AddressLookup::Virtual((VirtAddr(0x401371), CR3),
 
             // .. or by symbol lookup
-            // BreakpointLookup::SymbolOffset("KillSystem", 0x1234)
+            // AddressLookup::SymbolOffset("KillSystem", 0x1234)
         ])
     }
 
     fn breakpoints(&self) -> Option<&[Breakpoint<Self>]> {
         Some(&[
             Breakpoint {
-                lookup: BreakpointLookup::SymbolOffset("tiffinfo!TIFFErrorExt", 0x0),
+                lookup: AddressLookup::SymbolOffset("tiffinfo!TIFFErrorExt", 0x0),
                 bp_type: BreakpointType::Repeated,
                 bp_hook: |fuzzvm: &mut FuzzVm<Self>, input, _fuzzer| {
                     fuzzvm.fake_immediate_return()?;
@@ -66,7 +66,7 @@ impl Fuzzer for Example02Fuzzer {
                 },
             },
             Breakpoint {
-                lookup: BreakpointLookup::SymbolOffset("tiffinfo!TIFFWarningExt", 0x0),
+                lookup: AddressLookup::SymbolOffset("tiffinfo!TIFFWarningExt", 0x0),
                 bp_type: BreakpointType::Repeated,
                 bp_hook: |fuzzvm: &mut FuzzVm<Self>, input, _fuzzer| {
                     fuzzvm.fake_immediate_return()?;
@@ -74,7 +74,7 @@ impl Fuzzer for Example02Fuzzer {
                 },
             },
             Breakpoint {
-                lookup: BreakpointLookup::SymbolOffset("tiffinfo!_tiffReadProc", 0x0),
+                lookup: AddressLookup::SymbolOffset("tiffinfo!_tiffReadProc", 0x0),
                 bp_type: BreakpointType::Repeated,
                 bp_hook: |fuzzvm: &mut FuzzVm<Self>, input, _fuzzer| {
                     let fd = fuzzvm.rdi();

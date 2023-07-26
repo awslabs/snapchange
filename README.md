@@ -62,10 +62,10 @@ impl Fuzzer for TemplateFuzzer {
         Ok(())
     }
 
-    fn reset_breakpoints(&self) -> Option<&[BreakpointLookup]> {
+    fn reset_breakpoints(&self) -> Option<&[AddressLookup]> {
         Some(&[
             // Reset when the VM hits example1!main+0x123
-            BreakpointLookup::SymbolOffset("example1!main", 0x123)
+            AddressLookup::SymbolOffset("example1!main", 0x123)
         ])
     }
 }

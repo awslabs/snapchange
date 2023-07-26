@@ -7,7 +7,7 @@
 use anyhow::Result;
 use rand::Rng as _;
 
-use snapchange::fuzzer::{Breakpoint, BreakpointLookup, BreakpointType, Fuzzer};
+use snapchange::fuzzer::{Breakpoint, AddressLookup, BreakpointType, Fuzzer};
 use snapchange::fuzzvm::FuzzVm;
 use snapchange::linux::{read_args, ReadArgs};
 use snapchange::rng::Rng;
@@ -34,7 +34,7 @@ impl Fuzzer for Example03Fuzzer {
         Ok(())
     }
 
-    fn reset_breakpoints(&self) -> Option<&[BreakpointLookup]> {
+    fn reset_breakpoints(&self) -> Option<&[AddressLookup]> {
         None
     }
 
@@ -44,7 +44,7 @@ impl Fuzzer for Example03Fuzzer {
             // Breakpoint based on a symbol offset
             // Below: the first instruction of `_int_malloc`
             Breakpoint {
-                lookup: BreakpointLookup::SymbolOffset("ffmpeg!__interceptor_read", 0x0),
+                lookup: AddressLookup::SymbolOffset("ffmpeg!__interceptor_read", 0x0),
                 bp_type: BreakpointType::Repeated,
                 bp_hook: |fuzzvm: &mut FuzzVm<Self>, input, fuzzer| {
                     let args = read_args(&fuzzvm);

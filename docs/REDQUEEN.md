@@ -113,7 +113,7 @@ The `Breakpoint` generated from the above during `build.rs`:
 // ORIGINAL LINE:0x55555555548a,0x4,reg eax,CMP_E,0x7736a87f
 // 0x55555555548a 0x4 Equal
 Breakpoint {
-    lookup: BreakpointLookup::Address(VirtAddr(0x55555555548a), CR3),
+    lookup: AddressLookup::Virtual(VirtAddr(0x55555555548a), CR3),
     bp_type: BreakpointType::Repeated,
     bp_hook: |fuzzvm: &mut FuzzVm<FUZZER>, input, _fuzzer| {
         // Get the hash of the input to use as a key into the redqueen rules map

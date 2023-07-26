@@ -24,7 +24,7 @@ use crate::colors::Colorized;
 use crate::config::Config;
 use crate::exception::Exception;
 use crate::filesystem::FileSystem;
-use crate::fuzzer::{Breakpoint, BreakpointLookup, BreakpointType, Fuzzer, ResetBreakpointType};
+use crate::fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer, ResetBreakpointType};
 use crate::interrupts::IdtEntry;
 use crate::linux::{PtRegs, Signal};
 use crate::memory::{ChainVal, Memory, WriteMem};
@@ -136,9 +136,9 @@ pub enum Error {
     #[error("Call to sysconf failed")]
     SysconfFailed(nix::errno::Errno),
 
-    /// Fuzzer breakpoint was not found in the symbols
-    #[error("Fuzzer breakpoint was not found in symbols: {0}+{1:#x}")]
-    FuzzerBreakpointNotFound(&'static str, u64),
+    /// Lookup symbol was not found in the symbols
+    #[error("Lookup symbol was not found in symbols: {0}+{1:#x}")]
+    LookupSymbolNotFound(&'static str, u64),
 
     /// Symbol breakpoints are not implemented for Redqueen breakpoints
     #[error("Symbol breakpoints are not implemented for Redqueen breakpoints")]
@@ -849,10 +849,10 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
             for breakpoint in fuzzer_bps {
                 match breakpoint {
-                    BreakpointLookup::Address(virt_addr, cr3) => {
+                    AddressLookup::Virtual(virt_addr, cr3) => {
                         new_reset_bps.insert((*virt_addr, *cr3), reset_type);
                     }
-                    BreakpointLookup::SymbolOffset(symbol, offset) => {
+                    AddressLookup::SymbolOffset(symbol, offset) => {
                         if let Some((virt_addr, cr3)) = fuzzvm.get_symbol_address(symbol) {
                             new_reset_bps.insert((virt_addr.offset(*offset), cr3), reset_type);
                         } else {
@@ -869,7 +869,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                                     log::info!(" - {p}");
                                 }
                             }
-                            return Err(Error::FuzzerBreakpointNotFound(symbol, *offset).into());
+                            return Err(Error::LookupSymbolNotFound(symbol, *offset).into());
                         }
                     }
                 }
@@ -1371,12 +1371,10 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     ///
     /// * If we attempt to write to an unmapped virtual address
     /// * If we fail to write the bounds to the translated physical address
-    pub fn patch_bytes_permanent(
-        &mut self,
-        virt_addr: VirtAddr,
-        cr3: Cr3,
-        new_bytes: &[u8],
-    ) -> Result<()> {
+    pub fn patch_bytes_permanent(&mut self, lookup: AddressLookup, new_bytes: &[u8]) -> Result<()> {
+        // Get the virtual address from the lookup
+        let (virt_addr, cr3) = lookup.get(self)?;
+
         // Grab the WRITE lock for the clean snapshot since we are modifying the clean snapshot
         let mut clean_snapshot = self.clean_snapshot.write().unwrap();
         clean_snapshot.write_bytes(virt_addr, cr3, new_bytes)?;
@@ -3117,10 +3115,10 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             } in bps
             {
                 match lookup {
-                    BreakpointLookup::Address(virt_addr, cr3) => {
+                    AddressLookup::Virtual(virt_addr, cr3) => {
                         cache.push((*virt_addr, *cr3, *bp_type, *bp_hook));
                     }
-                    BreakpointLookup::SymbolOffset(symbol, offset) => {
+                    AddressLookup::SymbolOffset(symbol, offset) => {
                         if let Some((virt_addr, cr3)) = self.get_symbol_address(symbol) {
                             cache.push((virt_addr.offset(*offset), cr3, *bp_type, *bp_hook));
                         } else {
@@ -3136,7 +3134,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                                 }
                             }
 
-                            return Err(Error::FuzzerBreakpointNotFound(symbol, *offset).into());
+                            return Err(Error::LookupSymbolNotFound(symbol, *offset).into());
                         }
                     }
                 }
@@ -3196,7 +3194,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             } in bps
             {
                 match lookup {
-                    BreakpointLookup::Address(virt_addr, cr3) => {
+                    AddressLookup::Virtual(virt_addr, cr3) => {
                         self.set_breakpoint(
                             *virt_addr,
                             *cr3,
@@ -3207,7 +3205,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
                         bps_set += 1;
                     }
-                    BreakpointLookup::SymbolOffset(_symbol, _offset) => {
+                    AddressLookup::SymbolOffset(_symbol, _offset) => {
                         return Err(Error::SymbolBreakpointsNotImplForRedqueen.into());
                     }
                 }

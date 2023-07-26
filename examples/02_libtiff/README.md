@@ -464,7 +464,7 @@ fn breakpoints(&self) -> Option<&[Breakpoint]> {
     Some(&[
         // Breakpoint based on a symbol offset 
         Breakpoint {
-            lookup:  BreakpointLookup::SymbolOffset("tiffinfo!_tiffReadProc", 0x0),
+            lookup:  AddressLookup::SymbolOffset("tiffinfo!_tiffReadProc", 0x0),
             bp_type: BreakpointType::Repeated,
             bp_hook: |fuzzvm: &mut FuzzVm, _input, _fuzzer| { 
                 // Do nothing but reset the VM when this symbol has been hit
@@ -518,7 +518,7 @@ Let's update the hook to parse the arguments. Argument 1 is in `rdi`, argument 2
 fn breakpoints(&self) -> Option<&[Breakpoint]> {
     Some(&[
         Breakpoint {
-            lookup:  BreakpointLookup::SymbolOffset("tiffinfo!_tiffReadProc", 0x0),
+            lookup:  AddressLookup::SymbolOffset("tiffinfo!_tiffReadProc", 0x0),
             bp_type: BreakpointType::Repeated,
             bp_hook: |fuzzvm: &mut FuzzVm, input, _fuzzer| { 
                 let fd   = fuzzvm.rdi();
@@ -541,7 +541,7 @@ address.
 fn breakpoints(&self) -> Option<&[Breakpoint]> {
     Some(&[
         Breakpoint {
-            lookup:   BreakpointLookup::SymbolOffset("tiffinfo!_tiffReadProc", 0x0),
+            lookup:   AddressLookup::SymbolOffset("tiffinfo!_tiffReadProc", 0x0),
             bp_type: BreakpointType::Repeated,
             bp_hook: |fuzzvm: &mut FuzzVm, input, _fuzzer| { 
                 let fd   = fuzzvm.rdi();
@@ -625,7 +625,7 @@ fn breakpoints(&self) -> Option<&[Breakpoint]> {
     Some(&[
         <snip>
         Breakpoint {
-            lookup:   BreakpointLookup::SymbolOffset("tiffinfo!TIFFErrorExt", 0x0),
+            lookup:   AddressLookup::SymbolOffset("tiffinfo!TIFFErrorExt", 0x0),
             bp_type: BreakpointType::Repeated,
             bp_hook: |fuzzvm: &mut FuzzVm, input, _fuzzer| { 
                 // let error = fuzzvm.read_c_string(VirtAddr(fuzzvm.rdx()), CR3)?;
@@ -635,7 +635,7 @@ fn breakpoints(&self) -> Option<&[Breakpoint]> {
             }
         },
         Breakpoint {
-            lookup:   BreakpointLookup::SymbolOffset("tiffinfo!TIFFWarningExt", 0x0),
+            lookup:   AddressLookup::SymbolOffset("tiffinfo!TIFFWarningExt", 0x0),
             bp_type: BreakpointType::Repeated,
             bp_hook: |fuzzvm: &mut FuzzVm, input, _fuzzer| { 
                 // let error = fuzzvm.read_c_string(VirtAddr(fuzzvm.rdx()), CR3)?;

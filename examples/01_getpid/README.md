@@ -387,9 +387,9 @@ probably be different than the one here)
 
 ```rust
 // src/fuzzer/current_fuzzer.rs 
-fn reset_breakpoints(&self) -> Option<&[BreakpointLookup]> {
+fn reset_breakpoints(&self) -> Option<&[AddressLookup]> {
     Some(&[
-        BreakpointLookup::Address(VirtAddr(0x401371), CR3),
+        AddressLookup::Virtual(VirtAddr(0x401371), CR3),
     ])
 }
 ```
@@ -540,7 +540,7 @@ fn breakpoints(&self) -> Option<&[Breakpoint]> {
         // ITERATION 1359 0x0000000000401288 0x084be000 | example1!fuzzme+0x128                                        
         //     mov dword ptr [rbp-0xc], eax 
         Breakpoint {
-            lookup:  BreakpointLookup::SymbolOffset("example1!fuzzme", 0x128), 
+            lookup:  AddressLookup::SymbolOffset("example1!fuzzme", 0x128), 
             bp_type: BreakpointType::Repeated,
             bp_hook: |fuzzvm: &mut FuzzVm, input, _fuzzer| { 
                 // Set rax to 0xdeadbeef
@@ -625,7 +625,7 @@ fn breakpoints(&self) -> Option<&[Breakpoint]> {
         // ITERATION 650 0x00007ffff7e94da0 0x084be000 | libc.so.6!__GI___getpid+0x0
         //     mov eax, 0x27 
         Breakpoint {
-            lookup:   BreakpointLookup::SymbolOffset("libc.so.6!__GI___getpid", 0x0), 
+            lookup:   AddressLookup::SymbolOffset("libc.so.6!__GI___getpid", 0x0), 
             bp_type: BreakpointType::Repeated,
             bp_hook: |fuzzvm: &mut FuzzVm, _input, _fuzzer| { 
                 // Set the return value to 0xdeadbeef
@@ -668,7 +668,7 @@ fn breakpoints(&self) -> Option<&[Breakpoint]> {
         //     R12D:0x0
         //     [RAX:0xffff94f1c2776f00+0x60=0xffff94f1c2776f60 size:UInt32->0xc1]] 
         Breakpoint {
-            lookup:  BreakpointLookup::Address(VirtAddr(0xffffffffa6a8fa19), Cr3(0x084be000)),
+            lookup:  AddressLookup::Virtual(VirtAddr(0xffffffffa6a8fa19), Cr3(0x084be000)),
             bp_type: BreakpointType::Repeated,
             bp_hook: |fuzzvm: &mut FuzzVm, _input, _fuzzer| { 
                 // mov r12d, dword ptr [rax+0x60] 

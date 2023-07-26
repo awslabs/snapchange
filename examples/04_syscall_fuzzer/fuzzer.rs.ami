@@ -11,7 +11,7 @@ use std::path::Path;
 use thiserror::Error;
 
 use snapchange::addrs::{Cr3, VirtAddr};
-use snapchange::fuzzer::{BreakpointLookup, Fuzzer};
+use snapchange::fuzzer::{AddressLookup, Fuzzer};
 use snapchange::fuzzvm::FuzzVm;
 use snapchange::rng::Rng;
 
@@ -398,7 +398,7 @@ impl Fuzzer for Example04Fuzzer {
         Ok(())
     }
 
-    fn reset_breakpoints(&self) -> Option<&[BreakpointLookup]> {
+    fn reset_breakpoints(&self) -> Option<&[AddressLookup]> {
         // Reset when we return from the shellcode call
         // The first call instruction is 3 bytes long.
         //
@@ -406,7 +406,7 @@ impl Fuzzer for Example04Fuzzer {
         //
         // 0x000055555555cb28: ff1424                 syscall_harness!_ZN15syscall_harness4main17hbde6b+ | call qword ptr [rsp]
         // 0x000055555555cb2b: 4881c4d0000000         syscall_harness!_ZN15syscall_harness4main17hbde6b+ | add rsp, 0xd0
-        Some(&[BreakpointLookup::Address(
+        Some(&[AddressLookup::Virtual(
             VirtAddr(Self::START_ADDRESS + 3),
             CR3,
         )])

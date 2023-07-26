@@ -82,22 +82,38 @@ pub enum ResetBreakpointType {
     HandleInvalidOp,
 }
 
-/// The method used to lookup a given breakpoint
+/// How to lookup a given virtual address in the snapshot memory
 #[derive(Debug)]
 #[allow(dead_code)]
-pub enum BreakpointLookup {
-    /// The address to apply this breakpoint to
-    Address(VirtAddr, Cr3),
+pub enum AddressLookup {
+    /// The direct virtual address
+    Virtual(VirtAddr, Cr3),
 
-    /// The symbol substring to look for, plus the given offset, and apply a breakpoint
-    /// to if found
+    /// The symbol substring to look for, plus the given offset, to translate for
+    /// a virtual address
     SymbolOffset(&'static str, u64),
+}
+
+impl AddressLookup {
+    /// Lookup the virtual address using the given [`FuzzVm`]
+    pub fn get<FUZZER: Fuzzer>(&self, fuzzvm: &FuzzVm<FUZZER>) -> Result<(VirtAddr, Cr3)> {
+        match self {
+            AddressLookup::Virtual(virt_addr, cr3) => Ok((*virt_addr, *cr3)),
+            AddressLookup::SymbolOffset(symbol, offset) => {
+                if let Some((virt_addr, cr3)) = fuzzvm.get_symbol_address(symbol) {
+                    Ok((virt_addr.offset(*offset), cr3))
+                } else {
+                    Err(crate::fuzzvm::Error::LookupSymbolNotFound(symbol, *offset).into())
+                }
+            }
+        }
+    }
 }
 
 /// A breakpoint that can be applied to a VM
 pub struct Breakpoint<FUZZER: Fuzzer> {
     /// The virtual address or symbol where the breakpoint is applied
-    pub lookup: BreakpointLookup,
+    pub lookup: AddressLookup,
 
     /// The type of breakpoint being applied
     pub bp_type: BreakpointType,
@@ -210,13 +226,13 @@ pub trait Fuzzer: Default + Sized {
     }
 
     /// Breakpoints that, if hit, will cause the VM to be reset without saving state
-    fn reset_breakpoints(&self) -> Option<&[BreakpointLookup]> {
+    fn reset_breakpoints(&self) -> Option<&[AddressLookup]> {
         None
     }
 
     /// Breakpoints that, if hit, will cause the VM to be reset while saving input and
     /// state
-    fn crash_breakpoints(&self) -> Option<&[BreakpointLookup]> {
+    fn crash_breakpoints(&self) -> Option<&[AddressLookup]> {
         None
     }
 

@@ -72,7 +72,7 @@ fn main() {
     output.push_str("use snapchange::addrs::VirtAddr;\n");
     output.push_str("use snapchange::fuzzvm::FuzzVm;\n");
     output.push_str("use snapchange::cmp_analysis::RedqueenRule;\n");
-    output.push_str("use snapchange::fuzzer::{Breakpoint, BreakpointLookup, BreakpointType};\n");
+    output.push_str("use snapchange::fuzzer::{Breakpoint, AddressLookup, BreakpointType};\n");
     output.push_str("use snapchange::{Cr3, Execution, Fuzzer, FuzzInput};\n");
     output.push_str("use std::ops::*;\n");
     output.push_str(&format!("const CR3: Cr3 = Cr3({cr3:#x});\n"));
@@ -305,7 +305,7 @@ fn main() {
             output.push_str(&format!(" // {addr:#x} {cmp_size:#x} {operation:?}\n"));
 
             output.push_str(&format!("Breakpoint {{\n"));
-            output.push_str(&format!("    lookup: BreakpointLookup::Address(VirtAddr({addr:#x}), CR3),\n" ));
+            output.push_str(&format!("    lookup: AddressLookup::Virtual(VirtAddr({addr:#x}), CR3),\n" ));
             output.push_str(&format!("    bp_type: BreakpointType::Repeated,\n"));
             output.push_str(&format!("    bp_hook: |fuzzvm: &mut FuzzVm<FUZZER>, input, _fuzzer| {{\n" ));
             // output.push_str(&format!("        fuzzvm.print_context();\n"));

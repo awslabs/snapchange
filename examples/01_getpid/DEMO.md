@@ -244,7 +244,7 @@ target specific breakpoints. The scaffolding for hooking the `getpid` function i
     fn breakpoints(&self) -> Option<&[Breakpoint<Self>]> {
         Some(&[
             Breakpoint {
-                lookup: BreakpointLookup::SymbolOffset("libc.so.6!__GI___getpid", 0x0),
+                lookup: AddressLookup::SymbolOffset("libc.so.6!__GI___getpid", 0x0),
                 bp_type: BreakpointType::Repeated,
                 bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer| {
                     // Set the return value to 0xdeadbeef

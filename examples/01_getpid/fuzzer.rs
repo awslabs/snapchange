@@ -7,7 +7,7 @@
 use anyhow::Result;
 
 use snapchange::addrs::{Cr3, VirtAddr};
-use snapchange::fuzzer::{Breakpoint, BreakpointLookup, BreakpointType, Fuzzer};
+use snapchange::fuzzer::{Breakpoint, AddressLookup, BreakpointType, Fuzzer};
 use snapchange::fuzzvm::FuzzVm;
 use snapchange::Execution;
 
@@ -38,7 +38,7 @@ impl Fuzzer for Example1Fuzzer {
             // ITERATION 650 0x00007ffff7e94da0 0x084be000 | libc.so.6!__GI___getpid+0x0
             //     mov eax, 0x27
             Breakpoint {
-                lookup: BreakpointLookup::SymbolOffset("libc.so.6!__GI___getpid", 0x0),
+                lookup: AddressLookup::SymbolOffset("libc.so.6!__GI___getpid", 0x0),
                 bp_type: BreakpointType::Repeated,
                 bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer| {
                     // Set the return value to 0xdeadbeef

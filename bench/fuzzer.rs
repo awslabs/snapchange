@@ -7,7 +7,7 @@
 use anyhow::Result;
 
 use snapchange::addrs::{Cr3, VirtAddr};
-use snapchange::fuzzer::{Breakpoint, BreakpointLookup, BreakpointType, Fuzzer};
+use snapchange::fuzzer::{Breakpoint, AddressLookup, BreakpointType, Fuzzer};
 use snapchange::fuzzvm::FuzzVm;
 use snapchange::Execution;
 
@@ -44,9 +44,9 @@ impl Fuzzer for BenchFuzzer {
         Ok(())
     }
 
-    fn reset_breakpoints(&self) -> Option<&[BreakpointLookup]> {
+    fn reset_breakpoints(&self) -> Option<&[AddressLookup]> {
         Some(&[
-            BreakpointLookup::Address(VirtAddr(REPLACEMERESET), CR3)
+            AddressLookup::Virtual(VirtAddr(REPLACEMERESET), CR3)
         ])
     }
 
@@ -54,7 +54,7 @@ impl Fuzzer for BenchFuzzer {
         if std::env::var("VMEXITS").unwrap_or("0".to_string()).parse::<u8>().unwrap() > 0 {
             Some(&[
                  Breakpoint {
-                     lookup: BreakpointLookup::Address(VirtAddr(0x000055555555ca7a), CR3),
+                     lookup: AddressLookup::Virtual(VirtAddr(0x000055555555ca7a), CR3),
                      bp_type: BreakpointType::Repeated,
                      bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer| Ok(Execution::Continue)
                  }

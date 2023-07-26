@@ -7,7 +7,7 @@
 use anyhow::Result;
 
 use snapchange::addrs::{Cr3, VirtAddr};
-use snapchange::fuzzer::{Breakpoint, BreakpointLookup, BreakpointType, Fuzzer};
+use snapchange::fuzzer::{Breakpoint, AddressLookup, BreakpointType, Fuzzer};
 use snapchange::fuzzvm::FuzzVm;
 use snapchange::Execution;
 
@@ -40,7 +40,7 @@ impl Fuzzer for Example02Fuzzer {
     fn breakpoints(&self) -> Option<&[Breakpoint<Self>]> {
         Some(&[
             Breakpoint {
-                lookup: BreakpointLookup::SymbolOffset("tiffinfo!_tiffReadProc", 0x0),
+                lookup: AddressLookup::SymbolOffset("tiffinfo!_tiffReadProc", 0x0),
                 bp_type: BreakpointType::Repeated,
                 bp_hook: |fuzzvm: &mut FuzzVm<Self>, input, _fuzzer| {
                     fuzzvm.print_context()?;
@@ -70,7 +70,7 @@ impl Fuzzer for Example02Fuzzer {
                 },
             },
             Breakpoint {
-                lookup: BreakpointLookup::SymbolOffset("tiffinfo!TIFFErrorExt", 0x0),
+                lookup: AddressLookup::SymbolOffset("tiffinfo!TIFFErrorExt", 0x0),
                 bp_type: BreakpointType::Repeated,
                 bp_hook: |fuzzvm: &mut FuzzVm<Self>, input, _fuzzer| {
                     // Bonus Challenge: Looking at the function TIFFErrorExt, log
@@ -80,7 +80,7 @@ impl Fuzzer for Example02Fuzzer {
                 },
             },
             Breakpoint {
-                lookup: BreakpointLookup::SymbolOffset("tiffinfo!TIFFWarningExt", 0x0),
+                lookup: AddressLookup::SymbolOffset("tiffinfo!TIFFWarningExt", 0x0),
                 bp_type: BreakpointType::Repeated,
                 bp_hook: |fuzzvm: &mut FuzzVm<Self>, input, _fuzzer| {
                     // Bonus Challenge: Looking at the function TIFFWarningExt, log

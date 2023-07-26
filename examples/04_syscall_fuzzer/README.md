@@ -581,7 +581,7 @@ We want to reset the guest immediately after returning from the `call` to the as
 is the instruction that we want to reset on.
 
 ```rust
-    fn reset_breakpoints(&self) -> Option<&[BreakpointLookup]> {
+    fn reset_breakpoints(&self) -> Option<&[AddressLookup]> {
         // Reset when we return from the shellcode call
         // The first call instruction is 4 bytes long.
         //
@@ -590,7 +590,7 @@ is the instruction that we want to reset on.
         // 0x000055555555c698: ff542408 syscall_harness!_ZN15syscall_harness4main17hc7c15+ | call qword ptr [rsp+0x8]
         // 0x000055555555c69c: 4883c468 syscall_harness!_ZN15syscall_harness4main17hc7c15+ | add rsp, 0x68
 
-        Some(&[BreakpointLookup::Address(
+        Some(&[AddressLookup::Virtual(
             VirtAddr(Self::START_ADDRESS + 4),
             CR3,
         )])

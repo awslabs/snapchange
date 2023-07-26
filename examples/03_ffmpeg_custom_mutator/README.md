@@ -280,7 +280,7 @@ pub struct Example3Fuzzer {
 fn breakpoints(&self) -> Option<&[Breakpoint]> {
     Some(&[
         Breakpoint {
-            lookup:  BreakpointLookup::SymbolOffset("ffmpeg!__interceptor_read", 0x0),
+            lookup:  AddressLookup::SymbolOffset("ffmpeg!__interceptor_read", 0x0),
             bp_type: BreakpointType::Repeated,
             bp_hook: |fuzzvm: &mut FuzzVm, input, fuzzer| { 
                 // Parse the read arguments

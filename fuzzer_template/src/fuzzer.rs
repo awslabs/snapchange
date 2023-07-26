@@ -7,7 +7,7 @@
 use anyhow::Result;
 
 use snapchange::addrs::{Cr3, VirtAddr};
-use snapchange::fuzzer::{Breakpoint, BreakpointLookup, BreakpointType, Fuzzer};
+use snapchange::fuzzer::{Breakpoint, AddressLookup, BreakpointType, Fuzzer};
 use snapchange::fuzzvm::FuzzVm;
 use snapchange::Execution;
 
@@ -32,23 +32,23 @@ impl Fuzzer for TemplateFuzzer {
         Ok(())
     }
 
-    fn reset_breakpoints(&self) -> Option<&[BreakpointLookup]> {
+    fn reset_breakpoints(&self) -> Option<&[AddressLookup]> {
         Some(&[
             // Resolve reset breakpoints by address
-            // BreakpointLookup::Address(VirtAddr(0x401371), CR3),
+            // AddressLookup::Virtual(VirtAddr(0x401371), CR3),
 
             // .. or by symbol lookup
-            // BreakpointLookup::SymbolOffset("main", 0x1234)
+            // AddressLookup::SymbolOffset("main", 0x1234)
         ])
     }
 
-    fn crash_breakpoints(&self) -> Option<&[BreakpointLookup]> {
+    fn crash_breakpoints(&self) -> Option<&[AddressLookup]> {
         Some(&[
             // Resolve crash breakpoints by address
-            // BreakpointLookup::Address((VirtAddr(0x401371), CR3),
+            // AddressLookup::Virtual((VirtAddr(0x401371), CR3),
 
             // .. or by symbol lookup
-            // BreakpointLookup::SymbolOffset("KillSystem", 0x1234)
+            // AddressLookup::SymbolOffset("KillSystem", 0x1234)
         ])
     }
 
@@ -56,7 +56,7 @@ impl Fuzzer for TemplateFuzzer {
         Some(&[
             /*
             Breakpoint {
-                lookup: BreakpointLookup::SymbolOffset("harness!symbol", 0x0),
+                lookup: AddressLookup::SymbolOffset("harness!symbol", 0x0),
                 bp_type: BreakpointType::Repeated,
                 bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer| {
                     fuzzvm.set_rax(1);
@@ -67,7 +67,7 @@ impl Fuzzer for TemplateFuzzer {
 
             /*
             Breakpoint {
-               lookup:   BreakpointLookup::SymbolOffset("libc.so.6!__GI___getpid", 0x0),
+               lookup:   AddressLookup::SymbolOffset("libc.so.6!__GI___getpid", 0x0),
                 bp_type: BreakpointType::Repeated,
                 bp_hook: |fuzzvm: &mut FuzzVm, _input, _fuzzer| {
                     // Set the return value to 0xdeadbeef
@@ -86,7 +86,7 @@ impl Fuzzer for TemplateFuzzer {
 
             /*
             Breakpoint {
-               lookup:   BreakpointLookup::Address(VirtAddr(0xffffffffa6a8fa19), CR3),
+               lookup:   AddressLookup::Virtual(VirtAddr(0xffffffffa6a8fa19), CR3),
                 bp_type: BreakpointType::Repeated,
                 bp_hook: |fuzzvm: &mut FuzzVm, _input, _fuzzer| {
                     // mov r12d, dword ptr [rax+0x60]
