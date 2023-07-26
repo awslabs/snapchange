@@ -185,6 +185,15 @@ pub trait Fuzzer: Default + Sized {
         )
     }
 
+    /// One-time initialization of the snapshot
+    ///
+    /// # Errors
+    ///
+    /// * The target specific fuzzer failed to initialize the VM
+    fn init_snapshot(&mut self, _fuzzvm: &mut FuzzVm<Self>) -> Result<()> {
+        Ok(())
+    }
+
     /// Initialize the VM before starting any fuzz case
     ///
     /// # Errors

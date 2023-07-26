@@ -447,6 +447,9 @@ pub struct GuestResetPerf {
 
     /// Amount of time during running `fuzzer.init_vm`
     pub init_vm: u64,
+
+    /// Amount of time during running the initial `fuzzer.init_snapshot`
+    pub init_snapshot: u64,
 }
 
 /// Cycle counts while initialzing the guest
@@ -886,6 +889,9 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 cov_bps.remove(addr);
             }
         }
+
+        // Init the VM based on the given fuzzer (called a single time)
+        fuzzer.init_snapshot(&mut fuzzvm)?;
 
         // Init the VM based on the given fuzzer
         fuzzer.init_vm(&mut fuzzvm)?;
@@ -1356,6 +1362,22 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
         // Return successs
         Ok(())
+    }
+
+    /// Writes the given bytes to the current snapshot and the underlying clean snapshot
+    ///
+    /// # Errors
+    ///
+    /// * If we attempt to write to an unmapped virtual address
+    /// * If we fail to write the bounds to the translated physical address
+    pub fn patch_bytes(&mut self, virt_addr: VirtAddr, cr3: Cr3, new_bytes: &[u8]) -> Result<()> {
+        // Grab the WRITE lock for the clean snapshot since we are modifying the clean snapshot
+        let mut clean_snapshot = self.clean_snapshot.write().unwrap();
+        clean_snapshot.write_bytes(virt_addr, cr3, new_bytes)?;
+        drop(clean_snapshot);
+
+        /// Patch the bytes of the current memory
+        self.write_bytes(virt_addr, cr3, new_bytes)
     }
 
     /// Translate the given guest [`VirtAddr`] using the given page table found at

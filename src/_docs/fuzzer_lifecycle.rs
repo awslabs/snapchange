@@ -9,6 +9,9 @@
 //! ```rust
 //! let mut input;
 //!
+//! // One time snapshot initialization (can be used to programmatically patch the snapshot)
+//! fuzzvm.init_snapshot();
+//!
 //! // Calls fuzzer.init_vm()
 //! fuzzvm.reset_guest_state();
 //!
