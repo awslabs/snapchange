@@ -961,16 +961,38 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         if self.single_step {
             for vector in 0..255 {
                 let addr = self.vbcpu.idtr_base + vector * std::mem::size_of::<IdtEntry>() as u64;
-                let entry = self.read::<IdtEntry>(VirtAddr(addr), self.cr3())?;
-                let isr = entry.isr();
+                let cr3 = self.cr3();
+
+                let entry = self.read::<IdtEntry>(VirtAddr(addr), cr3)?;
+                let isr = VirtAddr(entry.isr());
 
                 self.set_breakpoint(
-                    VirtAddr(isr),
-                    self.cr3(),
+                    isr,
+                    cr3,
                     BreakpointType::Repeated,
                     BreakpointMemory::NotDirty,
                     BreakpointHook::Func(enable_trap_flag),
                 )?;
+
+                // Duplicate the current isr breakpoints with one using the wildcard cr3
+                // to continue execution calling an isr from any cr3 and not just the
+                // cr3 that started the VM
+                let mut curr_index = None;
+                if let Some(index) = self.breakpoints.get(&(isr, cr3)) {
+                    curr_index = Some(*index);
+                    self.breakpoints.insert((isr, WILDCARD_CR3), *index);
+                }
+
+                if let Some(index) = curr_index {
+                    let orig_type = self.breakpoint_types[index];
+                    self.breakpoint_types.push(orig_type);
+
+                    let orig_byte = self.breakpoint_original_bytes[index];
+                    self.breakpoint_original_bytes.push(orig_byte);
+
+                    self.breakpoint_hooks
+                        .push(BreakpointHook::Func(enable_trap_flag));
+                }
             }
         }
 
@@ -2525,7 +2547,13 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
         // The fuzzer is not handling a syscall breakpoint, check if any other
         // breakpoints are being handled
-        if let Some(bp_index) = self.breakpoints.get(&(virt_addr, cr3)) {
+        //
+        // Try the breakpoint address with the current cr3. If that fails, then try the wildcard cr3
+        if let Some(bp_index) = self
+            .breakpoints
+            .get(&(virt_addr, cr3))
+            .or(self.breakpoints.get(&(virt_addr, WILDCARD_CR3)))
+        {
             let bp_index = *bp_index;
 
             // We have this breakpoint in our database attempt to handle it
