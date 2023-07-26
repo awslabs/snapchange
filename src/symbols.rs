@@ -27,6 +27,8 @@ pub(crate) const LINUX_USERLAND_SYMBOLS: &[(&str, ResetBreakpointType)] = &[
     ("__GI_exit", ResetBreakpointType::Reset),
     // This one is something we see with musl/static linking
     ("__libc_exit_fini", ResetBreakpointType::Reset),
+    // Crash on assert()
+    ("__assert_fail", ResetBreakpointType::Crash),
 ];
 
 /// List of FULL linux kernel symbols that, if hit, signifies a special case to handle.
