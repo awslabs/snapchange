@@ -1364,13 +1364,19 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         Ok(())
     }
 
-    /// Writes the given bytes to the current snapshot and the underlying clean snapshot
+    /// Permanently write the given bytes to the current snapshot and the underlying clean snapshot
+    /// such that these bytes are no longer replaced during a guest reset
     ///
     /// # Errors
     ///
     /// * If we attempt to write to an unmapped virtual address
     /// * If we fail to write the bounds to the translated physical address
-    pub fn patch_bytes(&mut self, virt_addr: VirtAddr, cr3: Cr3, new_bytes: &[u8]) -> Result<()> {
+    pub fn patch_bytes_permanent(
+        &mut self,
+        virt_addr: VirtAddr,
+        cr3: Cr3,
+        new_bytes: &[u8],
+    ) -> Result<()> {
         // Grab the WRITE lock for the clean snapshot since we are modifying the clean snapshot
         let mut clean_snapshot = self.clean_snapshot.write().unwrap();
         clean_snapshot.write_bytes(virt_addr, cr3, new_bytes)?;
