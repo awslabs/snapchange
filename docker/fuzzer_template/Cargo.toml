@@ -8,6 +8,7 @@ exclude = ["snapshot", "harness"]
 anyhow = "1"
 log = "0.4"
 snapchange = { git = "https://github.com/awslabs/snapchange" }
+# snapchange = { path = "../../" }
 
 [build-dependencies]
 regex = "1"

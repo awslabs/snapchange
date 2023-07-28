@@ -7,7 +7,7 @@
 use anyhow::Result;
 
 use snapchange::addrs::{Cr3, VirtAddr};
-use snapchange::fuzzer::{Breakpoint, BreakpointLookup, BreakpointType, Fuzzer};
+use snapchange::fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer};
 use snapchange::fuzzvm::FuzzVm;
 use snapchange::Execution;
 
@@ -26,66 +26,60 @@ impl Fuzzer for TemplateFuzzer {
     const MAX_MUTATIONS: u64 = 16;
 
     fn set_input(&mut self, input: &Self::Input, fuzzvm: &mut FuzzVm<Self>) -> Result<()> {
-        // TODO: Write the mutated input to the target.
-        // fuzzvm.write_bytes_dirty(VirtAddr(0x402004), CR3, &input)?;
+        // Write the mutated input to the target. For example, to a buffer at a fixed address.
+        fuzzvm.write_bytes_dirty(VirtAddr(0x402004), CR3, &input)?;
 
-        /* 
-        // If the target is a binary compiled with libfuzzer, the snapshoting should be pretty much
+        // or if the target is a binary compiled with libfuzzer, the snapshoting should be pretty much
         // automated and the following code can be used to set the input.
-        
-        // Restore RIP to before the `int3 ; vmcall` snapshot point
-        fuzzvm.set_rip(fuzzvm.rip() - 4);
-
-        // Set the data buffer to the current mutated input
-        let buffer = fuzzvm.rdi();
-        fuzzvm.write_bytes_dirty(VirtAddr(buffer), fuzzvm.cr3(), input)?;
-
-        // Set the length of the input
-        fuzzvm.set_rsi(input.len() as u64);
-
-        */
+        snapchange::utils::libfuzzer::set_input(input, fuzzvm)?;
 
         Ok(())
     }
 
-    fn reset_breakpoints(&self) -> Option<&[BreakpointLookup]> {
+    fn init_vm(&mut self, fuzzvm: &mut FuzzVm<Self>) -> Result<()> {
+        // init the VM with custom code on every fuzz input
+
+        // if using libfuzzer, we properly set a reset breakpoint on the current return address with
+        // this helper function.
+        snapchange::utils::libfuzzer::init_vm(fuzzvm)?;
+
+        // or do whatever else you might want to do to setup things.
+        Ok(())
+    }
+
+    fn reset_breakpoints(&self) -> Option<&[AddressLookup]> {
         Some(&[
             // Resolve reset breakpoints by address
-            // BreakpointLookup::Address(VirtAddr(0x401371), CR3),
-
-            // .. or by symbol lookup
-            // BreakpointLookup::SymbolOffset("main", 0x1234)
+            AddressLookup::Virtual(VirtAddr(0x401371), CR3),
+            // .. or by symbol lookup and offset
+            AddressLookup::SymbolOffset("main", 0x1234),
+            AddressLookup::SymbolOffset("exit", 0),
         ])
     }
 
-    fn crash_breakpoints(&self) -> Option<&[BreakpointLookup]> {
+    fn crash_breakpoints(&self) -> Option<&[AddressLookup]> {
         Some(&[
             // Resolve crash breakpoints by address
-            // BreakpointLookup::Address((VirtAddr(0x401371), CR3),
-
+            AddressLookup::Virtual(VirtAddr(0x401371), CR3),
             // .. or by symbol lookup
-            // BreakpointLookup::SymbolOffset("KillSystem", 0x1234)
+            AddressLookup::SymbolOffset("KillSystem", 0x1234),
         ])
     }
 
     fn breakpoints(&self) -> Option<&[Breakpoint<Self>]> {
         Some(&[
-            /*
             Breakpoint {
-                lookup: BreakpointLookup::SymbolOffset("harness!symbol", 0x0),
+                lookup: AddressLookup::SymbolOffset("harness!symbol", 0x0),
                 bp_type: BreakpointType::Repeated,
                 bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer| {
                     fuzzvm.set_rax(1);
                     Ok(Execution::Continue)
                 },
             },
-            */
-
-            /*
             Breakpoint {
-               lookup:   BreakpointLookup::SymbolOffset("libc.so.6!__GI___getpid", 0x0),
+                lookup: AddressLookup::SymbolOffset("libc.so.6!__GI___getpid", 0x0),
                 bp_type: BreakpointType::Repeated,
-                bp_hook: |fuzzvm: &mut FuzzVm, _input, _fuzzer| {
+                bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer| {
                     // Set the return value to 0xdeadbeef
                     fuzzvm.set_rax(0xdead_beef);
 
@@ -96,15 +90,12 @@ impl Fuzzer for TemplateFuzzer {
 
                     // Continue execution
                     Ok(Execution::Continue)
-                }
+                },
             },
-            */
-
-            /*
             Breakpoint {
-               lookup:   BreakpointLookup::Address(VirtAddr(0xffffffffa6a8fa19), CR3),
+                lookup: AddressLookup::Virtual(VirtAddr(0xffffffffa6a8fa19), CR3),
                 bp_type: BreakpointType::Repeated,
-                bp_hook: |fuzzvm: &mut FuzzVm, _input, _fuzzer| {
+                bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer| {
                     // mov r12d, dword ptr [rax+0x60]
                     // 0xc1 is currently at [rax + 0x60]. Overwrite this value with
                     // 0xdeadbeef
@@ -115,14 +106,12 @@ impl Fuzzer for TemplateFuzzer {
 
                     // Write the wanted 0xdeadbeef in the memory location read in the
                     // kernel
-                    fuzzvm.write_bytes_dirty(VirtAddr(rax + 0x60), CR3,
-                        &val.to_le_bytes())?;
+                    fuzzvm.write_bytes_dirty(VirtAddr(rax + 0x60), CR3, &val.to_le_bytes())?;
 
                     // Continue execution
                     Ok(Execution::Continue)
-                }
+                },
             },
-            */
         ])
     }
 
