@@ -1,5 +1,0 @@
-target
-snapshot
-**/*.rs.bk
-# remove if not needed
-Cargo.lock
