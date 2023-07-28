@@ -1,0 +1,12 @@
+harness/example
+harness/check
+harness/what
+qemu_snapshot/
+snapshot/
+fuzzer.log
+target/
+*.log
+src/constants.rs
+flamegraph.svg
+perf.data*
+perf.analyze

@@ -150,7 +150,7 @@ if [[ "$LIBFUZZER" ]]; then
     echo 'set {unsigned char}(__sanitizer_cov_trace_div4)=0xc3'          | sudo tee -a $DIR$HOMEDIR/gdbcmds
     echo 'set {unsigned char}(__sanitizer_cov_trace_div8)=0xc3'          | sudo tee -a $DIR$HOMEDIR/gdbcmds
     echo 'set {unsigned char}(__sanitizer_cov_trace_gep)=0xc3'           | sudo tee -a $DIR$HOMEDIR/gdbcmds
-    echo 'set {unsigned char}(__sanitizer_cov_trace_pc)=0xc3'            | sudo tee -a $DIR$HOMEDIR/gdbcmds
+    # echo 'set {unsigned char}(__sanitizer_cov_trace_pc)=0xc3'            | sudo tee -a $DIR$HOMEDIR/gdbcmds
     echo 'set {unsigned char}(__sanitizer_cov_trace_pc_guard)=0xc3'      | sudo tee -a $DIR$HOMEDIR/gdbcmds
     echo 'set {unsigned char}(__sanitizer_cov_trace_pc_guard_init)=0xc3' | sudo tee -a $DIR$HOMEDIR/gdbcmds
     echo 'set {unsigned char}(__sanitizer_cov_trace_pc_indir)=0xc3'      | sudo tee -a $DIR$HOMEDIR/gdbcmds

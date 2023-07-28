@@ -1,0 +1,13 @@
+harness/example
+qemu_snapshot/
+snapshot/
+fuzzer.log
+fuzzer*.log
+target/
+*.log
+src/constants.rs
+perf.*data*
+perf.data
+perf.*analyze
+*stats.toml
+stats*.toml

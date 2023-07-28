@@ -1,0 +1,13 @@
+[package]
+name = "fuzzer_template"
+version = "0.1.0"
+edition = "2021"
+exclude = ["snapshot", "harness"]
+
+[dependencies]
+anyhow = "1"
+log = "0.4"
+snapchange = { git = "https://github.com/awslabs/snapchange" }
+
+[build-dependencies]
+regex = "1"
