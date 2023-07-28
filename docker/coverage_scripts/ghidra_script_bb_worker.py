@@ -1,3 +1,5 @@
+# ghidra scripting uses jython2
+
 from ghidra.program.model.block import BasicBlockModel
 from ghidra.program.model.address import Address
 import sys

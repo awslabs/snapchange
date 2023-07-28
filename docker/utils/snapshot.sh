@@ -1,5 +1,8 @@
 #!/bin/bash
 
+if [[ -z "$SNAPCHANGE_ROOT" ]]; then
+  export SNAPCHANGE_ROOT="$(realpath "$(dirname "$0")../")"
+fi
 if [[ -z "$SNAPSHOT_OUTPUT" ]]; then
   # Directory to output snapshot files
   OUTPUT=/snapshot/
@@ -33,7 +36,7 @@ if [[ -z "$KASAN" ]]; then
     KASAN=0
 fi
 
-source /snapchange/log.sh || { echo "Failed to source /snapchange/log.sh"; exit 1; }
+source $SNAPCHANGE_ROOT/utils/log.sh || { echo "Failed to source $SNAPCHANGE_ROOT/utils/log.sh"; exit 1; }
 
 if [[ -z "$SNAPSHOT_ENTRYPOINT" ]]; then
     log_error "require setting a SNAPSHOT_ENTRYPOINT"
@@ -46,15 +49,15 @@ D9P="$(mktemp -d "/tmp/mnt.9p.XXXXXXX")"  # directory for 9pfs
 set -eu -o pipefail
 
 function start_vm {
-  QEMU="/snapchange/QEMU/build/qemu-system-x86_64"
-  KERNEL="/snapchange/linux.bzImage"
+  QEMU="$SNAPCHANGE_ROOT/QEMU/build/qemu-system-x86_64"
+  KERNEL="$SNAPCHANGE_ROOT/linux.bzImage"
   if [[ -n "$SNAPSHOT_KERNEL_IMG" ]]; then
     KERNEL="$SNAPSHOT_KERNEL_IMG"
   elif [[ "$KASAN" -eq 1 ]]; then
-    KERNEL="/snapchange/linux.kasan.bzImage"
+    KERNEL="$SNAPCHANGE_ROOT/linux.kasan.bzImage"
   fi
 
-  if ! command -v "$QEMU"; then
+  if ! command -v "$QEMU" >/dev/null; then
     log_error "No qemu found! ('$QEMU')"
     exit 1
   fi
@@ -67,34 +70,40 @@ function start_vm {
   mkdir -p "$D9P"
   D9P="$(realpath "$D9P")"
 
+  rm "$SNAPCHANGE_ROOT/vm.pid" >/dev/null 2>&1 || true
+
   log_msg "launching qemu"
 
   if [[ "$IMGTYPE" = "disk" ]]; then
+     set -x
      "$QEMU" \
         -m "$QEMU_MEM" \
         -smp 1 \
         -kernel "$KERNEL" \
         -append "console=ttyS0 root=/dev/sda earlyprintk=serial init=/init mitigations=off" \
-        -drive "file=/snapchange/$RELEASE.img" \
+        -drive "file=$SNAPCHANGE_ROOT/$RELEASE.img" \
         -net user,host=10.0.2.10,hostfwd=tcp:127.0.0.1:10021-:22 \
         -net nic,model=e1000 \
         -virtfs "local,path=$D9P,mount_tag=snapchange_mnt,security_model=mapped" \
         -nographic \
-        -pidfile vm.pid \
+        -pidfile "$SNAPCHANGE_ROOT/vm.pid" \
         2>&1 | tee vm.log
+     set +x
   elif [[ "$IMGTYPE" = "initramfs" ]]; then
+     set -x
       "$QEMU" \
           -m "$QEMU_MEM" \
           -smp 1 \
           -kernel "$KERNEL" \
-          -initrd "/snapchange/$RELEASE.initramfs.lz4" \
+          -initrd "$SNAPCHANGE_ROOT/$RELEASE.initramfs.lz4" \
           -append "console=ttyS0 earlyprintk=serial mitigations=off" \
           -net user,host=10.0.2.10,hostfwd=tcp:127.0.0.1:10021-:22 \
           -net nic,model=e1000 \
           -virtfs "local,path=$D9P,mount_tag=snapchange_mnt,security_model=mapped" \
           -nographic \
-          -pidfile vm.pid \
+          -pidfile "$SNAPCHANGE_ROOT/vm.pid" \
           2>&1 | tee vm.log
+     set +x
   else
     log_error "invalid IMGTYPE=$IMGTYPE - must be (disk|initramfs)"
     exit 1 
@@ -102,13 +111,13 @@ function start_vm {
 }
 
 function kill_vm {
-    if [[ -e vm.pid ]]; then
+    if [[ -e "$SNAPCHANGE_ROOT/vm.pid" ]]; then
         kill -9 "$(cat vm.pid)" || true
     fi
 }
 
 function check_vm_halted {
-    if [[ -e vm.pid ]]; then
+    if [[ -e "$SNAPCHANGE_ROOT/vm.pid" ]]; then
         if ps -p "$(cat vm.pid)" >/dev/null; then
             return 1
         else
@@ -168,9 +177,9 @@ if [[ -n "$SNAPSHOT_KERNEL_IMG" ]]; then
 else
   # Copy over the `vmlinux` into the output directory
   if [[ "$KASAN" -eq 1 ]]; then
-      cp /snapchange/vmlinux.kasan "$OUTPUT/vmlinux"
+      cp $SNAPCHANGE_ROOT/vmlinux.kasan "$OUTPUT/vmlinux"
   else
-      cp /snapchange/vmlinux "$OUTPUT/vmlinux"
+      cp $SNAPCHANGE_ROOT/vmlinux "$OUTPUT/vmlinux"
   fi
 fi
 
@@ -235,12 +244,21 @@ log_success "extracted snapshot - postprocessing now."
 if [[ "$LIBFUZZER" -eq 1 ]]; then 
     log_msg "patching physmem"
     BYTES="$(cat /tmp/libfuzzer.bytes.bak)"
+    R2Z=""
+    if command -v rizin >/dev/null 2>&1; then
+        R2Z=rizin
+    elif command -v r2 >/dev/null 2>&1; then
+        R2Z=r2
+    else
+        log_error "please install radare2/rizin for patching"
+        exit 1
+    fi
     # Restore the original bytes at the LLVMFuzzerTestOneInput bytes
-    r2 -w -q -c "/x cc0f01c1cdcdcdcdcdcdcdcdcdcdcdcd ; wx $BYTES @@ hit0*" "$OUTPUT/fuzzvm.physmem"
+    "$R2Z" -w -q -c "/x cc0f01c1cdcdcdcdcdcdcdcdcdcdcdcd ; wx $BYTES @@ hit0*" "$OUTPUT/fuzzvm.physmem"
 fi
 
 # Create the reset script for the snapshot
-cp ./reset_snapshot.sh $OUTPUT/reset.sh
+cp $SNAPCHANGE_ROOT/utils/reset_snapshot.sh $OUTPUT/reset.sh
 
 log_msg "creating coverage breakpoints with ghidra"
 # Create the coverage breakpoints and analysis
@@ -248,7 +266,7 @@ BIN_NAME="$(basename "$SNAPSHOT_ENTRYPOINT")"
 # Get the base address of the example from the module list
 BASE="$(grep "$BIN_NAME" "$OUTPUT/gdb.modules" | cut -d' ' -f1)"
 # Use ghidra to find the coverage basic blocks
-python3 ./ghidra_basic_blocks.py --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin"
+python3 $SNAPCHANGE_ROOT/coverage_scripts/ghidra_basic_blocks.py --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin"
 
 
 # finally just chown to something more sensible

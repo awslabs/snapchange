@@ -1,4 +1,4 @@
-FROM ubuntu:20.04
+FROM ubuntu:22.04
 
 # Install prereqs
 ARG DEBIAN_FRONTEND=noninteractive 
@@ -6,12 +6,13 @@ ARG TZ="America/Chicago"
 RUN apt-get update -q \
   && apt-get install -y --no-install-recommends -q \
     build-essential \
+    meson ninja-build cmake \
+    python3 python3-pip python-is-python3 \
     curl sudo tzdata git gcc g++ bc lcov libattr1 libattr1-dev libcap-ng0 libcap-ng-dev e2tools unzip \
     libglib2.0-dev libgcrypt20-dev zlib1g-dev autoconf automake libtool \
     bison flex libpixman-1-dev \
     clang make ninja-build debootstrap libelf-dev \
     libssl-dev pkg-config \
-    radare2 \
     openjdk-17-jdk unzip wget \
     libguestfs-tools \
     lz4 \
@@ -36,7 +37,9 @@ ENV KASAN="$KASAN"
 ARG BUSYBOX_STATIC="/busybox.static"
 ENV BUSYBOX_STATIC="$BUSYBOX_STATIC"
 
-RUN ./install/qemu.sh \
+RUN echo "[+] installers:" \
+  && ./install/rizin.sh \
+  && ./install/qemu.sh \
   && ./install/ghidra.sh \
   && ./install/linux.sh \
   && ls -al /snapchange/ \
@@ -45,8 +48,11 @@ RUN ./install/qemu.sh \
   && test -e /snapchange/vmlinux.kasan \
   && test -e /snapchange/linux.kasan.bzImage
 
-COPY ./utils/* /snapchange/
-RUN chmod +x *.sh && test -x go.sh
+COPY ./utils /snapchange/utils
+COPY ./coverage_scripts /snapchange/coverage_scripts
+RUN chmod +x ./utils/*.sh && test -x utils/go.sh
+
+ENV SNAPCHANGE_ROOT="/snapchange/"
 
 ARG SNAPSHOT_USER="root"
 ENV SNAPSHOT_USER="$USER"
@@ -74,4 +80,4 @@ ENV TEMPLATE_OUT="$TEMPLATE_OUT"
 
 ENV SNAPSHOT_CHECK_FOR_GDB=1
 
-ENTRYPOINT ["/snapchange/go.sh"]
+ENTRYPOINT ["/snapchange/utils/go.sh"]

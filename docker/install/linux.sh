@@ -1,13 +1,16 @@
 #!/bin/bash
 
 if [[ -z "$DEPTH" ]]; then
-    DEPTH="--depth 1"
+    DEPTH="--depth=1"
 fi
 if [[ -z "$LINUX_VERSION" ]]; then
     LINUX_VERSION=""
 fi
 if [[ -z "$LINUX_FORCE_REBUILD" ]]; then
   LINUX_FORCE_REBUILD=0
+fi
+if [[ -z "$SNAPCHANGE_ROOT" ]]; then
+  SNAPCHANGE_ROOT="$(realpath "$(dirname "$0")/../")"
 fi
 
 # Immediately stop execution if an error occurs
@@ -65,10 +68,10 @@ make defconfig
 
 yes "" | make -j "$(nproc)" bzImage
 
-mv vmlinux /snapchange/vmlinux
+mv vmlinux "$SNAPCHANGE_ROOT/vmlinux"
 for bzimg in ./arch/x86/boot/bzImage ./arch/boot/x86_64/bzImage; do
     if [[ -e "$bzimg" ]]; then
-        cp "$bzimg" /snapchange/linux.bzImage
+        cp "$bzimg" "$SNAPCHANGE_ROOT/linux.bzImage"
         break
     fi
 done
@@ -78,10 +81,10 @@ done
 make clean
 yes "" | make -j "$(nproc)" bzImage
 
-mv vmlinux /snapchange/vmlinux.kasan
+mv vmlinux "$SNAPCHANGE_ROOT/vmlinux.kasan"
 for bzimg in ./arch/x86/boot/bzImage ./arch/boot/x86_64/bzImage; do
     if [[ -e "$bzimg" ]]; then
-        cp "$bzimg" /snapchange/linux.kasan.bzImage
+        cp "$bzimg" "$SNAPCHANGE_ROOT/linux.kasan.bzImage"
         break
     fi
 done

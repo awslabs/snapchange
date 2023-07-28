@@ -2,19 +2,23 @@
 
 # make sure env vars have sensible default if not set:
 
+if [[ -z "$SNAPCHANGE_ROOT" ]]; then
+  export SNAPCHANGE_ROOT="$(realpath "$(dirname "$0")../")"
+fi
 if [[ -z "$SNAPSHOT_INPUT" ]]; then
-    DIR=/image/
+    DIR="$SNAPCHANGE_ROOT/image/"
 else
+  SNAPSHOT_INPUT="$(realpath "$SNAPSHOT_INPUT")"
   if [[ -d "$SNAPSHOT_INPUT" ]]; then
-    DIR="$SNAPSHOT_INPUT"
+    DIR="$(realpath "$SNAPSHOT_INPUT")"
   else
-    DIR=/image/
+    DIR="$(realpath -m ./image/)"
   fi
 fi
 if [[ -z "$SNAPSHOT_OUTPUT" ]]; then
-  OUTPUT=/snapshot/
+  OUTPUT="$SNAPCHANGE_ROOT/snapshot/"
 else
-  OUTPUT="$SNAPSHOT_OUTPUT"
+  OUTPUT="$(realpath -m "$SNAPSHOT_OUTPUT")"
 fi
 if [[ -z "$SNAPSHOT_IMGTYPE" ]]; then
     # IMGTYPE="disk"
@@ -45,8 +49,11 @@ fi
 if [[ -z "$SNAPCHANGE_DEV" ]]; then
     SNAPCHANGE_DEV=0
 fi
+if [[ -z "$BUSYBOX_STATIC" ]]; then
+    BUSYBOX_STATIC=/busybox.static
+fi
 
-source /snapchange/log.sh || { echo "Failed to source /snapchange/log.sh"; exit 1; }
+source $SNAPCHANGE_ROOT/utils/log.sh || { echo "Failed to source $SNAPCHANGE_ROOT/utils/log.sh"; exit 1; }
 
 RELEASE=harness
 
@@ -63,7 +70,7 @@ set -eu -o pipefail
 
 if ! [[ -d "$SNAPSHOT_INPUT" ]]; then
   mkdir -p "$DIR" || true
-  pushd "$dir" >/dev/null
+  pushd "$DIR" >/dev/null
   tar -xf "$SNAPSHOT_INPUT"
   popd >/dev/null
 fi
@@ -93,10 +100,20 @@ if [[ "$LIBFUZZER" -eq 1 ]]; then
         log_error "LLVMFuzzerTestOneInput not found in $BIN."
         exit 1
     fi
+
+    R2Z=""
+    if command -v rizin >/dev/null 2>&1; then
+        R2Z=rizin
+    elif command -v r2 >/dev/null 2>&1; then
+        R2Z=r2
+    else
+        log_error "please install radare2/rizin for patching"
+        exit 1
+    fi
     
     # If LIBFUZZER, dump the first 16 bytes of LLVMFuzzerTestOneInput to restore
     # after taking the snapshot. These bytes are corrupted 
-    r2 -q -c 'p8 16 @ sym.LLVMFuzzerTestOneInput' $BIN > /tmp/libfuzzer.bytes.bak
+    "$R2Z" -q -c 'p8 16 @ sym.LLVMFuzzerTestOneInput' $BIN > /tmp/libfuzzer.bytes.bak
 fi
 
  
@@ -232,7 +249,7 @@ chown root:root $RC_LOCAL
 echo "" >> $RC_LOCAL
 
 # Copy in the gdbsnapshot.py
-cp gdbsnapshot.py $DIR/$GDBPY
+cp $SNAPCHANGE_ROOT/utils/gdbsnapshot.py $DIR/$GDBPY
 chmod a+r "$DIR/$GDBPY"
 
 # Try to remove the old gdbcmds since we are writing a new one below
@@ -387,11 +404,11 @@ if [[ "$IMGTYPE" = "initramfs" ]]; then
     find . -print0 \
         | cpio --null --create --owner root:root --format=newc \
         | lz4c -l \
-        > "/snapchange/$RELEASE.initramfs.lz4"
+        > "$SNAPCHANGE_ROOT/$RELEASE.initramfs.lz4"
     popd
 elif [[ "$IMGTYPE" = "disk" ]]; then
     # Build a disk image
-    virt-make-fs "$DIR" "/snapchange/$RELEASE.img"
+    virt-make-fs "$DIR" "$SNAPCHANGE_ROOT/$RELEASE.img"
 else
     echo "[ERROR] invalid IMGTYPE=$IMGTYPE"
     exit 1

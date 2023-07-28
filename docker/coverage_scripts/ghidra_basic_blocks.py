@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import tempfile
 import subprocess
 import os
@@ -36,7 +38,7 @@ with tempfile.TemporaryDirectory() as tempdir:
         "-scriptPath",
         f'{this_dir}',
         "-postScript",
-        ".ghidra_worker.py",
+        "ghidra_script_bb_worker.py",
     ]
 
     # If there is a new base address via command line, add it to the command

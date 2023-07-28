@@ -1,14 +1,14 @@
 #!/bin/bash
 
 if [[ -z "$DEPTH" ]]; then
-    DEPTH="--depth 1"
+    DEPTH="--depth=1"
 fi
 
 set -eu -o pipefail
 
 if [ ! -d QEMU ]; then
     # Download v7.1.0 QEMU for this patch
-    git clone -b v7.1.0 "$DEPTH" https://github.com/qemu/QEMU
+    git clone $DEPTH -b v7.1.0 https://github.com/qemu/QEMU
 fi
 
 pushd QEMU
