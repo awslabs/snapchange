@@ -254,7 +254,7 @@ if [[ "$LIBFUZZER" -eq 1 ]]; then
         exit 1
     fi
     # Restore the original bytes at the LLVMFuzzerTestOneInput bytes
-    "$R2Z" -w -q -c "/x cc0f01c1cdcdcdcdcdcdcdcdcdcdcdcd ; wx $BYTES @@ hit0*" "$OUTPUT/fuzzvm.physmem"
+    "$R2Z" -w -q -c "/x cc0f01c1cdcdcdcdcdcdcdcdcdcdcdcd ; wx $BYTES @ hit0_0" "$OUTPUT/fuzzvm.physmem"
 fi
 
 # Create the reset script for the snapshot

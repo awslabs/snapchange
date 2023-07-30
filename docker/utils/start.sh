@@ -222,7 +222,7 @@ if [[ "$LIBFUZZER" ]]; then
     mv src/fuzzer.rs.libfuzzer fuzzer/src/fuzzer.rs
 
     # Restore the original bytes at the LLVMFuzzerTestOneInput bytes
-    r2 -w -q -c "/x cc0f01c1cdcdcdcdcdcdcdcdcdcdcdcd ; wx $BYTES @@ hit0*" ./fuzzer/snapshot/fuzzvm.physmem
+    r2 -w -q -c "/x cc0f01c1cdcdcdcdcdcdcdcdcdcdcdcd ; wx $BYTES @ hit0_0" ./fuzzer/snapshot/fuzzvm.physmem
 else
     # Default to the normal fuzzer template
     mv src/fuzzer.rs fuzzer/src/fuzzer.rs
