@@ -1,0 +1,4 @@
+*.pyc
+*.covbps
+dict
+*.bin

@@ -1,0 +1,10 @@
+fuzzer_template/target/
+fuzzer_template/Cargo.lock
+linux*
+vmlinux*
+QEMU
+ghidra
+image
+*.imng
+*.lz4
+vm.log

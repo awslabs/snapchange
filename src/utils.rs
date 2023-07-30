@@ -250,3 +250,44 @@ pub fn parse_cli_symbol(
         }
     }
 }
+
+
+/// helper functions for directly using libfuzzer binaries as harness.
+pub mod libfuzzer {
+    use crate::fuzzvm::FuzzVm;
+    use crate::fuzzer::Fuzzer;
+    use crate::addrs::VirtAddr;
+
+    /// sets a input for libfuzzers LLVMFuzzerTestOneInput
+    pub fn set_input<F: Fuzzer>(input: &[u8], fuzzvm: &mut FuzzVm<F>) -> anyhow::Result<()> {
+        // Restore RIP to before the `int3 ; vmcall` snapshot point
+        fuzzvm.set_rip(fuzzvm.rip() - 4);
+
+        // Set the data buffer to the current mutated input
+        let buffer = fuzzvm.rdi();
+        fuzzvm.write_bytes_dirty(VirtAddr(buffer), fuzzvm.cr3(), input)?;
+
+        // Set the length of the input
+        fuzzvm.set_rsi(input.len() as u64);
+
+        Ok(())
+    }
+
+    /// apply reset breakpoints at return address of libfuzzer's LLVMFuzzerTestOneInput
+    pub fn init_vm<F: Fuzzer>(fuzzvm: &mut FuzzVm<F>) -> anyhow::Result<()> {
+        let rsp = fuzzvm.rsp();
+        let cr3 = fuzzvm.cr3();
+        let retaddr = fuzzvm.read::<u64>(VirtAddr(rsp), cr3)?;
+        fuzzvm.set_breakpoint(
+            VirtAddr(retaddr),
+            cr3,
+            crate::fuzzer::BreakpointType::Repeated,
+            crate::fuzzvm::BreakpointMemory::NotDirty,
+            crate::fuzzvm::BreakpointHook::None,
+        )?;
+        if let Some(ref mut reset_bps) = fuzzvm.reset_breakpoints {
+            reset_bps.insert((VirtAddr(retaddr), cr3), crate::fuzzer::ResetBreakpointType::Reset);
+        }
+        Ok(())
+    }
+}

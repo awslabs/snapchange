@@ -396,9 +396,10 @@ pub enum SubCommand {
 /// Fuzz a project
 #[derive(Parser, Debug, Clone)]
 pub struct Fuzz {
-    /// Number of cores to fuzz with. Negative numbers interpretted as MAX_CORES - CORES.
-    #[clap(short, long, allow_hyphen_values = true)]
-    pub(crate) cores: Option<i64>,
+    /// Number of cores to fuzz with. Negative numbers interpretted as MAX_CORES - CORES. Prefix
+    /// with `/N` to specify a fraction of available cores.
+    #[clap(short, long, allow_hyphen_values = true, value_parser = parse_cores)]
+    pub(crate) cores: Option<usize>,
 
     /// Set the timeout (in seconds) of the execution of the VM. [0-9]+(ns|us|ms|s|m|h)
     #[clap(long, value_parser = parse_timeout, default_value = "1s")]
@@ -470,9 +471,10 @@ pub struct Minimize {
 /// CorpusMin subcommand
 #[derive(Parser, Debug)]
 pub struct CorpusMin {
-    /// Number of cores to fuzz with. Negative numbers interpretted as MAX_CORES - CORES.
-    #[clap(short, long, allow_hyphen_values = true)]
-    pub(crate) cores: Option<i64>,
+    /// Number of cores to fuzz with. Negative numbers interpretted as MAX_CORES - CORES. Prefix
+    /// with `/N` to specify a fraction of available cores.
+    #[clap(short, long, allow_hyphen_values = true, value_parser = parse_cores)]
+    pub(crate) cores: Option<usize>,
 
     /// The path to the corpus containing input files to minimize
     #[clap(short, long, default_value = "./snapshot/current_corpus")]
@@ -529,9 +531,10 @@ pub struct FindInput {
     #[clap(long, value_parser = parse_timeout, default_value = "1s")]
     pub(crate) timeout: Duration,
 
-    /// Number of cores to fuzz with. Negative numbers interpretted as MAX_CORES - CORES.
-    #[clap(short, long, allow_hyphen_values = true)]
-    pub(crate) cores: Option<i64>,
+    /// Number of cores to fuzz with. Negative numbers interpretted as MAX_CORES - CORES. Prefix
+    /// with `/N` to specify a fraction of available cores.
+    #[clap(short, long, allow_hyphen_values = true, value_parser = parse_cores)]
+    pub(crate) cores: Option<usize>,
 }
 
 /// Subcommands available for the command line specific to the project
@@ -1536,4 +1539,20 @@ pub fn parse_timeout(input: &str) -> anyhow::Result<Duration> {
 
     // Return the found duration
     Ok(res)
+}
+
+fn parse_cores(str: &str) -> Result<usize, anyhow::Error> {
+    let ncores = core_affinity::get_core_ids().unwrap().len();
+    let cores = if str.starts_with('/') {
+        let i = str[1..].parse::<usize>()?;
+        ncores / i
+    } else {
+        let i = str.parse::<i64>()?;
+        if i < 0 {
+            ((ncores as i64) + i) as usize
+        } else {
+            i as usize
+        }
+    };
+    Ok(cores)
 }
