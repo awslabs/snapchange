@@ -68,7 +68,7 @@ with tempfile.TemporaryDirectory() as tempdir:
     # If there is a new base address via command line, add it to the command
     # to be picked up by Ghidra
     if args.base_addr:
-        command.append(args.base_addr)
+        command.append(hex(args.base_addr))
 
     command = list(map(str, command))
     # Execute the command

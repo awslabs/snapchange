@@ -19,7 +19,7 @@ regex = "1"
 
 [profile.release]
 panic = "abort"
-lto = true
-codegen-units = 1
+lto = false
+codegen-units = 255
 opt-level = 3
 debug = true

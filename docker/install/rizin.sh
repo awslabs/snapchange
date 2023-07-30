@@ -6,7 +6,7 @@ RZ_GHIDRA_VERSION=v0.5.0
 if ! command -v rizin >/dev/null; then
     # install rizin
     set -e
-    git clone -b "$RZ_VERSION" --recursive https://github.com/rizinorg/rizin.git || { pushd rizin && git pull && popd; }
+    git clone -b "$RZ_VERSION" --recursive --depth 1 https://github.com/rizinorg/rizin.git || { pushd rizin && git pull && popd; }
     pushd rizin
     meson build
     ninja -C build
@@ -15,7 +15,7 @@ if ! command -v rizin >/dev/null; then
     rm -rf rizin
 
     # install rizin-ghidra plugin
-    git clone -b "$RZ_GHIDRA_VERSION" --recursive https://github.com/rizinorg/rz-ghidra.git || { pushd rz-ghidra && git pull && popd; }
+    git clone -b "$RZ_GHIDRA_VERSION" --recursive --depth 1 https://github.com/rizinorg/rz-ghidra.git || { pushd rz-ghidra && git pull && popd; }
     pushd rz-ghidra
     mkdir build
     pushd build
