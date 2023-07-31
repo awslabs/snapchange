@@ -216,7 +216,8 @@ The `RIP` and `CR3` values are automatically populated in the `build.rs`:
 
 ```rust
 // src/fuzzer.rs
-const CR3: usize = constants::CR3;
+const CR3: Cr3 = Cr3(constants::CR3);
+
 impl Fuzzer for Example1Fuzzer {
     type Input = Vec<u8>;
     const START_ADDRESS: u64 = constants::RIP;
@@ -281,12 +282,12 @@ cargo run -r -- project translate
 0x000055555555536e: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  | ................
 0x000055555555537e: ** repeated line(s) **
  POTENTIAL INSTRUCTIONS
-0x000055555555534e: 488b45f8               example1!main+0x55                                 | mov rax, qword ptr [rbp-0x8]
-0x0000555555555352: 4889c7                 example1!main+0x59                                 | mov rdi, rax
-0x0000555555555355: e85bfeffff             example1!main+0x5c                                 | call 0xfffffffffffffe60
-0x000055555555535a: b800000000             example1!main+0x61                                 | mov eax, 0x0
-0x000055555555535f: c9                     example1!main+0x66                                 | leave
-0x0000555555555360: c3                     example1!main+0x67                                 | ret
+0x000055555555534e: 488b45f8               example1!main+0x55 | mov rax, qword ptr [rbp-0x8]
+0x0000555555555352: 4889c7                 example1!main+0x59 | mov rdi, rax
+0x0000555555555355: e85bfeffff             example1!main+0x5c | call 0xfffffffffffffe60
+0x000055555555535a: b800000000             example1!main+0x61 | mov eax, 0x0
+0x000055555555535f: c9                     example1!main+0x66 | leave
+0x0000555555555360: c3                     example1!main+0x67 | ret
 
 ```
 
@@ -301,14 +302,14 @@ cargo run -r -- project translate 0x55555555534a
 ```
 
 ```
-0x000055555555534a: cc                     example1!main+0x51                                 | int3
-0x000055555555534b: 0f01c1                 example1!main+0x52                                 | vmcall
-0x000055555555534e: 488b45f8               example1!main+0x55                                 | mov rax, qword ptr [rbp-0x8]
-0x0000555555555352: 4889c7                 example1!main+0x59                                 | mov rdi, rax
-0x0000555555555355: e85bfeffff             example1!main+0x5c                                 | call 0xfffffffffffffe60
-0x000055555555535a: b800000000             example1!main+0x61                                 | mov eax, 0x0
-0x000055555555535f: c9                     example1!main+0x66                                 | leave
-0x0000555555555360: c3                     example1!main+0x67                                 | ret
+0x000055555555534a: cc                     example1!main+0x51 | int3
+0x000055555555534b: 0f01c1                 example1!main+0x52 | vmcall
+0x000055555555534e: 488b45f8               example1!main+0x55 | mov rax, qword ptr [rbp-0x8]
+0x0000555555555352: 4889c7                 example1!main+0x59 | mov rdi, rax
+0x0000555555555355: e85bfeffff             example1!main+0x5c | call 0xfffffffffffffe60
+0x000055555555535a: b800000000             example1!main+0x61 | mov eax, 0x0
+0x000055555555535f: c9                     example1!main+0x66 | leave
+0x0000555555555360: c3                     example1!main+0x67 | ret
 ```
 
 `translate` can be used as a check that the snapshot was taken properly.
@@ -346,7 +347,7 @@ Each virtual address must always be accompanied by the page table which translat
 virtual address. This page table can be found in the `CR3` register in `./snapshot/fuzzvm.qemuregs`.
 
 The other useful setting to set is when to trigger a reset of the fuzz case. `snapchange`
-calls these `reset breakpoints`. In this target, if we ever return from the `main`
+calls these "reset breakpoints". In this target, if we ever return from the `main`
 function, we know the fuzz case is finished and we want to start a different fuzz case. 
 Using the `translate` function, we can find the address of the `ret` from `main`.
 
@@ -354,14 +355,14 @@ Using the `translate` function, we can find the address of the `ret` from `main`
 $ cargo run -r -- project translate 0x000055555555534a --instrs 10
 
 POTENTIAL INSTRUCTIONS
-0x000055555555534a: cc                     example1!main+0x51                                 | int3
-0x000055555555534b: 0f01c1                 example1!main+0x52                                 | vmcall
-0x000055555555534e: 488b45f8               example1!main+0x55                                 | mov rax, qword ptr [rbp-0x8]
-0x0000555555555352: 4889c7                 example1!main+0x59                                 | mov rdi, rax
-0x0000555555555355: e85bfeffff             example1!main+0x5c                                 | call 0xfffffffffffffe60
-0x000055555555535a: b800000000             example1!main+0x61                                 | mov eax, 0x0
-0x000055555555535f: c9                     example1!main+0x66                                 | leave
-0x0000555555555360: c3                     example1!main+0x67                                 | ret
+0x000055555555534a: cc                     example1!main+0x51 | int3
+0x000055555555534b: 0f01c1                 example1!main+0x52 | vmcall
+0x000055555555534e: 488b45f8               example1!main+0x55 | mov rax, qword ptr [rbp-0x8]
+0x0000555555555352: 4889c7                 example1!main+0x59 | mov rdi, rax
+0x0000555555555355: e85bfeffff             example1!main+0x5c | call 0xfffffffffffffe60
+0x000055555555535a: b800000000             example1!main+0x61 | mov eax, 0x0
+0x000055555555535f: c9                     example1!main+0x66 | leave
+0x0000555555555360: c3                     example1!main+0x67 | ret
 [...]
 ```
 
@@ -385,8 +386,6 @@ Let's rebuild `snapchange` and start fuzzing with `4` cores.
 ```sh
 cargo run -r -- fuzz --cores 4
 ```
-
-The terminal UI should come up with some useful statistics. 
 
 `snapchange` currently relies on breakpoint coverage for determining coverage. This
 format is a `.covbps` file in the `project directory` containing a list of all
@@ -420,15 +419,10 @@ $ head snapshot/example1.bin.ghidra.covbps
 ...
 ```
 
-Restarting the fuzzer should start to show more coverage.
-
-```sh
-cargo run -r -- fuzz --cores 4
-```
-
 Eventually, we should see the string found in the `snapshot/current_corpus` as
 `fuzzmetosolveme!`. The fuzzer is now stuck at the `pid == 0xdeadbeef` check from the harness.  
-Let's get a single step trace of this input to see how we can bypass this check
+
+Let's get a single step trace of this input to see how we can bypass this check.
 
 ## Fuzzing with snapchange - Hooking getpid
 
