@@ -25,6 +25,7 @@ pub(crate) const LINUX_USERLAND_SYMBOLS: &[(&str, ResetBreakpointType)] = &[
     ("__GI_raise", ResetBreakpointType::Crash),
     // Reset when we hit exit
     ("__GI_exit", ResetBreakpointType::Reset),
+    ("ld-musl-x86_64.so.1!exit", ResetBreakpointType::Reset),
     // This one is something we see with musl/static linking
     ("__libc_exit_fini", ResetBreakpointType::Reset),
     // Crash on assert()
