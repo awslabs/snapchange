@@ -2,9 +2,8 @@
 
 This tutorial is a walkthrough of:
 
-    * Taking a snapshot of a target using `qemu_snapshot`
+    * Taking a snapshot of a target
     * Writing a fuzzer
-    * Watching coverage analysis and blockers
     * Using a hook to force a condition
     * Finding a crash
 
@@ -116,144 +115,115 @@ The compiled binary used is `example1`. Let's begin with taking the snapshot.
 
 ## Snapshot
 
-The `qemu_snapshot` project is how we will take a snapshot for this project. Briefly, the
+Snapchange includes a [docker](../../docker) to take a snapshot of this example. Briefly, the
 project will build a Linux kernel, a patched QEMU which enables snapshotting via
 `vmcall` instruction, and a Debian disk with the target binary running during boot under
 `gdb`.
 
-The fuzzer template included in snapchange contains scripts that facilitates:
+To use the Snapchange docker image to create this snapshot, we write a small [Dockerfile](./Dockerfile) 
+which will build this example target and set the variables needed for the `snapchange` image.
 
-    * Building the harness for a target
-    * Taking a snapshot of the harness using `qemu_snapshot`
-    * Generating a fuzzer.rs template, filling in information for this specific snapshot
-    * Generating coverage breakpoints using `bn_snapchange.py` (or radare2)
-
-Copy the fuzzer template (containing `qemu_snapshot`) and target source code from Snapchange as this example's repository:
-
-```sh
-$ cp -r -L <snapchange_dir>/fuzzer_template snapchange-example-01
-$ cp <snapchange_dir>/examples/01_getpid/example1.c snapchange-example-01
-$ cd snapchange-example-01
-```
-
-Add snapchange path as a dependency:
-
-```sh
-$ cargo add snapchange --path <snapchange_dir>
-```
-
-Modify the `snapchange-example-01/create_snapshot.sh` to build and use the example1 binary.
-
-```sh
-# Build the harness for this target
-build_harness() {
-  if [ ! -f example1 ]; then
-      clang -ggdb -O0 example1.c -o example1
-  fi
-}
-```
-
-```sh
-# Take the snapshot
-take_snapshot() {
-  # Build the image to execute the harness on start
-  pushd ./qemu_snapshot/IMAGE
-  ./build.sh ../../example1
-  popd
-
-  # Take the snapshot
-  pushd ./qemu_snapshot
-  ./snapshot.sh
-  popd
-}
-```
-
-```sh
-# Create the coverage breakpoints and analysis 
-create_coverage_breakpoints() {
-  # Attempt to create the coverage breakpoints and analysis
-  # Our example1 binary is renamed to example1.bin in ./snapshot
-  if [ ! -f "./snapshot/example1.bin.covbps" ]; then 
-    # Binary Ninja
-    python3 bn_snapchange.py --bps --analysis ./snapshot/example1.bin
-
-    # radare2
-    # r2 -q -c 'aa ; afb @@ *' ./snapshot/example1.bin | cut -d' ' -f1 | sort | uniq > ./snapshot/example1.bin.covbps
-  fi
-}
-```
-
-Execute the `./create_snapshot.sh` script to build and take the snapshot of the target.
-
-```sh
-./create_snapshot.sh
-```
-
-Here we should see lots of kernel debug messages. At the end of snapshot, we should see a
-listing of the `snapshot` directory:
+Begin with installing the requisite tools in a `base` image. 
 
 ```
-[*] Finished booting.. extracting gdb output
-[*] Moving the snapshot data into output
-[*] Found the following files
-total 2170816
-drwxrwxr-x  2 ubuntu ubuntu       4096 Sep 19 21:08 .
-drwxrwxr-x  9 ubuntu ubuntu       4096 Sep 19 21:08 ..
--rwxr-xr-x  1 ubuntu ubuntu      17776 Sep 19 21:07 example1.bin
--rw-rw-r--  1 ubuntu ubuntu 2147483647 Sep 19 21:08 fuzzvm.physmem
--rw-rw-r--  1 ubuntu ubuntu       2359 Sep 19 21:08 fuzzvm.qemuregs
--rw-r--r--. 1 ubuntu ubuntu        118 Sep 19 21:08 gdb.modules
--rw-r--r--. 1 ubuntu ubuntu    8951070 Sep 19 21:08 gdb.symbols
--rw-r--r--. 1 ubuntu ubuntu       2186 Sep 19 21:08 gdb.vmmap
--rwxrwxr-x  1 ubuntu ubuntu   73646312 Sep 19 21:07 vmlinux
+FROM alpine:edge as base
+RUN apk add --no-cache --initramfs-diskless-boot python3 gdb curl tar build-base perf
 ```
 
-We should see the following files in the `output` directory:
+Copy and build the harness in this `base` image:
+
+```
+COPY harness/* /opt/
+RUN cd /opt/ && make
+```
+
+Then, switch to the base `snapchange` image and copy all of the `base` image into the directory
+that snapchange is expecting the target to live (`$SNAPSHOT_INPUT`):
+
+```
+FROM snapchange
+COPY --from=base / "$SNAPSHOT_INPUT"
+```
+
+Finally, set the variable the `snapchange` image is expecting for how to execute the harness:
+
+```
+ENV SNAPSHOT_ENTRYPOINT=/opt/example1
+```
+
+* `SNAPSHOT_ENTRYPOINT` - The command to execute
+
+We can now build and run the container to take the snapshot.
+
+```
+# Build the base snapchange image used for snapshotting
+pushd ../../docker
+docker build -t snapchange .
+popd
+
+# Build this example's image
+docker build -t snapchange_example1 .
+
+# Run the image to take the snapshot
+docker run -i \
+    -v $(realpath -m ./snapshot):/snapshot/ \
+    -e SNAPSHOT_IMGTYPE=initramfs \
+    snapchange_example1
+```
+
+At the end of snapshot, we should see a listing of the `snapshot` directory:
+
+```
+$ ls -la snapshot/
+
+.rw-rw-r--   305 user 31 Jul 10:27 config.toml
+.rwxr-xr-x   20k user 31 Jul 10:26 example1.bin
+.rw-r-----   750 user 31 Jul 10:27 example1.bin.ghidra.covbps
+.rw-r--r--  5.4G user 31 Jul 10:26 fuzzvm.physmem
+.rw-r--r--  2.4k user 31 Jul 10:26 fuzzvm.qemuregs
+.rw-------@   89 user 31 Jul 10:26 gdb.modules
+.rw-------@ 7.3M user 31 Jul 10:26 gdb.symbols
+.rw-------@ 1.5k user 31 Jul 10:26 gdb.vmmap
+.rw-------  7.3M user 31 Jul 10:26 guestkernel.kallsyms
+.rwxr-xr-x   118 user 31 Jul 10:26 reset.sh
+.rw-r--r--   29k user 31 Jul 10:26 vm.log
+.rwxr-xr-x  400M user 31 Jul 10:26 vmlinux
+```
+
+We should see the following files in the `snapshot` directory:
 
 * `fuzzvm.physmem` - Physical memory snapshot
 * `fuzzvm.qemuregs` - Register state
 * `gdb.modules` - Loaded modules
 * `gdb.symbols` - Found symbols
 * `gdb.vmmap` - Memory map of the target process
-
-Lastly, `qemu_snapshot` will display lines containing `SNAPSHOT from QEMU's log file. This is
-mostly as a method of quickly finding the output written during the targets execution.
-
-```
-[*] Found this SNAPSHOT output from the vm log
-[   21.756932] rc.local[193]: SNAPSHOT Data buffer: 0x402004 
-[*] Killing the VM
-```
-
-This output tells us that the data buffer to fuzz is located at `0x402004` in the
-snapshot. 
+* `example1.bin.ghidra.covbps` - Coverage breakpoints retrieved from `example1.bin` using Ghidra
 
 ## Snapchange fuzzing
 
 Each fuzzer must set two associated values: `START_ADDRESS` and `MAX_INPUT_LENGTH`. 
-The `START_ADDRESS` provides a sanity check that the fuzzer and snapshot are paired 
+The `START_ADDRESS` provides a check that the fuzzer and snapshot are paired 
 correctly. The `START_ADDRESS` can be found in the `RIP` register in 
 `./snapshot/fuzzvm.qemuregs`. 
 
-The `MAX_INPUT_LENGTH` is the maximum length for a mutated input. 
- For this example, the maximum input length to generate is `16` bytes, the length of the 
-buffer in the original target source code.
+The `MAX_INPUT_LENGTH` is the maximum length for a mutated input. For this example, the maximum input 
+length to generate is `16` bytes, the length of the buffer in the original target source code.
 
 The `CR3` is the initial page table used by the snapshot. It can be found in the `CR3` register
 in `./snapshot/fuzzvm.qemuregs`. This is mostly a helper variable used throughout the fuzzer.
 
-The `RIP` and `CR3` values are automatically populated at the end of the `create_snapshot.sh` script.
+The `RIP` and `CR3` values are automatically populated in the `build.rs`:
 
 ```rust
 // src/fuzzer.rs
-const CR3: usize = <YOUR_CR3>
+const CR3: usize = constants::CR3;
 impl Fuzzer for Example1Fuzzer {
     type Input = Vec<u8>;
-    const START_ADDRESS: u64 = 0x401362;
+    const START_ADDRESS: u64 = constants::RIP;
     const MAX_INPUT_LENGTH: usize = 16;
 ```
 
-Let's rebuild `snapchange` now with the fuzzer initialized.
+Let's rebuild this example using the updated fuzzer:
 
 ```sh
 cargo build --release
@@ -272,21 +242,26 @@ $ cargo run -r -- --help
 ```
 
 ```sh
-Usage: Example01_getpid [OPTIONS] <COMMAND>
+Replay a given snapshot in KVM
+
+Usage: example_fuzzer [OPTIONS] <COMMAND>
 
 Commands:
-  fuzz      Fuzz a project
-  project   Gather data about the project
-  trace     Collect a single step trace for an input
-  minimize  Minimize an input by size or trace length
-  coverage  Gather coverage for an input
-  help      Print this message or the help of the given subcommand(s)
+  fuzz        Fuzz a project
+  project     Gather data about the project
+  trace       Collect a single step trace for an input
+  minimize    Minimize an input by size or trace length
+  coverage    Gather coverage for an input
+  find-input  Find an input that hits the given address or symbol
+  corpus-min  Minimize the given corpus by moving files that don't add any new coverage to a trash directory
+  help        Print this message or the help of the given subcommand(s)
 
 Options:
   -p, --project <PROJECT>  Path to the directory containing the target snapshot state. See documentation for the necessary files [default: ./snapshot]
   -v, --verbose...         More output per occurrence
   -q, --quiet...           Less output per occurrence
-  -h, --help               Print help information
+  -h, --help               Print help
+
 ```
 
 For example, we can `translate` the starting instruction to see what is going to be
@@ -297,91 +272,100 @@ cargo run -r -- project translate
 ```
 
 ```sh
-[2022-09-19T21:13:13Z INFO  snapchange::commands::project] Translating VirtAddr 0x401362 Cr3 0x84be000
-[2022-09-19T21:13:13Z INFO  snapchange::commands::project] VirtAddr 0x401362 -> PhysAddr 0xad4d362
+[2023-07-31T15:39:55Z INFO  snapchange::commands::project] Translating VirtAddr 0x55555555534e Cr3 0x11128c000
+[2023-07-31T15:39:55Z INFO  snapchange::commands::project] VirtAddr 0x55555555534e -> PhysAddr 0x1154e334e
  HEXDUMP
 ---- address -----   0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F    0123456789ABCDEF
-0x0000000000401362: 48 8b 7d f0 e8 f5 fd ff ff 31 c0 48 83 c4 20 5d  | H.}......1.H...]
-0x0000000000401372: c3 66 2e 0f 1f 84 00 00 00 00 00 0f 1f 00 f3 0f  | .f..............
-0x0000000000401422: ** repeated line(s) **
+0x000055555555534e: 48 8b 45 f8 48 89 c7 e8 5b fe ff ff b8 00 00 00  | H.E.H...[.......
+0x000055555555535e: 00 c9 c3 50 58 c3 00 00 00 00 00 00 00 00 00 00  | ...PX...........
+0x000055555555536e: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  | ................
+0x000055555555537e: ** repeated line(s) **
  POTENTIAL INSTRUCTIONS
-0x0000000000401362: 488b7df0           example1!main+0x62                              | mov rdi, qword ptr [rbp-0x10]
-0x0000000000401366: e8f5fdffff         example1!main+0x66                              | call 0xfffffffffffffdfa
-0x000000000040136b: 31c0               example1!main+0x6b                              | xor eax, eax
-0x000000000040136d: 4883c420           example1!main+0x6d                              | add rsp, 0x20
-0x0000000000401371: 5d                 example1!main+0x71                              | pop rbp
-0x0000000000401372: c3                 example1!main+0x72                              | ret
+0x000055555555534e: 488b45f8               example1!main+0x55                                 | mov rax, qword ptr [rbp-0x8]
+0x0000555555555352: 4889c7                 example1!main+0x59                                 | mov rdi, rax
+0x0000555555555355: e85bfeffff             example1!main+0x5c                                 | call 0xfffffffffffffe60
+0x000055555555535a: b800000000             example1!main+0x61                                 | mov eax, 0x0
+0x000055555555535f: c9                     example1!main+0x66                                 | leave
+0x0000555555555360: c3                     example1!main+0x67                                 | ret
+
 ```
 
 Here we see the virtual address to physical address translation, the bytes found at the
 translated physical address, and the attempted disassembly of those bytes. 
 
-If we go backwards `4` bytes (from `0x401362` -> `0x40135e`), we should see the snapshot trigger instructions of 
-`int3; vmcall`:
+If we go backwards `4` bytes (from `0x55555555534e` -> `0x55555555534a`), we should see the 
+snapshot trigger instructions of `int3; vmcall`:
 
 ```sh
-cargo run -r -- project translate 0x40135e
+cargo run -r -- project translate 0x55555555534a
 ```
 
 ```
-0x000000000040135e: cc                 example1!main+0x5e                              | int3
-0x000000000040135f: 0f01c1             example1!main+0x5f                              | vmcall
-0x0000000000401362: 488b7df0           example1!main+0x62                              | mov rdi, qword ptr [rbp-0x10]
-0x0000000000401366: e8f5fdffff         example1!main+0x66                              | call 0xfffffffffffffdfa
-0x000000000040136b: 31c0               example1!main+0x6b                              | xor eax, eax
-0x000000000040136d: 4883c420           example1!main+0x6d                              | add rsp, 0x20
+0x000055555555534a: cc                     example1!main+0x51                                 | int3
+0x000055555555534b: 0f01c1                 example1!main+0x52                                 | vmcall
+0x000055555555534e: 488b45f8               example1!main+0x55                                 | mov rax, qword ptr [rbp-0x8]
+0x0000555555555352: 4889c7                 example1!main+0x59                                 | mov rdi, rax
+0x0000555555555355: e85bfeffff             example1!main+0x5c                                 | call 0xfffffffffffffe60
+0x000055555555535a: b800000000             example1!main+0x61                                 | mov eax, 0x0
+0x000055555555535f: c9                     example1!main+0x66                                 | leave
+0x0000555555555360: c3                     example1!main+0x67                                 | ret
 ```
 
-`translate` can be used as a sanity check that the snapshot was taken properly.
+`translate` can be used as a check that the snapshot was taken properly.
 
 Let's setup the fuzzer now to fuzz the target.
 
 ## Fuzzing with snapchange - Finding the string
 
-When taking the snapshot, we noted the memory address that is needed to fuzz:
+When taking the snapshot, the log file from qemu is found in `snapshot/vm.log`. We have a `build.rs` that will
+populate the various constants from this specific snapshot in `src/constants.rs`: `CR3` and `RIP` from the
+`fuzzvm.qemuregs` and the data `INPUT` buffer from the `SNAPSHOT Data buffer` print statement in the harness.
     
-* Data buffer: 0x402004 
+```
+$ cat -p src/constants.rs
 
-_If using the `./make_example.sh` script, this data buffer address is found in the comments at the top of src/fuzzer.rs_
+pub const CR3: u64 = 0x000000011128c000;
+pub const RIP: u64 = 0x000055555555534e;
+pub const INPUT: u64 = 0x555555556000;
+```
 
 In the fuzzer, the `set_input` function is the function responsible for setting the given
 mutated input into the target for the current fuzz case. For now, let's write the mutated 
-input into the `data` buffer.
+input into the `INPUT` buffer.
 
 ```rust
 // src/fuzzer.rs
 fn set_input(&mut self, input: &[u8], fuzzvm: &mut FuzzVm) -> Result<()> {
     // Write the mutated input
-    fuzzvm.write_bytes_dirty(VirtAddr(0x402004), CR3, &input)?;
+    fuzzvm.write_bytes_dirty(VirtAddr(constants::INPUT), CR3, &input)?;
     Ok(())
 }
 ```
 
 Each virtual address must always be accompanied by the page table which translates the
-virtual address. This page table can be found in the `CR3` register in 
-`./snapshot/fuzzvm.qemuregs`.
+virtual address. This page table can be found in the `CR3` register in `./snapshot/fuzzvm.qemuregs`.
 
 The other useful setting to set is when to trigger a reset of the fuzz case. `snapchange`
-calls these `reset breakpoints`. In this target, if we ever return from the current 
+calls these `reset breakpoints`. In this target, if we ever return from the `main`
 function, we know the fuzz case is finished and we want to start a different fuzz case. 
-Using the `translate` function, we can find the address of the `ret` from the function.
+Using the `translate` function, we can find the address of the `ret` from `main`.
 
 ```
-$ cargo run -r -- project translate 0x40135e --instrs 10
+$ cargo run -r -- project translate 0x000055555555534a --instrs 10
 
 POTENTIAL INSTRUCTIONS
-0x000000000040135e: cc                 example1!main+0x5e                              | int3
-0x000000000040135f: 0f01c1             example1!main+0x5f                              | vmcall
-0x0000000000401362: 488b7df0           example1!main+0x62                              | mov rdi, qword ptr [rbp-0x10]
-0x0000000000401366: e8f5fdffff         example1!main+0x66                              | call 0xfffffffffffffdfa
-0x000000000040136b: 31c0               example1!main+0x6b                              | xor eax, eax
-0x000000000040136d: 4883c420           example1!main+0x6d                              | add rsp, 0x20
-0x0000000000401371: 5d                 example1!main+0x71                              | pop rbp
-0x0000000000401372: c3                 example1!main+0x72                              | ret
+0x000055555555534a: cc                     example1!main+0x51                                 | int3
+0x000055555555534b: 0f01c1                 example1!main+0x52                                 | vmcall
+0x000055555555534e: 488b45f8               example1!main+0x55                                 | mov rax, qword ptr [rbp-0x8]
+0x0000555555555352: 4889c7                 example1!main+0x59                                 | mov rdi, rax
+0x0000555555555355: e85bfeffff             example1!main+0x5c                                 | call 0xfffffffffffffe60
+0x000055555555535a: b800000000             example1!main+0x61                                 | mov eax, 0x0
+0x000055555555535f: c9                     example1!main+0x66                                 | leave
+0x0000555555555360: c3                     example1!main+0x67                                 | ret
 [...]
 ```
 
-We can set a `reset_breakpoint` as `0x401371` such that, if `0x401371` is ever executed,
+We can set a `reset_breakpoint` as `0x0000555555555360` such that, if `0x0000555555555360` is ever executed,
 to immediately exit the VM and start a new fuzz case. (Reminder, your `cr3` value will
 probably be different than the one here)
 
@@ -389,12 +373,12 @@ probably be different than the one here)
 // src/fuzzer/current_fuzzer.rs 
 fn reset_breakpoints(&self) -> Option<&[AddressLookup]> {
     Some(&[
-        AddressLookup::Virtual(VirtAddr(0x401371), CR3),
+        AddressLookup::Virtual(VirtAddr(0x0000555555555360), CR3),
     ])
 }
 ```
 
-_If using the `./make_example.sh` script, this CR3 variable is auto-populated at the top of the src/fuzzer.rs file_
+_If we don't set a `reset_breakpoint`, `snapchange` will reset on an `exit` call._
 
 Let's rebuild `snapchange` and start fuzzing with `4` cores.
 
@@ -402,46 +386,38 @@ Let's rebuild `snapchange` and start fuzzing with `4` cores.
 cargo run -r -- fuzz --cores 4
 ```
 
-The terminal UI should come up with some useful statistics. Quickly, it should be seen
-that no coverage is being found. 
+The terminal UI should come up with some useful statistics. 
 
 `snapchange` currently relies on breakpoint coverage for determining coverage. This
-format is just a `.covbps` file in the `project directory` containing a list of all
+format is a `.covbps` file in the `project directory` containing a list of all
 addresses that, if hit, signal a coverage hit. Typically, this is a list of basic blocks
 in the target.
 
 There is a [Binary Ninja](https://binary.ninja) script available 
-[here](../../bn_snapchange.py) to generate basic block coverage, but any 
-method of getting basic block coverage will work. For this tutorial there is already a 
-`example1.covbps` for the target available in this directory. 
+[here](../../docker/coverage_scripts/bn_snapchange.py) to generate basic block coverage, and
+the docker uses the Ghidra script available [here](../../docker/coverage_scripts/ghidra_basic_blocks.py) but any 
+method of getting basic block coverage will work. For this tutorial there is the
+`snapshot/example1.bin.ghidra.covbps` available from the docker container.
 
-There is also a [radare2](https://github.com/radare2/radare2) command in the
-`<snapchange_dir>/examples/01_getpid/Makefile` to generate similar data:
+There is also a [radare2](https://github.com/radare2/radare2) command to generate similar data:
 
 ```Makefile
-r2covbps: all
-    r2 -q -c 'aa ; s main ; afb' example1 | cut -d' ' -f1 > example1.covbps
+r2 -q -c 'aa ; s main ; afb' snapshot/example1.bin | cut -d' ' -f1 > snapshot/example1.bin.r2.covbps
 ```
-
-Let's copy that `example1.covbps` file into the output directory.
-
 
 This file is a list of basic block addresses used as coverage breakpoints.
 
 ```sh
-(ins)$ head example1.covbps
-0x401000
-0x401016
-0x401014
-0x401030
-0x401036
+$ head snapshot/example1.bin.ghidra.covbps
+
+0x555555555000
+0x555555555010
+0x555555555020
+0x555555555030
+0x555555555040
+0x555555555050
+0x555555555060
 ...
-```
-
-For now, also copy over the `example1.coverage_analysis` file as well (for use later)
-
-```sh
-cp <SNAPCHANGE_DIR>/examples/01_getpid/example1.covbps ./snapshot cp <SNAPCHANGE_DIR>/examples/01_getpid/example1.coverage_analysis ./snapshot
 ```
 
 Restarting the fuzzer should start to show more coverage.
@@ -450,19 +426,9 @@ Restarting the fuzzer should start to show more coverage.
 cargo run -r -- fuzz --cores 4
 ```
 
-NOTE: In the terminal UI, press `l` to move over to the coverage analysis panel to monitor
-where the fuzzer is currently blocked. Looking at the `fuzzme`
-
-```sh
-29: 0x4011a6 example1!fuzzme+0x46 /home/ubuntu/snapchange/examples/01_getpid/example1.c:20:9
-19: 0x4011fb example1!fuzzme+0x9b /home/ubuntu/snapchange/examples/01_getpid/example1.c:25:9
-13: 0x40122e example1!fuzzme+0xce /home/ubuntu/snapchange/examples/01_getpid/example1.c:28:9
-...
-```
-
 Eventually, we should see the string found in the `snapshot/current_corpus` as
-`fuzzmetosolveme!`. The fuzzer is now stuck at the `pid == 0xdeadbeef` check.  Let's get
-a single step trace of this input to see how we can bypass this check
+`fuzzmetosolveme!`. The fuzzer is now stuck at the `pid == 0xdeadbeef` check from the harness.  
+Let's get a single step trace of this input to see how we can bypass this check
 
 ## Fuzzing with snapchange - Hooking getpid
 
@@ -470,59 +436,49 @@ Single step traces can be really useful for analysis and triage as well as seein
 input is doing in the target.
 
 Let's gather a trace of the corpus file containing the password `fuzzmetosolveme!`. In
-this case, the file is `aed424a9`
+this case, the file is `c2b9b72428f4059c`:
 
 ```
-(ins)$ xxd aed424a9
+$ xxd snapshot/current_corpus/c2b9b72428f4059c
+
 ┌────────┬─────────────────────────┬─────────────────────────┬────────┬────────┐
 │00000000│ 66 75 7a 7a 6d 65 74 6f ┊ 73 6f 6c 76 65 6d 65 21 │fuzzmeto┊solveme!│
 └────────┴─────────────────────────┴─────────────────────────┴────────┴────────┘
 ```
 
 ```sh
-cargo run -r -- trace ./snapshot/current_corpus/aed424a9
+cargo run -r -- trace ./snapshot/current_corpus/c2b9b72428f4059c
 ```
 
 This will execute the given input gathering a single step trace.
 
 ```
-[2022-09-19T21:41:33Z INFO  snapchange::commands::trace] Writing func trace file: "./traces/aed424a9_trace"
-```
-
-Checking this trace, we can see where the `getpid` result is checked against
-`0xdeadbeef`.
-
-```sh
-$ cat ./traces/aed424a9_trace
-
-ITERATION 1355 0xffffffffa7800f86 0x084be000 | restore_regs_and_return_to_kernel+0x1b                       
-    test byte ptr [rsp+0x20], 0x4 
-    [RSP:0xfffffe0000002fd8+0x20=0xfffffe0000002ff8 size:UInt8->0x2b]] 
-    ??_Immediate8_?? [f6, 44, 24, 20, 04]
-<snip>
-ITERATION 1358 0x00007ffff7e94da7 0x084be000 | libc.so.6!__GI___getpid+0x7                                  
-    ret 
-    [c3]
-ITERATION 1359 0x0000000000401288 0x084be000 | example1!fuzzme+0x128                                        
-    mov dword ptr [rbp-0xc], eax 
-    [RBP:0x7fffffffebe0+0xfffffffffffffff4=0x100007fffffffebd4]] 
-    EAX:0xc1
-    [89, 45, f4]
-    /home/ubuntu/snapchange/examples/01_getpid/example1.c:33:13
-ITERATION 1360 0x000000000040128b 0x084be000 | example1!fuzzme+0x12b                                        
-    cmp dword ptr [rbp-0xc], 0xdeadbeef 
-    [RBP:0x7fffffffebe0+0xfffffffffffffff4=0x7fffffffebd4 size:UInt32->0xc1]] 
-    ??_Immediate32_?? [81, 7d, f4, ef, be, ad, de]
-    /home/ubuntu/snapchange/examples/01_getpid/example1.c:34:17
+[2023-07-31T15:56:23Z INFO  snapchange::commands::trace] Writing trace file: "./snapshot/traces/c2b9b72428f4059c_trace"
 ```
 
 The single step trace is a verbose trace with the register state of the
-relevant instructions for the given step. Here we see where `getpid` is executed
-in the kernel as well as the return back to userspace.
+relevant instructions for the given step. Checking this trace, we can see how the `getpid` 
+function is called.
 
-At address `0x401288`, the result from `getpid` (currently in `eax`) is written to the
-stack at `rbp-0xc`. Let's hook this address and change `eax` from whatever `getpid`
-returns to the value the target wants of `0xdeadbeef`.
+```sh
+$ cat ./snapshot/traces/c2b9b72428f4059c_trace
+
+INSTRUCTION 357 0x00005555555552d9 0x11128c000 | example1!fuzzme+0x124
+    call 0xfffffffffffffd67
+    ??_NearBranch64_?? [e8, 62, fd, ff, ff]
+    /opt/example1.c:33:15
+INSTRUCTION 358 0x0000555555555040 0x11128c000 | example1!_init+0x40
+    jmp qword ptr [rip+0x2f7a]
+    [RIP:0x555555555040+0x2f80=0x555555557fc0]]
+    [ff, 25, 7a, 2f, 00, 00]
+INSTRUCTION 359 0x00007ffff7fbe146 0x11128c000 | ld-musl-x86_64.so.1!getpid+0x0
+    mov eax, 0x27
+    EAX:0x21
+    ??_Immediate32_?? [b8, 27, 00, 00, 00]
+```
+
+At address `0x7ffff7fbe146`, `getpid` is called.  Let's hook this address and change `rax` 
+from whatever `getpid` would return to the value the target wants of `0xdeadbeef`.
 
 Two options are available for hooking instructions: by address or by symbol. Let's hook
 by symbols for this example. In our fuzzer, we can set a `Breakpoint` of type
@@ -537,14 +493,17 @@ continue executing the VM.
 ```rust
 fn breakpoints(&self) -> Option<&[Breakpoint]> {
     Some(&[
-        // ITERATION 1359 0x0000000000401288 0x084be000 | example1!fuzzme+0x128                                        
-        //     mov dword ptr [rbp-0xc], eax 
         Breakpoint {
-            lookup:  AddressLookup::SymbolOffset("example1!fuzzme", 0x128), 
+            lookup:  AddressLookup::SymbolOffset("ld-musl-x86_64.so.1!getpid", 0x0), 
             bp_type: BreakpointType::Repeated,
             bp_hook: |fuzzvm: &mut FuzzVm, input, _fuzzer| { 
                 // Set rax to 0xdeadbeef
                 fuzzvm.set_rax(0xdead_beef);
+
+                // Immediately return from this function
+                fuzzvm.fake_immediate_return();
+
+                // Continue executing the guest after finishing this hook
                 Ok(Execution::Continue)
             }
         },
@@ -578,23 +537,19 @@ cargo run -r -- trace ./snapshot/crashes/SIGSEGV_addr_0xcafecafe_code_AddressNot
 ```
 
 ```
-$ tail -n 40 ./traces/aed424a9_trace
+vim ./snapshot/traces/c2b9b72428f4059c_trace
 
-ITERATION 1362 0x0000000000401298 0x084be000 | example1!fuzzme+0x138
-    mov eax, 0xcafecafe
-    EAX:0xdeadbeef
-    ??_Immediate32_?? [b8, fe, ca, fe, ca]
-    /home/ubuntu/snapchange/examples/01_getpid/example1.c:35:31
-ITERATION 1363 0x000000000040129d 0x084be000 | example1!fuzzme+0x13d
+INSTRUCTION 095 0x00005555555552ef 0x11128c000 | example1!fuzzme+0x13a
     mov dword ptr [rax], 0x41414141
     [RAX:0xcafecafe]
     ??_Immediate32_?? [c7, 00, 41, 41, 41, 41]
-    /home/ubuntu/snapchange/examples/01_getpid/example1.c:35:31
-ITERATION 1364 0xffffffffa6a7fde0 0x084be000 | force_sig_fault+0x0
-    mov rcx, qword ptr gs:[0x1ad00]
-    RCX:0x1
-    [None:0x0+0x1ad00=0x1ad00 size:UInt64->????]]
-    [65, 48, 8b, 0c, 25, 00, ad, 01, 00]
+    /opt/example1.c:35:31
+...
+INSTRUCTION 1017 0xffffffff81099d60 0x11128c000 | force_sig_fault+0x0
+    nop word ptr [rax]
+    [RAX:0xffff88810862d580]
+    [66, 0f, 1f, 00]
+    /snapchange/linux/kernel/signal.c:1731:1
 ```
 
 And there's the crashing instruction.
@@ -603,91 +558,7 @@ And there's the crashing instruction.
 
 Here we took a look at some of the basics of `snapchange`:
 
-* Taking a snapshot of a target using `qemu_snapshot`
+* Taking a snapshot of a target 
 * Writing a simple fuzzer for the target by writing mutated bytes
 * Examining into the target snapshot using `translate`
-* Watching the coverage analysis tracker update to show the current coverage blockers
 * Getting a single step trace for an input using `trace`
-
-
-# Bonus - Other breakpoints
-
-There are other breakpoints we could get to achieve the same goal of returning
-`0xdeadbeef` from `getpid`.
-
-We could emulate the call to `getpid` and never call the actual function. Here, we hook
-at the `getpid` symbol and then emulate the call itself while faking return back to the
-target.
-
-```rust
-fn breakpoints(&self) -> Option<&[Breakpoint]> {
-    Some(&[
-        // ITERATION 650 0x00007ffff7e94da0 0x084be000 | libc.so.6!__GI___getpid+0x0
-        //     mov eax, 0x27 
-        Breakpoint {
-            lookup:   AddressLookup::SymbolOffset("libc.so.6!__GI___getpid", 0x0), 
-            bp_type: BreakpointType::Repeated,
-            bp_hook: |fuzzvm: &mut FuzzVm, _input, _fuzzer| { 
-                // Set the return value to 0xdeadbeef
-                fuzzvm.set_rax(0xdead_beef);
-
-                // Fake an immediate return from the function by setting RIP to the
-                // value popped from the stack (this assumes the function was entered
-                // via a `call`)
-                fuzzvm.fake_immediate_return()?;
-
-                // Continue execution
-                Ok(Execution::Continue)
-            }
-        },
-    ])
-}
-```
-
-We could also hook in the syscall itself and change when the `pid` value is read. Here is
-the exact location in the syscall where the pid of `0xc1` is read (taken from the
-original trace).
-
-```
-ITERATION 1152 0xffffffffa6a8fa19 0x084be000 | __task_pid_nr_ns+0x89                                        
-    mov r12d, dword ptr [rax+0x60] 
-    R12D:0x0
-    [RAX:0xffff94f1c2776f00+0x60=0xffff94f1c2776f60 size:UInt32->0xc1]] 
-    [44, 8b, 60, 60]
-```
-
-We can switch up the breakpoint here and use the exact address of this instruction that
-we are wanting to hook.
-
-
-```rust
-fn breakpoints(&self) -> Option<&[Breakpoint]> {
-    Some(&[
-        // ITERATION 1152 0xffffffffa6a8fa19 0x084be000 | __task_pid_nr_ns+0x89
-        //     mov r12d, dword ptr [rax+0x60] 
-        //     R12D:0x0
-        //     [RAX:0xffff94f1c2776f00+0x60=0xffff94f1c2776f60 size:UInt32->0xc1]] 
-        Breakpoint {
-            lookup:  AddressLookup::Virtual(VirtAddr(0xffffffffa6a8fa19), Cr3(0x084be000)),
-            bp_type: BreakpointType::Repeated,
-            bp_hook: |fuzzvm: &mut FuzzVm, _input, _fuzzer| { 
-                // mov r12d, dword ptr [rax+0x60] 
-                // 0xc1 is currently at [rax + 0x60]. Overwrite this value with
-                // 0xdeadbeef
-
-                // Get the current `rax` value
-                let rax = fuzzvm.rax();
-                let val: u32 = 0xdeadbeef;
-
-                // Write the wanted 0xdeadbeef in the memory location read in the
-                // kernel
-                fuzzvm.write_bytes_dirty(VirtAddr(rax + 0x60), Cr3(0x84be000), 
-                    &val.to_le_bytes())?;
-
-                // Continue execution
-                Ok(Execution::Continue)
-            }
-        },
-    ])
-}
-```

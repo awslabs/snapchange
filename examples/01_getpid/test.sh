@@ -2,9 +2,7 @@
 
 # Reset the snapshot from a previous run
 pushd snapshot > /dev/null
-/bin/rm coverage.* || true
-/bin/rm -rf current_corpus || true
-/bin/rm -rf crashes || true
+./reset.sh
 popd > /dev/null
 
 # Rebuild the fuzzer
