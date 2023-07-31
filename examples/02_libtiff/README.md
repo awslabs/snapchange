@@ -319,105 +319,116 @@ With the binary prepped, the snapshot can now be taken.
 
 ## Taking the snapshot
 
-The `qemu_snapshot` project is how we will take a snapshot for this project. Briefly, the
+Snapchange includes a [docker](../../docker) to take a snapshot of this example. Briefly, the
 project will build a Linux kernel, a patched QEMU which enables snapshotting via
-`vmcall` instruction, and a Debian disk with the target binary running during boot under
-`gdb`.
+`vmcall` instruction, and use an `initramfs` to run the target binary under `gdb`.
 
-The fuzzer template included in snapchange contains scripts that facilitates:
+To use the Snapchange docker image to create this snapshot, we write a small [Dockerfile](./Dockerfile) 
+which will build this example target and set the variables needed for the `snapchange` image.
 
-    * Building the harness for a target
-    * Taking a snapshot of the harness using `qemu_snapshot`
-    * Generating a fuzzer.rs template, filling in information for this specific snapshot
-    * Generating coverage breakpoints using `bn_snapchange.py` (or radare2)
-
-Copy the fuzzer template (containing `qemu_snapshot`) and target source code from Snapchange as this example's repository:
-
-```sh
-$ cp -r -L <snapchange_dir>/fuzzer_template snapchange-example-02
-$ cd snapchange-example-02
-```
-
-Add snapchange path as a dependency:
-
-```sh
-$ cargo add snapchange --path <snapchange_dir>
-```
-
-Modify the `snapchange-example-02/create_snapshot.sh` to build and use the example1 binary.
-
-```sh
-# Take the snapshot
-take_snapshot() {
-  # Build the image to execute the harness on start
-  pushd ./qemu_snapshot/IMAGE
-  ./build.sh ../../tiff-4.0.4/build/bin/tiffinfo -D -j -c -r -s -w ../../tiff-4.0.4/test/images/quad-tile.jpg.tiff
-  popd
-
-  # Take the snapshot
-  pushd ./qemu_snapshot
-  ./snapshot.sh
-  popd
-}
-```
-
-```sh
-# Create the coverage breakpoints and analysis 
-create_coverage_breakpoints() {
-  # Attempt to create the coverage breakpoints and analysis
-  # Our example1 binary is renamed to example1.bin in ./snapshot
-  if [ ! -f "./snapshot/tiffinfo.bin.covbps" ]; then 
-    # Binary Ninja
-    python3 bn_snapchange.py --bps --analysis ./snapshot/tiffinfo.bin
-
-    # radare2
-    # r2 -q -c 'aa ; afb @@ *' ./snapshot/tiffinfo.bin | cut -d' ' -f1 | sort | uniq > ./snapshot/tiffinfo.bin.covbps
-  fi
-}
-```
-
-Execute the `./create_snapshot.sh` script to build and take the snapshot of the target.
-
-```sh
-./create_snapshot.sh
-```
-
-After the kernel boots and the binary executes, the snapshot is taken and files are
-written to the `output` directory. The utility script also greps for `SNAPSHOT` to 
-display any marked messages we had during the execution.
+Begin by starting with a `base` image and include the requisites: `gdb` and `python3` for taking the
+snapshot and `clang` and `compiler-rt` to build the target with clang and Address Sanitizer.
 
 ```
-[*] Found this SNAPSHOT output from the vm log
-[   21.990653] rc.local[193]: SNAPSHOT: Input buffer: 0x631000000800 Buffer len: 0x10000 Size Addr: 0x7fffffffe770
+FROM alpine:edge as base
+
+RUN apk add --no-cache --initramfs-diskless-boot python3 gdb curl tar build-base perf \
+  clang compiler-rt
 ```
 
-The `output` directory (called `OUTPUT_DIR` for the rest of this tutorial) should now
-contain the following files for the snapshot:
+Copy the patch and build the target:
 
 ```
-[*] Found the following files
-total 2174532
-drwxrwxr-x  2 ubuntu ubuntu       4096 Sep 27 14:56 .
-drwxrwxr-x  9 ubuntu ubuntu       4096 Sep 27 14:56 ..
--rw-rw-r--  1 ubuntu ubuntu 2147483647 Sep 27 14:56 fuzzvm.physmem
--rw-rw-r--  1 ubuntu ubuntu       2359 Sep 27 14:56 fuzzvm.qemuregs
--rw-r--r--. 1 ubuntu ubuntu        375 Sep 27 14:55 gdb.modules
--rw-r--r--. 1 ubuntu ubuntu    9433789 Sep 27 14:56 gdb.symbols
--rw-r--r--. 1 ubuntu ubuntu       8606 Sep 27 14:55 gdb.vmmap
--rwxr-xr-x  1 ubuntu ubuntu    3328536 Sep 27 14:55 tiffinfo.bin
--rwxrwxr-x  1 ubuntu ubuntu   73646760 Sep 27 14:55 vmlinux
+COPY 0001-snapshot.patch /opt
+RUN cd /opt/ && \
+  wget https://download.osgeo.org/libtiff/tiff-4.0.4.tar.gz && \
+  tar -xzvf tiff-4.0.4.tar.gz && \
+  rm tiff-4.0.4.tar.gz && \
+  cd tiff-4.0.4 && \
+  patch -p1 < ../0001-snapshot.patch && \
+  CC=clang \
+    CXX=clang++ \
+    CFLAGS='-ggdb -fsanitize=address' \
+    CXXFLAGS='-ggdb -fsanitize=address' \
+    ./configure --disable-shared --prefix=$PWD/build && \
+  make -j `nproc` && \
+  make install
+```
+
+Then, switch to the base `snapchange` image and copy all of the `base` image into the directory
+that snapchange is expecting the target to live (`$SNAPSHOT_INPUT`):
+
+```
+FROM snapchange
+COPY --from=base / "$SNAPSHOT_INPUT"
+```
+
+Write the variables the `snapchange` image is expecting to take the snapshot
+
+```
+ENV SNAPSHOT_ENTRYPOINT=/opt/tiff-4.0.4/build/bin/tiffinfo
+ENV SNAPSHOT_ENTRYPOINT_ARGUMENTS="-D -j -c -r -s -w /opt/tiff-4.0.4/test/images/logluv-3c-16b.tiff"
+ENV SNAPSHOT_EXTRACT="/opt/tiff-4.0.4/test/images"
+```
+
+* `SNAPSHOT_ENTRYPOINT` - The command to execute
+* `SNAPSHOT_ENTRYPOINT_ARGUMENTS` - Arguments for the target being executed
+* `SNAPSHOT_EXTRACT` - Files to extract from the image to the output directory
+
+Now we can build and run the docker image to take the snapshot:
+
+```
+# Build the base snapchange image used for snapshotting
+pushd ../../docker
+docker build -t snapchange .
+popd
+
+# Build this example's image
+docker build -t snapchange_example2 .
+
+# Run the image to take the snapshot
+docker run -i \
+    -v $(realpath -m ./snapshot):/snapshot/ \
+    -e SNAPSHOT_IMGTYPE=initramfs \
+    snapchange_example2
+```
+
+Finally, we want to populate the starting corpus using the test files from project itself:
+
+```
+mkdir -p snapshot/input
+find snapshot/image/opt/tiff-4.0.4/test/images/*tiff -size -40k -exec cp {} snapshot/input/ \;
+```
+
+The `snapshot` directory should now contain the following files for the snapshot:
+
+```
+$ ls -la snapshot/
+
+.rw-r--r--  5.4G user 31 Jul 13:06 fuzzvm.physmem
+.rw-r--r--  2.4k user 31 Jul 13:06 fuzzvm.qemuregs
+.rw-------@  133 user 31 Jul 13:06 gdb.modules
+.rw-------@ 7.6M user 31 Jul 13:06 gdb.symbols
+.rw-------@ 3.8k user 31 Jul 13:06 gdb.vmmap
+.rw-------  7.3M user 31 Jul 13:06 guestkernel.kallsyms
+drwxrwxr-x     - user 31 Jul 13:10 input
+.rwxr-xr-x   118 user 31 Jul 13:06 reset.sh
+.rwxr-xr-x  4.4M user 31 Jul 13:05 tiffinfo.bin
+.rw-r-----  636k user 31 Jul 13:10 tiffinfo.bin.ghidra.covbps
+.rw-r--r--   34k user 31 Jul 13:06 vm.log
+.rwxr-xr-x  400M user 31 Jul 13:05 vmlinux
 ```
 
 Coverage breakpoints are also needed for gathering coverage. Briefly, we create a file
-containing all basic blocks found in a binary to use as a coverage signal. We can use 
-either the [`bn_snapchange.py`](../../bn_snapchange.py) utility (if [Binary Ninja](https://binary.ninja) is
-available) or use the following command with
-[radare2](https://github.com/radareorg/radare2):
+containing all basic blocks found in a binary to use as a coverage signal. The snapchange
+docker uses [this](../../docker/coverage_scripts/ghidra_basic_blocks.py) Ghidra plugin
+to find the coverage breakpoints in this example. There are a few other examples 
+available as well:
 
 #### Binary Ninja
 
 ```
-python3 bn_snapchange.py --bps tiffinfo.bin
+python3 ../../docker/coverage_scripts/bn_snapchange.py --bps ./snapshot/tiffinfo.bin
 ```
 
 #### radare2
@@ -430,25 +441,24 @@ With the snapshot taken, the fuzzer can now be written.
 
 # Fuzzing with snapchange
 
-After `./create_snapshot.sh` finishes, the template fuzzer is found in `./src/fuzzer.rs` with
-snapshot specific information filled in (`RIP` and `CR3`).
+Each fuzzer must set two associated values: `START_ADDRESS` and `MAX_INPUT_LENGTH`. 
+The `START_ADDRESS` provides a check that the fuzzer and snapshot are paired 
+correctly. The `START_ADDRESS` can be found in the `RIP` register in 
+`./snapshot/fuzzvm.qemuregs`. 
+
+The included `build.rs` will parse the `./snapshot/fuzzvm.qemuregs` to find the required `RIP` and `CR3`
+from the snapshot. These constants are written to `src/constants.rs`.
 
 Update the `MAX_INPUT_LENGTH` in `src/fuzzer.rs` to reflect the maximum input bytes the snapshot expects.
 
 ```rust
-const CR3: Cr3 = Cr3(0x0000000002f70000);
+// src/fuzzer.rs
+
+const CR3: Cr3 = Cr3(constants::CR3);
 impl Fuzzer for Example2Fuzzer {
     type Input = Vec<u8>;
-    const START_ADDRESS: u64 = 0x528a32;
+    const START_ADDRESS: u64 = constants::RIP;
     const MAX_INPUT_LENGTH: usize = 0x10000;
-```
-
-Finally, let's initialize an `input` directory of the test images from libtiff that are
-less than 30k in size:
-
-```
-$ mkdir snapshot/input
-$ find tiff-4.0.4/test/images/*tiff -size -30k | xargs -i cp {} snapshot/input
 ```
 
 We can initialize the hook for `read` in `_tiffReadProc` as well in `fuzzer.rs`. Let's
@@ -579,11 +589,11 @@ $ cargo run -r -- trace ./snapshot/input/logluv-3c-16b.tiff
 ```
 
 ```
-RIP:  0x00007ffff7cd5160 RFLAGS: ZERO_FLAG | PARITY_FLAG
+RIP:  0x00007ffff7f70087 RFLAGS: ZERO_FLAG | PARITY_FLAG
 ----------------------------------------------------- INSTRUCTION ------------------------------------------------------
-INSTR: libc.so.6!__GI_exit+0x0 | sub rsp, 0x8
-    RSP:0x7fffffffebb8 -> libc.so.6!__libc_start_call_main+0x81 -> '芺'
-    ??_Immediate8to64_?? [48, 83, ec, 08]
+INSTR: ld-musl-x86_64.so.1!exit+0x0 | int3
+    [cc]
+
 ```
 
 Excellent! The fuzzer reached `exit`. With the `read` hook implemented, we also need to
@@ -592,8 +602,10 @@ populate the `giant_buffer` that was allocated by us in the harness.
 Reminder from taking the snapshot, below are the buffer address and size address:
 
 ```
-SNAPSHOT: Input buffer: 0x631000000800 Size Addr: 0x7fffffffe770
+SNAPSHOT: Input buffer: 0x631000000800 Buffer len: 0x10000 Size Addr: 0x7fffffffe950
 ```
+
+These constants are parsed in the `build.rs` and set to `constants::INPUT` and `constants::INPUT_ADDR`.
 
 We want the input buffer to be populated at the beginning of each fuzz run. This will
 happen in the `set_input()` function in the fuzzer.
@@ -602,49 +614,39 @@ happen in the `set_input()` function in the fuzzer.
 // src/fuzzer.rs
 
 fn set_input(&mut self, input: &[u8], fuzzvm: &mut FuzzVm) -> Result<()> {
-    // SNAPSHOT: Input buffer: 0x631000000800 Size Addr: 0x7fffffffe770
-
     // Write the mutated input
-    fuzzvm.write_bytes_dirty(VirtAddr(0x6310_0000_0800), Cr3(0x276_a000), &input)?;
+    fuzzvm.write_bytes_dirty(VirtAddr(constants::INPUT), CR3, &input)?;
 
     // Write the mutated input length
-    fuzzvm.write::<u32>(VirtAddr(0x7fff_ffff_e770), Cr3(0x276_a000), input.len() as u32)?;
+    fuzzvm.write::<u32>(VirtAddr(constants::INPUT_ADDR), CR3, input.len() as u32)?;
 
     Ok(())
 }
 ```
 
 Libtiff also has a few status message wrappers that we don't necessarily need for
-fuzzing: `TIFFErrorExt` and `TIFFWarningExt`. Let's hook and immediately return from
-these functions to ignore them.
+fuzzing: `TIFFErrorExt` and `TIFFWarningExt`. Let's permanently patch the snapshot to always
+return from theese message wrappers. This is a bit better than adding breakpoints as this
+avoids exiting the guest on each hit. Avoiding as many guest exits as possible helps with
+the performance of the fuzzer.
 
 ```rust
 // src/fuzzer.rs
 
-fn breakpoints(&self) -> Option<&[Breakpoint]> {
-    Some(&[
-        <snip>
-        Breakpoint {
-            lookup:   AddressLookup::SymbolOffset("tiffinfo!TIFFErrorExt", 0x0),
-            bp_type: BreakpointType::Repeated,
-            bp_hook: |fuzzvm: &mut FuzzVm, input, _fuzzer| { 
-                // let error = fuzzvm.read_c_string(VirtAddr(fuzzvm.rdx()), CR3)?;
-                // log::info!("tiffinfo ERROR: {error}");
-                fuzzvm.fake_immediate_return()?;
-                Ok(Execution::Continue)
-            }
-        },
-        Breakpoint {
-            lookup:   AddressLookup::SymbolOffset("tiffinfo!TIFFWarningExt", 0x0),
-            bp_type: BreakpointType::Repeated,
-            bp_hook: |fuzzvm: &mut FuzzVm, input, _fuzzer| { 
-                // let error = fuzzvm.read_c_string(VirtAddr(fuzzvm.rdx()), CR3)?;
-                // log::info!("tiffinfo WARN: {error}");
-                fuzzvm.fake_immediate_return()?;
-                Ok(Execution::Continue)
-            }
-        },
-    ])
+fn init_snapshot(&mut self, fuzzvm: &mut FuzzVm<Self>) -> Result<()> {
+    for symbol in ["tiffinfo!TIFFErrorExt", "tiffinfo!TIFFWarningExt"] {
+        // Get the virtual address for each of these symbols
+        if let Some((virt_addr, cr3)) = fuzzvm.get_symbol_address(symbol) {
+            // Patch the first instruction of each symbol to immediately return
+            //
+            // This is slightly better than a breakpoint since we don't have to
+            // exit the guest which is a bit more costly.
+            let addr = AddressLookup::Virtual(virt_addr, cr3);
+            fuzzvm.patch_bytes_permanent(addr, &[0xc3]);
+        }
+    }
+
+    Ok(())
 }
 ```
 
@@ -659,37 +661,35 @@ After a bit of time, crashes should be found in `./snapshot/crashes`
 ```
 $ ls ./snapshot/crashes
 
-ASAN_READ23_pc:0x43ad6b_crashing_addr:0x603000000146_tiffinfo!_ZL13printf_commonPvPKcP13__va_list_tag+0x95b
-ASAN_READ23_pc:0x43ad6b_crashing_addr:0x603000000176_tiffinfo!_ZL13printf_commonPvPKcP13__va_list_tag+0x95b
-ASAN_READ23_pc:0x43ad6b_crashing_addr:0x603000000236_tiffinfo!_ZL13printf_commonPvPKcP13__va_list_tag+0x95b
+ASAN_READ_pc:0x5555555a899d_crashing_addr:0x602000000071_tiffinfo!_ZL13printf_commonPvPKcP13__va_list_tag+0x9fd
+ASAN_READ_pc:0x5555555a899d_crashing_addr:0x603000000173_tiffinfo!_ZL13printf_commonPvPKcP13__va_list_tag+0x9fd
 ```
 
 Let's see if the ASAN `read` crashes reproduce with the original binary (the exact crashing file 
-will probably be different on your machine):
+will probably be different on your machine). There is a `triage.sh` utility to help execute
+a crash file in the target Dockerfile
 
 ```
-$ tiff-4.0.4/build/bin/tiffinfo -D -j -c -r -s -w 02_libtiff/snapshot/crashes/ASAN_READ23_pc\:0x43ad6b_crashing_addr\:0x603000000146_tiffinfo\!_ZL13printf_commonPvPKcP13__va_list_tag+0x95b/41356f7c
+$ cp ./snapshot/crashes/ASAN_READ_pc:0x5555555a899d_crashing_addr:0x602000000071_tiffinfo!_ZL13printf_commonPvPKcP13__va_list_tag+0x9fd/9d39f35e298df2be poc
 ```
 
 ```
-TIFF Directory at offset 0xbd4 (3028)
-  Image Width: 157 Image Length: 151
-  Bits/Sample: 1
-  Compression Scheme: None
-  Samples/Pixel: 1
-  Rows/Strip: 409
-  Planar Configuration: single image plane
+./triage.sh poc
+```
+
+```
 =================================================================
-==42904==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x603000000116 at pc 0x00000043ad6b bp 0x7ffed7150a50 sp 0x7ffed71501d8
-READ of size 23 at 0x603000000116 thread T0
-    #0 0x43ad6a in printf_common(void*, char const*, __va_list_tag*) (/home/ubuntu/targets/libtiff-4.0.4/tiff-4.0.4/build/bin/tiffinfo+0x43ad6a)
-    #1 0x43c1ef in fprintf (/home/ubuntu/targets/libtiff-4.0.4/tiff-4.0.4/build/bin/tiffinfo+0x43c1ef)
-    #2 0x534215 in _TIFFPrintField /home/ubuntu/targets/libtiff-4.0.4/tiff-4.0.4/libtiff/tif_print.c:127:4
-    #3 0x5321aa in TIFFPrintDirectory /home/ubuntu/targets/libtiff-4.0.4/tiff-4.0.4/libtiff/tif_print.c:641:5
-    #4 0x4c50d2 in tiffinfo /home/ubuntu/targets/libtiff-4.0.4/tiff-4.0.4/tools/tiffinfo.c:449:2
-    #5 0x4c4af0 in main /home/ubuntu/targets/libtiff-4.0.4/tiff-4.0.4/tools/tiffinfo.c:152:6
-    #6 0x7fe689b19082 in __libc_start_main /build/glibc-SzIz7B/glibc-2.31/csu/../csu/libc-start.c:308:16
-    #7 0x41c4cd in _start (/home/ubuntu/targets/libtiff-4.0.4/tiff-4.0.4/build/bin/tiffinfo+0x41c4cd)
+==1==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x6030000000b3 at pc 0x55ddf350499d bp 0x7ffc4ddd1630 sp 0x7ffc4ddd0db8
+READ of size 20 at 0x6030000000b3 thread T0
+    #0 0x55ddf350499c in printf_common(void*, char const*, __va_list_tag*) /home/buildozer/aports/main/llvm-runtimes/src/llvm-project-16.0.6.src/compiler-rt/lib/asan/../sanitizer_common/sanitizer_common_interceptors_format.inc:553:9
+    #1 0x55ddf350585b in __interceptor_vfprintf /home/buildozer/aports/main/llvm-runtimes/src/llvm-project-16.0.6.src/compiler-rt/lib/asan/../sanitizer_common/sanitizer_common_interceptors.inc:1718:1
+    #2 0x55ddf350585b in __interceptor_fprintf /home/buildozer/aports/main/llvm-runtimes/src/llvm-project-16.0.6.src/compiler-rt/lib/asan/../sanitizer_common/sanitizer_common_interceptors.inc:1775:1
+    #3 0x55ddf36075d6 in _TIFFPrintField /opt/tiff-4.0.4/libtiff/tif_print.c:127:4
+    #4 0x55ddf360583e in TIFFPrintDirectory /opt/tiff-4.0.4/libtiff/tif_print.c:641:5
+    #5 0x55ddf35a00ba in tiffinfo /opt/tiff-4.0.4/tools/tiffinfo.c:449:2
+    #6 0x55ddf359fb38 in main /opt/tiff-4.0.4/tools/tiffinfo.c:152:6
+    #7 0x7fcdd449e6d0 in libc_start_main_stage2 /home/buildozer/aports/main/musl/src/83b858f83b658bd34eca5d8ad4d145f673ae7e5e/src/env/__libc_start_main.c:95:2
+
 ```
 
 Looks like the fuzzer found an out of bounds read with Address Sanitizer!
@@ -704,71 +704,68 @@ relevant bytes for the crash while keeping the crashing state constant.
 Execute the `minimize` subcommand with the crashing input:
 
 ```
-$ cargo run -r -- minimize ./snapshot/crashes/ASAN_READ23_pc\:0x43ad6b_crashing_addr\:0x603000000146_tiffinfo\!_ZL13printf_commonPvPKcP13__va_list_tag+0x95b/41356f7c
+$ cargo run -r -- minimize poc
 ```
 
 A bit of status about the current state of the minimizer during the process:
 
 ```
-[2022-09-26T19:53:12Z INFO  snapchange::commands::minimize] Minimize State: Slices Input len: 3290
-[2022-09-26T19:53:12Z INFO  snapchange::commands::minimize] Minimize State: MultiBytes Input len: 3290
-[2022-09-26T19:53:13Z INFO  snapchange::commands::minimize] Exec/sec: 3935.20 Input len: 3277
-[2022-09-26T19:53:14Z INFO  snapchange::commands::minimize] Exec/sec: 3965.37 Input len: 3265
-[2022-09-26T19:53:14Z INFO  snapchange::commands::minimize] Minimize State: SingleBytes Input len: 3265
-[2022-09-26T19:53:15Z INFO  snapchange::commands::minimize] Exec/sec: 3980.17 Input len: 3251
-[2022-09-26T19:53:16Z INFO  snapchange::commands::minimize] Exec/sec: 3993.19 Input len: 3238
-[2022-09-26T19:53:16Z INFO  snapchange::commands::minimize] Minimize State: Replace(cd) Input len: 3238
-[2022-09-26T19:53:17Z INFO  snapchange::commands::minimize] Exec/sec: 3776.88 Input len: 3238
-[2022-09-26T19:53:18Z INFO  snapchange::commands::minimize] Exec/sec: 3848.10 Input len: 3238
-[2022-09-26T19:53:19Z INFO  snapchange::commands::minimize] Minimized from 3290 -> 3238 bytes
-[2022-09-26T19:53:19Z INFO  snapchange::commands::minimize] Writing minimized file: "./snapshot/crashes/ASAN_READ23_pc:0x43ad6b_crashing_addr:0x603000000146_tiffinfo!_ZL13printf_commonPvPKcP13__va_list_tag+0x95b/41356f7c_min_by_size"
+[2023-07-31T20:28:35Z INFO  snapchange::commands::minimize] Iters   3909/50000 | Exec/sec 1782.17
+[2023-07-31T20:28:35Z INFO  snapchange::commands::minimize]     InputClone          :   0.10%
+[2023-07-31T20:28:35Z INFO  snapchange::commands::minimize]     InputMinimize       :   0.06%
+[2023-07-31T20:28:35Z INFO  snapchange::commands::minimize]     Execution           :  70.06%
+[2023-07-31T20:28:35Z INFO  snapchange::commands::minimize]     CheckResult         :   0.06%
+[2023-07-31T20:28:35Z INFO  snapchange::commands::minimize]     ResetGuest          :  29.67%
+[2023-07-31T20:28:36Z INFO  snapchange::commands::minimize] Iters   4614/50000 | Exec/sec 1347.91
+[2023-07-31T20:28:36Z INFO  snapchange::commands::minimize]     InputClone          :   0.08%
+[2023-07-31T20:28:36Z INFO  snapchange::commands::minimize]     InputMinimize       :   0.04%
+[2023-07-31T20:28:36Z INFO  snapchange::commands::minimize]     Execution           :  71.18%
+[2023-07-31T20:28:36Z INFO  snapchange::commands::minimize]     CheckResult         :   0.05%
+[2023-07-31T20:28:36Z INFO  snapchange::commands::minimize]     ResetGuest          :  28.62%
 ```
 
 The minimized input now has been reduced in size a bit as well as has irrelevent bytes
 overwritten:
 
 ```
-$ xxd ASAN_READ23_pc\:0x43ad6b_crashing_addr\:0x603000000146_tiffinfo\!_ZL13printf_commonPvPKcP13__va_list_tag+0x95b/41356f7c_min_by_size
+$ xxd poc_min_by_size
+
 ┌────────┬─────────────────────────┬─────────────────────────┬────────┬────────┐
 │00000000│ 4d 4d 00 2a 00 00 0b d4 ┊ cd cd cd cd cd cd cd cd │MM0*00•×┊××××××××│
 │00000010│ cd cd cd cd cd cd cd cd ┊ cd cd cd cd cd cd cd cd │××××××××┊××××××××│
 │*       │                         ┊                         │        ┊        │
-│00000bd0│ cd cd cd cd 00 0e 01 00 ┊ 00 03 00 00 00 01 00 9d │××××0••0┊0•000•0×│
-│00000be0│ cd cd 01 01 00 03 00 00 ┊ 00 01 00 97 cd cd 01 02 │××••0•00┊0•0×××••│
-│00000bf0│ 00 03 00 00 00 01 00 01 ┊ cd cd 01 03 00 03 00 00 │0•000•0•┊××••0•00│
-│00000c00│ 00 01 00 01 cd cd cd 06 ┊ cd cd cd cd cd cd cd cd │0•0•×××•┊××××××××│
-│00000c10│ cd cd cd cd 00 02 00 00 ┊ 00 16 00 00 0c 82 01 11 │××××0•00┊0•00_×••│
-│00000c20│ 00 04 00 00 00 01 cd cd ┊ cd cd cd cd cd cd cd cd │0•000•××┊××××××××│
-│00000c30│ cd cd cd cd cd cd 01 cd ┊ cd cd cd cd cd cd cd cd │××××××•×┊××××××××│
-│00000c40│ cd cd 01 17 00 04 00 00 ┊ 00 01 cd cd cd cd cd cd │××••0•00┊0•××××××│
-│00000c50│ cd cd cd cd cd cd cd cd ┊ cd cd cd cd cd cd cd cd │××××××××┊××××××××│
+│00000bd0│ cd cd cd cd 00 0f 01 00 ┊ 00 03 00 00 00 01 cd cd │××××0••0┊0•000•××│
+│00000be0│ cd cd 01 01 00 03 00 00 ┊ 00 01 cd cd cd cd 01 02 │××••0•00┊0•××××••│
+│00000bf0│ 00 03 00 00 00 01 cd cd ┊ cd cd 01 03 00 03 00 00 │0•000•××┊××••0•00│
+│00000c00│ 00 01 cd cd cd cd 01 06 ┊ cd cd cd cd cd cd cd cd │0•××××••┊××××××××│
+│00000c10│ cd cd cd cd 00 02 00 00 ┊ 00 13 00 00 0c 8e 01 11 │××××0•00┊0•00_×••│
+│00000c20│ 00 04 00 00 00 cd 00 00 ┊ 00 cd 01 15 00 03 00 00 │0•000×00┊0×••0•00│
+│00000c30│ 00 01 cd cd cd cd 01 16 ┊ 00 03 00 00 00 01 cd cd │0•××××••┊0•000•××│
+│00000c40│ cd cd 01 17 00 04 00 00 ┊ 00 01 cd cd cd cd 01 29 │××••0•00┊0•××××•)│
+│00000c50│ cd cd cd cd cd cd cd cd ┊ cd cd 01 0e cd cd cd cd │××××××××┊××••××××│
+│00000c60│ cd cd cd cd cd cd 01 40 ┊ cd cd cd cd cd cd cd cd │××××××•@┊××××××××│
+│00000c70│ cd cd 01 00 cd cd cd cd ┊ cd cd cd cd cd cd cd cd │××•0××××┊××××××××│
+│00000c80│ cd cd cd cd cd cd cd cd ┊ cd cd cd cd cd cd cd cd │××××××××┊××××××××│
 │*       │                         ┊                         │        ┊        │
-│00000ca0│ cd cd cd cd cd cd       ┊                         │××××××  ┊        │
+│00000ca0│ cd                      ┊                         │×       ┊        │
 └────────┴─────────────────────────┴─────────────────────────┴────────┴────────┘
 ```
 
 This minimized input (ending in `_min_by_size`) should result in the same ASAN crash as before:
 
 ```
-$ ./build/bin/tiffinfo -D -j -c -r -s -w 02_libtiff/snapshot/crashes/ASAN_READ23_pc\:0x43ad6b_crashing_addr\:0x603000000146_tiffinfo\!_ZL13printf_commonPvPKcP13__va_list_tag+0x95b/41356f7c_min_by_size
-TIFFReadDirectoryCheckOrder: Warning, Invalid TIFF directory; tags are not sorted in ascending order.
-TIFFReadDirectory: Warning, Unknown field with tag 52486 (0xcd06) encountered.
-TIFFReadDirectory: Warning, Unknown field with tag 52685 (0xcdcd) encountered.
-TIFFReadDirectory: Warning, Unknown field with tag 461 (0x1cd) encountered.
-TIFF Directory at offset 0xbd4 (3028)
-  Image Width: 157 Image Length: 151
-  Bits/Sample: 1
-  Compression Scheme: None
-  Planar Configuration: single image plane
+$ ./triage.sh ./poc_min_by_size
+
 =================================================================
-==46385==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x603000000116 at pc 0x00000043ad6b bp 0x7fff5729cbd0 sp 0x7fff5729c358
-READ of size 23 at 0x603000000116 thread T0
-    #0 0x43ad6a in printf_common(void*, char const*, __va_list_tag*) (/home/ubuntu/targets/libtiff-4.0.4/tiff-4.0.4/build/bin/tiffinfo+0x43ad6a)
-    #1 0x43c1ef in fprintf (/home/ubuntu/targets/libtiff-4.0.4/tiff-4.0.4/build/bin/tiffinfo+0x43c1ef)
-    #2 0x534215 in _TIFFPrintField /home/ubuntu/targets/libtiff-4.0.4/tiff-4.0.4/libtiff/tif_print.c:127:4
-    #3 0x5321aa in TIFFPrintDirectory /home/ubuntu/targets/libtiff-4.0.4/tiff-4.0.4/libtiff/tif_print.c:641:5
-    #4 0x4c50d2 in tiffinfo /home/ubuntu/targets/libtiff-4.0.4/tiff-4.0.4/tools/tiffinfo.c:449:2
-    #5 0x4c4af0 in main /home/ubuntu/targets/libtiff-4.0.4/tiff-4.0.4/tools/tiffinfo.c:152:6
-    #6 0x7fcaae1b0082 in __libc_start_main /build/glibc-SzIz7B/glibc-2.31/csu/../csu/libc-start.c:308:16
-    #7 0x41c4cd in _start (/home/ubuntu/targets/libtiff-4.0.4/tiff-4.0.4/build/bin/tiffinfo+0x41c4cd)
+==1==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x6030000000b3 at pc 0x556547cf999d bp 0x7ffeff5244f0 sp 0x7ffeff523c78
+READ of size 20 at 0x6030000000b3 thread T0
+    #0 0x556547cf999c in printf_common(void*, char const*, __va_list_tag*) /home/buildozer/aports/main/llvm-runtimes/src/llvm-project-16.0.6.src/compiler-rt/lib/asan/../sanitizer_common/sanitizer_common_interceptors_format.inc:553:9
+    #1 0x556547cfa85b in __interceptor_vfprintf /home/buildozer/aports/main/llvm-runtimes/src/llvm-project-16.0.6.src/compiler-rt/lib/asan/../sanitizer_common/sanitizer_common_interceptors.inc:1718:1
+    #2 0x556547cfa85b in __interceptor_fprintf /home/buildozer/aports/main/llvm-runtimes/src/llvm-project-16.0.6.src/compiler-rt/lib/asan/../sanitizer_common/sanitizer_common_interceptors.inc:1775:1
+    #3 0x556547dfc5d6 in _TIFFPrintField /opt/tiff-4.0.4/libtiff/tif_print.c:127:4
+    #4 0x556547dfa83e in TIFFPrintDirectory /opt/tiff-4.0.4/libtiff/tif_print.c:641:5
+    #5 0x556547d950ba in tiffinfo /opt/tiff-4.0.4/tools/tiffinfo.c:449:2
+    #6 0x556547d94b38 in main /opt/tiff-4.0.4/tools/tiffinfo.c:152:6
+    #7 0x7f746a1026d0 in libc_start_main_stage2 /home/buildozer/aports/main/musl/src/83b858f83b658bd34eca5d8ad4d145f673ae7e5e/src/env/__libc_start_main.c:95:2
+
 ```

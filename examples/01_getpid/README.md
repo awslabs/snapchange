@@ -117,8 +117,7 @@ The compiled binary used is `example1`. Let's begin with taking the snapshot.
 
 Snapchange includes a [docker](../../docker) to take a snapshot of this example. Briefly, the
 project will build a Linux kernel, a patched QEMU which enables snapshotting via
-`vmcall` instruction, and a Debian disk with the target binary running during boot under
-`gdb`.
+`vmcall` instruction, and use an `initramfs` to run the target binary under `gdb`.
 
 To use the Snapchange docker image to create this snapshot, we write a small [Dockerfile](./Dockerfile) 
 which will build this example target and set the variables needed for the `snapchange` image.
