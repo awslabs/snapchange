@@ -51,6 +51,11 @@ init_qemu_snapshot() {
     sudo cp -r ../qemu_snapshot .
     sudo chown -R $USER:$USER qemu_snapshot
   else 
+    if [ "$(cat /etc/os-release | grep ^VERSION_ID | cut -d'"' -f2)" = "22.04" ]; then
+      echo "This example currently does not currently build on Ubuntu 22.04. Please use Ubuntu 20.04"
+      exit
+    fi
+
     pushd qemu_snapshot
     ./init.sh --kernel-version v5.4 --with-kasan
     popd

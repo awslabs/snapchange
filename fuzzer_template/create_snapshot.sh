@@ -6,8 +6,8 @@ set -e
 init_qemu_snapshot() {
   pushd qemu_snapshot
 
-  # Use kernel v5.4
-  ./init.sh --kernel-version v5.4
+  # Use kernel v5.19 by default
+  ./init.sh --kernel-version v5.19
 
   # Use the latest kernel commit with KASAN
   # ./init.sh --with-kasan
