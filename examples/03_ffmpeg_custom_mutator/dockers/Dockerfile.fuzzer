@@ -1,17 +1,19 @@
 FROM snapchange_fuzzer
 
 # Copy the fuzzer into the container
+# Build a basic application just to pre-build all of the dependencies
 WORKDIR /fuzzer
 COPY --chown=user:user Cargo.toml /fuzzer
-ADD  --chown=user:user src /fuzzer/src
-RUN ls -la /fuzzer
+COPY --chown=user:user build.rs   /fuzzer
+COPY --chown=user:user snapshot/fuzzvm.qemuregs  /fuzzer/snapshot/fuzzvm.qemuregs
+RUN mkdir /fuzzer/src && echo 'fn main() { }' > /fuzzer/src/main.rs
 
 # Pre-build the fuzzer and snapchange to cache
 RUN cargo add snapchange --path /snapchange
 RUN cargo build -r
 
 # Re-add the src folder to only add modified files back to the image
-# The COPY will force modified files in src to be added
+# When developing the fuzzer, the builds should start here to help speed up dev time
 COPY  --chown=user:user src /fuzzer/src
 
 # Start fuzzing

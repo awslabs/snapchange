@@ -27,5 +27,3 @@ COPY examples/03_ffmpeg_custom_mutator/README.md /snapchange/examples/03_ffmpeg_
 COPY examples/04_syscall_fuzzer/README.md /snapchange/examples/04_syscall_fuzzer/README.md
 COPY examples/05_redqueen/README.md /snapchange/examples/05_redqueen/README.md
 COPY docker/README.md /snapchange/docker/README.md
-
-RUN  cargo build -r

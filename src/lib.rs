@@ -911,7 +911,7 @@ fn init_environment(project_state: &ProjectState) -> Result<KvmEnvironment> {
     ensure!(
         guest_memory_size >= physmem_file.metadata()?.len(),
         "Snapshot physical memory is larger than expected. \
-         Increase guest_memory::GUEST_MEMORY_SIZE"
+         Increase config::guest_memory_size"
     );
 
     // Ensure the expected guest memory size can fit on this system

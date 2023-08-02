@@ -14,9 +14,6 @@ use std::fs::OpenOptions;
 use std::mem::size_of;
 use std::os::unix::io::AsRawFd;
 
-/// Memory allocated for each guest
-pub const GUEST_MEMORY_SIZE: u64 = 5 * 1024 * 1024 * 1024;
-
 /// Address to start the custom physical page allocations
 const START_CUSTOM_MAPPING: PhysAddr = PhysAddr(0x1000_0000);
 
@@ -854,7 +851,7 @@ impl Memory {
     pub fn write_phys<T: Sized>(&mut self, phys_addr: PhysAddr, val: T) -> Result<()> {
         if let Some(last_addr) = phys_addr.0.checked_add(std::mem::size_of::<T>() as u64) {
             ensure!(
-                last_addr <= GUEST_MEMORY_SIZE,
+                last_addr <= self.size,
                 Error::WritePhysicalAddressOutOfBounds
             );
 
@@ -881,7 +878,7 @@ impl Memory {
     pub fn write_phys_bytes(&mut self, phys_addr: PhysAddr, buf: &[u8]) -> Result<()> {
         if let Some(last_addr) = phys_addr.0.checked_add(buf.len() as u64) {
             ensure!(
-                last_addr <= GUEST_MEMORY_SIZE,
+                last_addr <= self.size,
                 Error::WritePhysicalAddressOutOfBounds
             );
 
