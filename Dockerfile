@@ -19,7 +19,6 @@ USER ${uid}:${gid}
 # Copy the fuzzer
 WORKDIR /snapchange
 COPY Cargo.toml /snapchange
-COPY Cargo.lock /snapchange 
 ADD  src        /snapchange/src
 ADD  docs       /snapchange/docs
 COPY examples/01_getpid/README.md /snapchange/examples/01_getpid/README.md
