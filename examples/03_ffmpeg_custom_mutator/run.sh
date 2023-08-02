@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # If the snapshot doesn't currently exist, take the snapshot for this example
 if [ ! -d ./snapshot ]; then
