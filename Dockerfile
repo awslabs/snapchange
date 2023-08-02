@@ -12,6 +12,10 @@ ARG user=user
 ARG group=user
 ARG uid=1000
 ARG gid=1000
+ENV user=${user}
+ENV group=${group}
+ENV uid=${uid}
+ENV gid=${gid}
 RUN groupadd -g ${gid} ${group}
 RUN useradd -u ${uid} -g ${group} -s /bin/sh -m ${user}
 USER ${uid}:${gid}

@@ -8,7 +8,13 @@ fi
 
 # Build the base snapchange fuzzer container
 pushd ../../
-docker build -t snapchange_fuzzer . 
+KVM_GID=`/bin/ls -lan /dev/kvm | cut -d' ' -f4`
+docker build -t snapchange_fuzzer \
+  --build-arg user=$USER \
+  --build-arg group=kvm \
+  --build-arg gid=$KVM_GID \
+  . \
+  # END
 popd
 
 # Build the fuzzer for this example
