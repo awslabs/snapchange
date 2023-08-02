@@ -1,0 +1,32 @@
+FROM rust:1.71-slim-bookworm
+
+# Update to nightly toolchain
+RUN rustup default nightly
+
+RUN cargo --version
+RUN rustup --version
+
+# Use a custom user so that written files into a snapshot are the same
+# as the current user
+ARG user=user
+ARG group=user
+ARG uid=1000
+ARG gid=1000
+RUN groupadd -g ${gid} ${group}
+RUN useradd -u ${uid} -g ${group} -s /bin/sh -m ${user}
+USER ${uid}:${gid}
+
+# Copy the fuzzer
+WORKDIR /snapchange
+COPY Cargo.toml /snapchange
+COPY Cargo.lock /snapchange 
+ADD  src        /snapchange/src
+ADD  docs       /snapchange/docs
+COPY examples/01_getpid/README.md /snapchange/examples/01_getpid/README.md
+COPY examples/02_libtiff/README.md /snapchange/examples/02_libtiff/README.md
+COPY examples/03_ffmpeg_custom_mutator/README.md /snapchange/examples/03_ffmpeg_custom_mutator/README.md
+COPY examples/04_syscall_fuzzer/README.md /snapchange/examples/04_syscall_fuzzer/README.md
+COPY examples/05_redqueen/README.md /snapchange/examples/05_redqueen/README.md
+COPY docker/README.md /snapchange/docker/README.md
+
+RUN  cargo build -r
