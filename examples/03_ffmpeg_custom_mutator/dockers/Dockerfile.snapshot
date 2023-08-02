@@ -1,0 +1,9 @@
+FROM snapchange_example3:target as target
+
+FROM snapchange_snapshot
+COPY --from=target / "$SNAPSHOT_INPUT"
+
+ENV SNAPSHOT_ENTRYPOINT=/opt/FFmpeg/ffmpeg 
+ENV SNAPSHOT_ENTRYPOINT_ARGUMENTS="-i /opt/dovi-p7.mp4"
+ENV QEMU_MEM="6G"
+ENV GENERATE_COVERAGE_BREAKPOINTS=0

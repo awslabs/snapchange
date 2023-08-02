@@ -1,0 +1,14 @@
+FROM alpine:3.17 as base
+
+COPY dovi-p7.mp4 /opt
+COPY 0001-snapshot.patch /opt
+
+RUN apk add --no-cache --initramfs-diskless-boot python3 gdb curl tar build-base perf \
+    nasm clang llvm compiler-rt git && \
+  cd /opt && \
+  git clone https://github.com/FFmpeg/FFmpeg && \
+  cd FFmpeg && \
+  git checkout ab77b878f1205225c6de1370fb0e998dbcc8bc69 && \
+  patch -p1 < /opt/0001-snapshot.patch && \
+  ./configure --toolchain=clang-asan --disable-stripping && \
+  make -j`nproc`

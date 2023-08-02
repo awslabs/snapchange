@@ -750,6 +750,12 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         }
     }
 
+    // Update the guest memory size to fit the current physical memory size
+    let physical_memory = physical_memory.ok_or(Error::PhysicalMemoryMissing)?;
+    config.guest_memory_size = std::fs::metadata(&physical_memory)?
+        .len()
+        .max(config.guest_memory_size);
+
     // Write the updated config if one wasn't found or if the configuration options
     // have changed
     if update_config {
@@ -877,7 +883,6 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     };
 
     let vbcpu = vbcpu.ok_or(Error::RegisterStateMissing)?;
-    let physical_memory = physical_memory.ok_or(Error::PhysicalMemoryMissing)?;
 
     let mut state = ProjectState {
         path: dir.to_owned(),

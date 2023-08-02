@@ -35,6 +35,9 @@ fi
 if [[ -z "$KASAN" ]]; then
     KASAN=0
 fi
+if [[ -z "$GENERATE_COVERAGE_BREAKPOINTS" ]]; then
+    GENERATE_COVERAGE_BREAKPOINTS=1
+fi
 
 source $SNAPCHANGE_ROOT/utils/log.sh || { echo "Failed to source $SNAPCHANGE_ROOT/utils/log.sh"; exit 1; }
 
@@ -260,13 +263,17 @@ fi
 # Create the reset script for the snapshot
 cp $SNAPCHANGE_ROOT/utils/reset_snapshot.sh $OUTPUT/reset.sh
 
-log_msg "creating coverage breakpoints with ghidra"
-# Create the coverage breakpoints and analysis
-BIN_NAME="$(basename "$SNAPSHOT_ENTRYPOINT")"
-# Get the base address of the example from the module list
-BASE="$(grep "$BIN_NAME" "$OUTPUT/gdb.modules" | cut -d' ' -f1)"
-# Use ghidra to find the coverage basic blocks
-python3 $SNAPCHANGE_ROOT/coverage_scripts/ghidra_basic_blocks.py --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin"
+if [[ "$GENERATE_COVERAGE_BREAKPOINTS" -eq 1 ]]; then
+  log_msg "creating coverage breakpoints with ghidra"
+  # Create the coverage breakpoints and analysis
+  BIN_NAME="$(basename "$SNAPSHOT_ENTRYPOINT")"
+  # Get the base address of the example from the module list
+  BASE="$(grep "$BIN_NAME" "$OUTPUT/gdb.modules" | cut -d' ' -f1)"
+  # Use ghidra to find the coverage basic blocks
+  python3 $SNAPCHANGE_ROOT/coverage_scripts/ghidra_basic_blocks.py --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin"
+else
+  log_msg "Skipping generating coverage breakpoints"
+fi
 
 
 # finally just chown to something more sensible

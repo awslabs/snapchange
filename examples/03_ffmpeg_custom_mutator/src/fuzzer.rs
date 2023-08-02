@@ -7,7 +7,7 @@
 use anyhow::Result;
 use rand::Rng as _;
 
-use snapchange::fuzzer::{Breakpoint, AddressLookup, BreakpointType, Fuzzer};
+use snapchange::fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer};
 use snapchange::fuzzvm::FuzzVm;
 use snapchange::linux::{read_args, ReadArgs};
 use snapchange::rng::Rng;
@@ -20,7 +20,7 @@ pub struct Example03Fuzzer {
 
 impl Fuzzer for Example03Fuzzer {
     type Input = MovGenerator;
-    const START_ADDRESS: u64 = REPLACEMERIP;
+    const START_ADDRESS: u64 = crate::constants::RIP;
     const MAX_INPUT_LENGTH: usize = 0x7fff;
 
     fn reset_fuzzer_state(&mut self) {
@@ -35,7 +35,7 @@ impl Fuzzer for Example03Fuzzer {
     }
 
     fn reset_breakpoints(&self) -> Option<&[AddressLookup]> {
-        None
+        Some(&[AddressLookup::SymbolOffset("ffmpeg!exit_program", 0x0)])
     }
 
     fn breakpoints(&self) -> Option<&[Breakpoint<Self>]> {

@@ -1,0 +1,18 @@
+FROM snapchange_fuzzer
+
+# Copy the fuzzer into the container
+WORKDIR /fuzzer
+COPY --chown=user:user Cargo.toml /fuzzer
+ADD  --chown=user:user src /fuzzer/src
+RUN ls -la /fuzzer
+
+# Pre-build the fuzzer and snapchange to cache
+RUN cargo add snapchange --path /snapchange
+RUN cargo build -r
+
+# Re-add the src folder to only add modified files back to the image
+# The COPY will force modified files in src to be added
+COPY  --chown=user:user src /fuzzer/src
+
+# Start fuzzing
+ENTRYPOINT ["cargo", "run", "-r", "--"]
