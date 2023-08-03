@@ -12,7 +12,7 @@ pushd ../../
 popd
 
 # Build the fuzzer for this example
-docker build -t snapchange_example3:fuzzer . -f ../../Dockerfile.fuzzer
+docker build -t snapchange_example1:fuzzer . -f ../../Dockerfile.fuzzer
 
 # Execute the fuzzer passing the CLI args as if run with `cargo run -r -- `
 docker run \
@@ -21,7 +21,7 @@ docker run \
   --privileged \
   -v /dev/kvm:/dev/kvm \
   -v $PWD/snapshot:/snapshot \
-  snapchange_example3:fuzzer \
+  snapchange_example1:fuzzer \
   --project /snapshot \
   "$@" \
   # END

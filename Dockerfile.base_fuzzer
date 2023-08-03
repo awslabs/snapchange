@@ -11,7 +11,7 @@ RUN rustup --version
 ARG user=user
 ARG group=user
 ARG uid=1000
-ARG gid=1000
+ARG gid=108
 ENV user=${user}
 ENV group=${group}
 ENV uid=${uid}

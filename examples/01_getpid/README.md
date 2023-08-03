@@ -136,11 +136,11 @@ COPY harness/* /opt/
 RUN cd /opt/ && make
 ```
 
-Then, switch to the base `snapchange` image and copy all of the `base` image into the directory
+Then, switch to the base `snapchange_snapshot` image and copy all of the `base` image into the directory
 that snapchange is expecting the target to live (`$SNAPSHOT_INPUT`):
 
 ```
-FROM snapchange
+FROM snapchange_snapshot
 COPY --from=base / "$SNAPSHOT_INPUT"
 ```
 

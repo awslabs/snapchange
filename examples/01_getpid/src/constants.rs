@@ -1,3 +1,0 @@
-pub const CR3: u64 = 0x0000000111a8c000;
-pub const RIP: u64 = 0x000055555555534e;
-pub const INPUT: u64 = 0x555555556000;
