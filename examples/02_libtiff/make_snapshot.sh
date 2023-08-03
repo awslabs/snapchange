@@ -3,20 +3,20 @@ set -ex
 
 # Build the base snapchange image used for snapshotting
 pushd ../../docker
-docker build -t snapchange .
+docker build -t snapchange_snapshot .
 popd
 
 # Build the target Dockerfile
-docker build -t snapchange_example2:target . -f Dockerfile.target
+docker build -t snapchange_example2:target . -f dockers/Dockerfile.target
 
-# Build this example's image
-docker build -t snapchange_example2 .
+# Combine the target the snapshot mechanism
+docker build -t snapchange_example2:snapshot . -f dockers/Dockerfile.snapshot
 
 # Run the image to take the snapshot
-docker run -i \
+docker run --rm -i \
     -v $(realpath -m ./snapshot):/snapshot/ \
     -e SNAPSHOT_IMGTYPE=initramfs \
-    snapchange_example2
+    snapchange_example2:snapshot
 
 sha256sum ./snapshot/tiffinfo.bin ./snapshot/vmlinux
 

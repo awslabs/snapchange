@@ -1,0 +1,19 @@
+FROM alpine:3.17 as base
+
+RUN apk add --no-cache --initramfs-diskless-boot python3 gdb curl tar build-base perf \
+    nasm gcc git musl-dbg clang compiler-rt llvm
+
+COPY 0001-snapshot.patch /opt
+RUN cd /opt/ && \
+  wget https://download.osgeo.org/libtiff/tiff-4.0.4.tar.gz && \
+  tar -xzvf tiff-4.0.4.tar.gz && \
+  rm tiff-4.0.4.tar.gz && \
+  cd tiff-4.0.4 && \
+  patch -p1 < /opt/0001-snapshot.patch && \
+  CC=clang \
+    CXX=clang++ \
+    CFLAGS='-ggdb -fsanitize=address' \
+    CXXFLAGS='-ggdb -fsanitize=address' \
+    ./configure --disable-shared --prefix=$PWD/build && \
+  make -j `nproc` && \
+  make install

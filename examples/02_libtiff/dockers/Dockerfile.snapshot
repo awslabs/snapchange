@@ -1,0 +1,8 @@
+FROM snapchange_example2:target as target
+
+FROM snapchange_snapshot
+COPY --from=target / "$SNAPSHOT_INPUT"
+
+ENV SNAPSHOT_ENTRYPOINT=/opt/tiff-4.0.4/build/bin/tiffinfo
+ENV SNAPSHOT_ENTRYPOINT_ARGUMENTS="-D -j -c -r -s -w /opt/tiff-4.0.4/test/images/logluv-3c-16b.tiff"
+ENV SNAPSHOT_EXTRACT="/opt/tiff-4.0.4/test/images"

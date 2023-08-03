@@ -25,7 +25,6 @@ impl Fuzzer for Example02Fuzzer {
     const START_ADDRESS: u64 = constants::RIP;
     const MAX_INPUT_LENGTH: usize = 0x10000;
 
-    /*
     fn init_snapshot(&mut self, fuzzvm: &mut FuzzVm<Self>) -> Result<()> {
         for symbol in ["tiffinfo!TIFFErrorExt", "tiffinfo!TIFFWarningExt"] {
             // Get the virtual address for each of these symbols
@@ -41,7 +40,6 @@ impl Fuzzer for Example02Fuzzer {
 
         Ok(())
     }
-    */
 
     fn crash_breakpoints(&self) -> Option<&[AddressLookup]> {
         Some(&[
@@ -65,8 +63,6 @@ impl Fuzzer for Example02Fuzzer {
             AddressLookup::SymbolOffset("tiffinfo!_ZN6__asan17ReportOutOfMemoryEmPN11__sanitizer18BufferedStackTraceE", 0x0),
             AddressLookup::SymbolOffset("tiffinfo!_ZN6__asan39ReportStringFunctionMemoryRangesOverlapEPKcS1_mS1_mPN11__sanitizer18BufferedStackTraceE", 0x0),
             AddressLookup::SymbolOffset("tiffinfo!_ZN6__asan32ReportStringFunctionSizeOverflowEmmPN11__sanitizer18BufferedStackTraceE", 0x0),
-            AddressLookup::SymbolOffset("tiffinfo!_ZN6__asan44ReportBadParamsToAnnotateContiguousContainerEmmmmPN11__sanitizer18BufferedStackTraceE", 0x0),
-            AddressLookup::SymbolOffset("tiffinfo!_ZN6__asan55ReportBadParamsToAnnotateDoubleEndedContiguousContainerEmmmmmmPN11__sanitizer18BufferedStackTraceE", 0x0),
             AddressLookup::SymbolOffset("tiffinfo!_ZN6__asan18ReportODRViolationEPK13__asan_globaljS2_j", 0x0),
             AddressLookup::SymbolOffset("tiffinfo!_ZN6__asan25ReportMacMzReallocUnknownEmmPKcPN11__sanitizer18BufferedStackTraceE", 0x0),
             AddressLookup::SymbolOffset("tiffinfo!_ZN6__asan18ReportGenericErrorEmmmmbmjb", 0x0),
