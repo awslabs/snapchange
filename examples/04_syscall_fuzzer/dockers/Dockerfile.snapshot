@@ -1,0 +1,9 @@
+FROM snapchange_example4:target as target
+
+FROM snapchange_snapshot_linux_v5.4
+COPY --from=target / "$SNAPSHOT_INPUT"
+
+ENV SNAPSHOT_ENTRYPOINT=/opt/syscall_harness/target/release/syscall_harness
+ENV GENERATE_COVERAGE_BREAKPOINTS=0
+ENV KASAN=1
+ENV QEMU_MEM="6G"

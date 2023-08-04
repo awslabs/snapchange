@@ -15,7 +15,7 @@ use snapchange::fuzzer::{AddressLookup, Fuzzer};
 use snapchange::fuzzvm::FuzzVm;
 use snapchange::rng::Rng;
 
-REPLACEMECOMMENTS
+use crate::constants;
 
 #[derive(Error, Debug)]
 pub enum FuzzerError {
@@ -76,9 +76,9 @@ impl_mov_into_reg64!(mov_into_r15, 0x49, 0xbf);
 // Addresses in the snapshot for writing shellcode and scratch memory
 const SHELLCODE_LENGTH: u64 = 1024 * 1024 - 0x100;
 const SCRATCH_LENGTH: u64 = 1024 * 1024 - 0x100;
-const SHELLCODE: u64 = REPLACEMESHELLCODE;
-const SCRATCH: u64 = REPLACEMESCRATCH;
-const CR3: Cr3 = Cr3(REPLACEMECR3);
+const SHELLCODE: u64 = constants::SHELLCODE;
+const SCRATCH: u64 = constants::SCRATCH;
+const CR3: Cr3 = Cr3(constants::CR3);
 
 #[derive(Default)]
 pub struct Example04Fuzzer {
@@ -384,7 +384,7 @@ impl Example04Fuzzer {
 
 impl Fuzzer for Example04Fuzzer {
     type Input = Syscalls;
-    const START_ADDRESS: u64 = REPLACEMERIP;
+    const START_ADDRESS: u64 = constants::RIP;
     const MAX_INPUT_LENGTH: usize = 100;
 
     fn init_vm(&mut self, _fuzzvm: &mut FuzzVm<Self>) -> Result<()> {
@@ -454,7 +454,7 @@ impl snapchange::FuzzInput for Syscalls {
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
         max_length: usize,
-        _max_mutations: u64
+        _max_mutations: u64,
     ) -> Vec<String> {
         *input = Syscalls::generate(corpus, rng, dictionary, max_length);
 
@@ -488,8 +488,8 @@ impl snapchange::FuzzInput for Syscalls {
         }
 
         Syscalls { data: res }
-    }    
-    
+    }
+
     /// Minimize the given `input` based on a minimization strategy
     fn minimize(input: &mut Self, rng: &mut Rng) {
         match rng.next() % 5 {

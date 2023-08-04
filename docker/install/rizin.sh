@@ -3,6 +3,9 @@
 RZ_VERSION=v0.5.2
 RZ_GHIDRA_VERSION=v0.5.0
 
+sudo apt remove -y meson
+pip3 install meson
+
 if ! command -v rizin >/dev/null; then
     # install rizin
     set -e

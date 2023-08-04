@@ -40,7 +40,7 @@ fn main() {
     }
 
     println!(
-        "SNAPSHOT: Scratch memory {:#x} Length: {SCRATCH_SIZE:#x}",
+        "SNAPSHOT: Scratch memory: {:#x} Length: {SCRATCH_SIZE:#x}",
         scratch
     );
     println!(

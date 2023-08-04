@@ -1,5 +1,6 @@
 #![feature(const_mut_refs)]
 
+mod constants;
 mod fuzzer;
 
 fn main() {

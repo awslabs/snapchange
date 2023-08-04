@@ -1,11 +1,8 @@
 #!/bin/bash
-rm bn_snapchange.py || true
-rm Cargo.lock || true
-rm Cargo.toml || true
-sudo rm -rf qemu_snapshot
-rm -rf src
-rm -rf ./target
-rm -rf ./syscall_harness/target
+rm -rf snapshot
+rm -rf target
 rm fuzzer.log
-rm -rf ./snapshot/crashes
-rm -rf ./snapshot/
+
+docker rmi --force snapchange_example4:fuzzer
+docker rmi --force snapchange_example4:snapshot
+docker rmi --force snapchange_example4:target

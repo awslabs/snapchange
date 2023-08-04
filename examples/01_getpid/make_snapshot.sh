@@ -3,9 +3,7 @@ set -ex
 
 # Build the base snapchange image used for snapshotting
 pushd ../../docker
-    if [[ "$(docker images -q snapchange_snapshot 2>/dev/null)" == "" ]]; then
-        docker build -t snapchange_snapshot --no-cache .
-    fi
+docker build -t snapchange_snapshot .
 popd
 
 # Build the target Dockerfile
