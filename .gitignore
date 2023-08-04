@@ -1,2 +1,3 @@
 target
 examples/**/constants.rs
+examples/**/snapshot
