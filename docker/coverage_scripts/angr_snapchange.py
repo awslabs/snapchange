@@ -1,9 +1,23 @@
 #!/usr/bin/env python
+"""
+angr-based analysis of binaries.
+
+1. Generate coverage breakpoints with angr.
+2. [optional] Generate dictionary based on VEX constants.
+3. [optional][experimental] Generate dcitionary based on decompiled code.
+
+for decompiler better to use pypy
+```
+sudo apt install pypy3 pypy3-dev pypy3-venv
+pypy3 -m pip install angr coloredlogs
+```
+"""
 
 import sys
 import logging
 import argparse
 import string
+import json
 import math
 
 from pathlib import Path
@@ -50,6 +64,28 @@ parser.add_argument(
 parser.add_argument(
     "--dict-path", help="path to store dict files", default=Path("./dict"), type=Path
 )
+parser.add_argument(
+    "--load-from-physmem-offset",
+    help=(
+        "switch to loading from physmem dump at given offset. "
+        "`binary` arg should be path to physmem file. "
+        "Use --base-addr to specify virt addr offset."
+    ),
+    type=lambda i: int(i, 0),
+    default=-1,
+)
+parser.add_argument(
+    "--physmem-num-pages",
+    default=1,
+    type=int,
+    help="number of code pages to analyze in physmem",
+)
+parser.add_argument(
+    "--physmem-segments",
+    default=[],
+    type=lambda b: json.loads(b),
+    help="A json-formatted list of `[[file_offset, mem_addr, size], ...]` - hex ints must be strings!",
+)
 cliargs = parser.parse_args()
 
 binary_path = cliargs.binary
@@ -57,11 +93,45 @@ binary_name = binary_path.name
 base_addr = cliargs.base_addr
 
 logger.info("loading binary in angr")
-p = angr.Project(
-    binary_path,
-    load_options={"auto_load_libs": False},
-    main_opts={"base_addr": base_addr},
-)
+
+p = None
+if cliargs.load_from_physmem_offset in (None, -1):
+    p = angr.Project(
+        binary_path,
+        load_options={"auto_load_libs": False},
+        main_opts={"base_addr": base_addr},
+    )
+else:
+    segments = [
+        (
+            cliargs.load_from_physmem_offset,
+            cliargs.base_addr,
+            cliargs.physmem_num_pages * 4096,
+        )
+    ]
+    if cliargs.physmem_segments:
+
+        def ensure_int(s):
+            if isinstance(s, int):
+                return s
+            return int(s, 0)
+
+        # override defaults segments arg
+        segments = [
+            (ensure_int(o), ensure_int(a), ensure_int(s))
+            for (o, a, s) in cliargs.physmem_segments
+        ]
+    p = angr.Project(
+        binary_path,
+        main_opts={
+            "backend": "blob",
+            "arch": "x86_64",
+            "segments": segments,
+            "base_addr": cliargs.base_addr,
+            "entry_point": cliargs.base_addr,
+        },
+    )
+
 logger.info("angr CFGFast")
 cfg = p.analyses.CFGFast(normalize=True, data_references=True)
 logger.info(
@@ -580,7 +650,7 @@ for entry in auto_dictionary:
         elif entry < (1 << 512):
             size = 64
         else:
-            logger.warn("dude what kind of int constant is that big?", hex(entry))
+            logger.warning("unsupported int constant is too big: %s", hex(entry))
 
         # emit both endian - who knows.
         for endian in ("little", "big"):
@@ -605,7 +675,7 @@ for entry in auto_dictionary:
         if entry_stripped != entry:
             auto_dict_files[fname + "_trimmed"] = entry_stripped
     else:
-        logger.warn("cannot deal with", type(entry), "in auto-dict", repr(entry))
+        logger.warning("cannot deal with %s in auto-dict %s", type(entry), repr(entry))
 
 
 dict_path = cliargs.dict_path
