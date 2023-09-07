@@ -1054,14 +1054,25 @@ pub fn parse_coverage_breakpoints(cov_bp_path: &Path) -> Result<BTreeSet<VirtAdd
         // deadbeef
         // 12341234
 
+        let line = line.trim();
+
         // Empty strings are always invalid
         if line.is_empty() {
             return;
         }
+        // ignore "comments"
+        if line.starts_with("# ") || line.starts_with("// ") {
+            return;
+        }
 
         // Parse each line
-        if let Ok(addr) = u64::from_str_radix(&line.replace("0x", ""), 16) {
-            cov_bps.insert(VirtAddr(addr));
+        match u64::from_str_radix(&line.replace("0x", ""), 16) {
+            Ok(addr) => {
+                cov_bps.insert(VirtAddr(addr));
+            }
+            Err(e) => {
+                eprintln!("[COVBPS] failed to parse address from line: {:?} (reason: {})", line, e);
+            }
         }
     });
 
