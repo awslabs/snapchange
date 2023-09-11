@@ -1,0 +1,10 @@
+#### harness (build) environment ####
+# adapt to your needs!
+
+FROM alpine:edge as base
+
+RUN apk add --no-cache --initramfs-diskless-boot \
+  gdb python3 curl tar build-base perf
+
+COPY ./harness/ /opt/
+RUN cd /opt/ && make clean && make

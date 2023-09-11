@@ -1,0 +1,16 @@
+docker/fuzzer_template/target/
+docker/fuzzer_template/Cargo.lock
+docker/linux*
+docker/vmlinux*
+docker/QEMU
+docker/ghidra
+docker/image
+docker/*.img
+docker/*.lz4
+docker/*/vm.log
+docker/vm.log
+target/
+examples/*/target/
+examples/*/snapshot/
+examples/standalone/*/target/
+examples/standalone/*/snapshot/
