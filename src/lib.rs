@@ -116,6 +116,7 @@ use kvm_bindings::{
 };
 use kvm_ioctls::{Cap, Kvm, VmFd};
 
+pub use anyhow;
 use anyhow::{ensure, Context, Result};
 use clap::Parser;
 
@@ -131,6 +132,8 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+
+pub use rand;
 
 pub mod fuzzvm;
 pub use fuzzvm::{FuzzVm, FuzzVmExit};
@@ -183,10 +186,10 @@ mod commands;
 
 mod coverage_analysis;
 pub mod expensive_mutators;
+pub mod feedback;
 mod filesystem;
 pub mod fuzz_input;
 pub mod mutators;
-pub mod feedback;
 
 mod stats_tui;
 pub mod utils;
@@ -240,7 +243,7 @@ pub enum Execution {
     #[cfg(feature = "custom_feedback")]
     /// Custom Coverage Info
     CustomCoverageContinue,
-    
+
     /// Continue execution of the current VM
     Continue,
 
@@ -1040,4 +1043,26 @@ pub fn snapchange_main<FUZZER: Fuzzer + 'static>() -> Result<()> {
     tui_logger::move_events();
 
     res
+}
+
+/// Import most important snapchange functions, traits, and types.
+/// ```
+/// use snapchange::prelude::*;
+/// ```
+pub mod prelude {
+    pub use super::rand::seq::SliceRandom;
+    pub use super::rand::Rng as _;
+    pub use super::{
+        addrs::{Cr3, VirtAddr},
+        anyhow,
+        anyhow::Result,
+        fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer},
+        fuzzvm::FuzzVm,
+        rand,
+        rng::Rng,
+        snapchange_main, Execution, FuzzInput,
+    };
+
+    #[cfg(feature = "custom_feedback")]
+    pub use super::feedback::FeedbackTracker;
 }
