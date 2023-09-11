@@ -159,6 +159,13 @@ impl FeedbackTracker {
     }
 
     #[cfg(feature = "custom_feedback")]
+    pub fn record_pair<T: Into<u32>>(&mut self, a: T, b: T) -> bool {
+        let a: u32 = a.into();
+        let b: u32 = b.into();
+        self.record((a as u64) << 32 | (b as u64))
+    }
+
+    #[cfg(feature = "custom_feedback")]
     pub fn record_max<T: Into<u64>, S: Into<u64>>(&mut self, t: T, v: S) -> bool {
         let t: u64 = t.into();
         let v: u64 = v.into();
