@@ -211,9 +211,18 @@ impl FeedbackTracker {
     }
 
     #[cfg(feature = "custom_feedback")]
-    pub fn record_min_prefix_dist<T: Into<u64>>(&mut self, t: T, a: &[u8], b: &[u8]) -> bool {
-        let dist = a.iter().zip(b).take_while(|(a, b)| *a == *b).count();
+    pub fn record_min_prefix_dist<T: Into<u64>>(
+        &mut self,
+        t: T,
+        a: &[u8],
+        b: &[u8],
+    ) -> Option<usize> {
+        let dist = a.len() - a.iter().zip(b).take_while(|(a, b)| *a == *b).count();
 
-        self.record_min(t, dist as u64)
+        if self.record_min(t, dist as u64) {
+            Some(dist)
+        } else {
+            None
+        }
     }
 }
