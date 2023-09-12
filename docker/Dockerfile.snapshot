@@ -37,10 +37,14 @@ ENV KASAN="$KASAN"
 ARG BUSYBOX_STATIC="/busybox.static"
 ENV BUSYBOX_STATIC="$BUSYBOX_STATIC"
 
+ARG RZ_BUILD_FROM_SOURCE=0
+
 RUN echo "[+] installers:" \
+  && set -x \
   && ./install/rizin.sh \
-  && ./install/qemu.sh \
   && ./install/ghidra.sh \
+  && ./install/angr.sh \
+  && ./install/qemu.sh \
   && ./install/linux.sh \
   && ls -al /snapchange/ \
   && test -e /snapchange/vmlinux \

@@ -1,13 +1,7 @@
-# build environment -- feel free to adapt to your needs.
+# fill in correct name of the image!
+FROM projectname_harness as base
 
-FROM alpine:edge as base
-
-RUN apk add --no-cache --initramfs-diskless-boot python3 gdb curl tar build-base perf
-
-COPY ./harness/ /opt/
-RUN cd /opt/ && make clean && make
-
-#### switch to snapchang container ####
+#### snapchange snapshot container ####
 FROM ghcr.io/awslabs/snapchange
 
 # copy whole root filesystem from build environment to this container layer
