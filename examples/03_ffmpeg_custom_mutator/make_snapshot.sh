@@ -3,7 +3,7 @@ set -ex
 
 # Build the base snapchange image used for snapshotting
 pushd ../../docker
-docker build -t snapchange_snapshot .
+make
 popd
 
 # Build the target Dockerfile

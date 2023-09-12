@@ -3,7 +3,7 @@ set -ex
 
 # Build the base snapchange image used for snapshotting
 pushd ../../docker
-cp Dockerfile Dockerfile.ubu20
+cp Dockerfile.snapshot Dockerfile.ubu20
 sed -i 's/ubuntu:22.04/ubuntu:20.04/' Dockerfile.ubu20
 docker build \
     -t snapchange_snapshot_linux_v5.4 \
