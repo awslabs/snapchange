@@ -194,9 +194,13 @@ sleep 1
 # While the VM is booting, wait for the login prompt. Once the login prompt is shown,
 # extarct the gdb output and kill the VM
 while true; do
+    if grep -i -e "end Kernel panic" vm.log 2>&1 >/dev/null; then
+        log_warning "kernel panic while snapshotting! please check the vm.log file"
+    fi
+
     # Login prompt signals that the /etc/rc.local script executed and can extract output
     # Status code of 0 means the login prompt was found in the vm.log
-    if grep -e "\(linux login:\|snapshot done\|Attempted to kill init\)" vm.log 2>&1 >/dev/null || check_vm_halted; then
+    if grep -i -e "\(linux login:\|snapshot done\|Attempted to kill init|end Kernel panic\)" vm.log 2>&1 >/dev/null || check_vm_halted; then
         log_msg "Finished booting.. extracting gdb output";
         extract_output
 
@@ -234,6 +238,11 @@ while true; do
 
         log_success "(almost) done!"
         break
+    fi
+
+    if grep -i -e "Initramfs unpacking failed" vm.log 2>&1 >/dev/null; then
+        log_error "VM failed to boot properly! kernel could not unpack initramfs..."
+        exit -1
     fi
 
     log_msg "Waiting for VM..."
