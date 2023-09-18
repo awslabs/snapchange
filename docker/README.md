@@ -70,7 +70,8 @@ There are several environment options that control how snapchange creates a snap
 * to specify a custom kernel:
   * `SNAPSHOT_KERNEL_IMG` - path to bootable kernel image ("bzimage") passed to qemu's direct kernel boot.
   * `SNAPSHOT_KERNEL_ELF` - path to unstripped kernel ELF file - used to lookup kernel symbols.
-
+* `SNAPSHOT_ENV` - a space separate list of `VAR=val` pairs that are exported as environment variables before launching the harness.
+  
 There are some more exotic options that you can pass to the snapshot script.
 
 * `LIBFUZZER=0` - set to 1 to enable special handling of creating snapshots from libfuzzer fuzzing harnesses.

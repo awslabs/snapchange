@@ -140,11 +140,21 @@ rm "$RC_LOCAL" || true
 cat > "$RC_LOCAL" <<EOF
 #!/bin/sh -ex
 
+if test -e /etc/profile; then
+    . /etc/profile
+fi
+
 export SNAPSHOT=1
+export SNAPCHANGE=1
+export SNAPCHANGE_SNAPSHOT=1
 
 echo "[+] snapshotting program: $SNAPSHOT_ENTRYPOINT $SNAPSHOT_ENTRYPOINT_ARGUMENTS"
 
 EOF
+
+for var in $SNAPSHOT_ENV; do
+    echo "export $var" >> "$RC_LOCAL"
+done
 
 DIR_HAS_GDB=0
 GDB_PATH="$(find "$DIR" -name gdb -type f | head -n 1)"
@@ -340,7 +350,12 @@ if [[ ! -e "$DIR/init" ]]; then
   cat > "$DIR/init" <<EOF
 #!/bin/sh
 
+# basic PATH setup... should be almost universal
 export PATH=\$PATH:/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin:/usr/local/sbin
+
+if test -e /etc/profile; then
+    . /etc/profile
+fi
 
 echo "[+] Mounting /dev /proc /sys"
 mount -t devtmpfs dev /dev
