@@ -38,6 +38,10 @@ fi
 if [[ -z "$GENERATE_COVERAGE_BREAKPOINTS" ]]; then
     GENERATE_COVERAGE_BREAKPOINTS=1
 fi
+if [[ -z "$COVERAGE_BREAKPOINT_COMMAND" ]]; then
+    COVERAGE_BREAKPOINT_COMMAND=ghidra
+fi
+
 
 source $SNAPCHANGE_ROOT/utils/log.sh || { echo "Failed to source $SNAPCHANGE_ROOT/utils/log.sh"; exit 1; }
 
@@ -273,13 +277,25 @@ fi
 cp $SNAPCHANGE_ROOT/utils/reset_snapshot.sh $OUTPUT/reset.sh
 
 if [[ "$GENERATE_COVERAGE_BREAKPOINTS" -eq 1 ]]; then
-  log_msg "creating coverage breakpoints with ghidra"
+  log_msg "creating coverage breakpoints with $COVERAGE_BREAKPOINT_COMMAND"
   # Create the coverage breakpoints and analysis
   BIN_NAME="$(basename "$SNAPSHOT_ENTRYPOINT")"
   # Get the base address of the example from the module list
   BASE="$(grep "$BIN_NAME" "$OUTPUT/gdb.modules" | cut -d' ' -f1)"
-  # Use ghidra to find the coverage basic blocks
-  python3 $SNAPCHANGE_ROOT/coverage_scripts/ghidra_basic_blocks.py --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin"
+  if [[ "$COVERAGE_BREAKPOINT_COMMAND" == "ghidra" ]]; then
+    # Use ghidra to find the coverage basic blocks
+    python3 $SNAPCHANGE_ROOT/coverage_scripts/ghidra_basic_blocks.py --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin" > "$OUTPUT/ghidra.log" 2>&1
+  elif [[ "$COVERAGE_BREAKPOINT_COMMAND" == "angr" ]]; then
+    python3 $SNAPCHANGE_ROOT/coverage_scripts/angr_snapchange.py --auto-dict --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin" > "$OUTPUT/angr.log" 2>&1
+  elif [[ "$COVERAGE_BREAKPOINT_COMMAND" == "rizin" ]]; then
+    python3 $SNAPCHANGE_ROOT/coverage_scripts/rz_snapchange.py --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin" > "$OUTPUT/rizin.log" 2>&1
+  elif [[ "$COVERAGE_BREAKPOINT_COMMAND" == "binaryninja" ]]; then
+    log_warning "binary ninja coverage script requires a headless license! make sure everything is set up inside of the container."
+    python3 $SNAPCHANGE_ROOT/coverage_scripts/bn_snapchange.py --bps --analysis --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin" 
+  else
+    $COVERAGE_BREAKPOINT_COMMAND "$BASE" "$OUTPUT/$BIN_NAME.bin" 2>&1 | tee "$OUTPUT/custom_coverage_command.log"
+  fi
+  log_msg "[+] generated $(cat "$OUTPUT"/*.covbps | wc -l) coverage breakpoints"
 else
   log_msg "Skipping generating coverage breakpoints"
 fi
