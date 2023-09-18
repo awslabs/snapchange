@@ -16,14 +16,15 @@ use std::{
     fs::File,
     os::unix::io::AsRawFd,
     path::{Path, PathBuf},
+    sync::{Arc, RwLock},
     time::Duration,
 };
 
 #[cfg(feature = "redqueen")]
 use crate::{
     cmdline, config::Config, fuzz_input::FuzzInput, fuzzer::Fuzzer, fuzzvm, fuzzvm::FuzzVm,
-    init_environment, stack_unwinder::StackUnwinders, unblock_sigalrm, Cr3, KvmEnvironment,
-    ProjectState, ResetBreakpointType, Symbol, VbCpu, VirtAddr, THREAD_IDS,
+    init_environment, memory::Memory, stack_unwinder::StackUnwinders, unblock_sigalrm, Cr3,
+    KvmEnvironment, ProjectState, ResetBreakpointType, Symbol, VbCpu, VirtAddr, THREAD_IDS,
 };
 
 /// Execute the c subcommand to gather coverage for a particular input
@@ -41,7 +42,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         kvm,
         cpuids,
         physmem_file,
-        clean_snapshot_addr,
+        clean_snapshot,
         symbols,
         symbol_breakpoints,
     } = init_environment(project_state)?;
@@ -65,7 +66,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         &project_state.vbcpu,
         &cpuids,
         physmem_file.as_raw_fd(),
-        clean_snapshot_addr,
+        clean_snapshot,
         &symbols,
         symbol_breakpoints,
         covbp_bytes,
@@ -86,7 +87,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     vbcpu: &VbCpu,
     cpuid: &CpuId,
     snapshot_fd: i32,
-    clean_snapshot: u64,
+    clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<VecDeque<Symbol>>,
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
     coverage_breakpoints: BTreeMap<VirtAddr, u8>,

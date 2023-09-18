@@ -1,5 +1,6 @@
 use snapchange::snapchange_main;
 
+mod constants;
 mod fuzzer;
 mod redqueen;
 

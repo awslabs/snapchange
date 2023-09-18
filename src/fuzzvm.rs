@@ -39,7 +39,11 @@ use crate::{handle_vmexit, Execution, DIRTY_BITMAPS};
 use crate::{try_u32, try_u64, try_u8, try_usize};
 
 #[cfg(feature = "redqueen")]
-use crate::{cmp_analysis::RedqueenRule, fuzz_input::FuzzInput};
+use crate::{
+    cmp_analysis, cmp_analysis::RedqueenArguments, cmp_analysis::RedqueenRule,
+    fuzz_input::FuzzInput,
+};
+
 use std::collections::{BTreeMap, VecDeque};
 use std::convert::TryInto;
 use std::sync::atomic::Ordering;
@@ -80,6 +84,10 @@ pub type HookFn<F> =
 pub enum BreakpointHook<FUZZER: Fuzzer> {
     /// Call the given function when this breakpoint is hit
     Func(HookFn<FUZZER>),
+
+    /// Call the redqueen parsing
+    #[cfg(feature = "redqueen")]
+    Redqueen(RedqueenArguments),
 
     /// No breakpoint hook function set for this breakpoint
     None,
@@ -2526,7 +2534,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             // Fuzzer is not handling the syscall, execute the syscall as normal
             let bp_index = self
                 .breakpoints
-                .get(&(virt_addr, cr3))
+                .get(&(virt_addr, Cr3(self.vbcpu.cr3)))
                 .expect("Failed to find LSTAR breakpoint");
 
             let orig_byte = self
@@ -2594,15 +2602,22 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             }
 
             // Let the fuzzer handle the breakpoint
-            if let BreakpointHook::Func(bp_func) = self
+            match self
                 .breakpoint_hooks
                 .get(bp_index)
                 .ok_or(Error::InvalidBreakpointIndex)?
             {
-                execution = bp_func(self, input, fuzzer)?;
-            } else {
-                let sym = self.get_symbol(virt_addr.0);
-                return Err(Error::BreakpointHookNotSet(virt_addr, sym).into());
+                BreakpointHook::Func(bp_func) => {
+                    execution = bp_func(self, input, fuzzer)?;
+                }
+                BreakpointHook::Redqueen(args) => {
+                    let args = args.clone();
+                    execution = crate::cmp_analysis::gather_comparison(self, input, &args)?;
+                }
+                _ => {
+                    let sym = self.get_symbol(virt_addr.0);
+                    return Err(Error::BreakpointHookNotSet(virt_addr, sym).into());
+                }
             }
         } else {
             return Err(Error::UnknownBreakpoint(virt_addr, cr3).into());
@@ -3213,6 +3228,21 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         let mut bps_set = 0;
 
         let start = std::time::Instant::now();
+
+        panic!("Write the parser to convert the binja rules to RedqueenArguments");
+
+        self.set_breakpoint(
+            VirtAddr(0x5555_5555_52f2),
+            self.cr3(),
+            BreakpointType::Repeated,
+            BreakpointMemory::Dirty,
+            BreakpointHook::Redqueen(RedqueenArguments {
+                size: cmp_analysis::Size::U32,
+                operation: cmp_analysis::Operation::Equal,
+                left_op: cmp_analysis::Operand::Register(iced_x86::Register::RAX),
+                right_op: cmp_analysis::Operand::ConstU32(0xd39a8f32),
+            }),
+        );
 
         if let Some(bps) = fuzzer.redqueen_breakpoints() {
             for Breakpoint {

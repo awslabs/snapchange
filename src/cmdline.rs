@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::addrs::{Cr3, VirtAddr};
+use crate::cmp_analysis::{Operand, Operation};
 use crate::config::Config;
 use crate::fuzzer::ResetBreakpointType;
 use crate::stack_unwinder::StackUnwinders;
@@ -655,6 +656,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     let mut redqueen_available = false;
 
     let mut covbps_paths = Vec::new();
+    let mut cmps_paths = Vec::new();
 
     // Read the snapshot directory looking for the specific file extensions
     for file in dir.read_dir()? {
@@ -703,6 +705,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
                 #[cfg(feature = "redqueen")]
                 Some("cmps") => {
                     redqueen_available = true;
+                    cmps_paths.push(file.path());
                 }
                 Some("physmem") => physical_memory = Some(file.path()),
                 Some("symbols") => {
@@ -797,6 +800,11 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
 
         covbps.extend(bps);
         coverage_breakpoints_src = Some(covbps_path.with_extension("covbps_src"));
+    }
+
+    // Parse the available redqueen cmps files
+    for cmps_path in &cmps_paths {
+        parse_cmps(cmps_path);
     }
 
     // Check if the source lines for the coverage breakpoints has already been written
@@ -1071,7 +1079,10 @@ pub fn parse_coverage_breakpoints(cov_bp_path: &Path) -> Result<BTreeSet<VirtAdd
                 cov_bps.insert(VirtAddr(addr));
             }
             Err(e) => {
-                eprintln!("[COVBPS] failed to parse address from line: {:?} (reason: {})", line, e);
+                eprintln!(
+                    "[COVBPS] failed to parse address from line: {:?} (reason: {})",
+                    line, e
+                );
             }
         }
     });
@@ -1571,4 +1582,233 @@ fn parse_cores(str: &str) -> Result<usize, anyhow::Error> {
         }
     };
     Ok(cores)
+}
+
+/// Parse the cmp analysis breakpoints. This will read the given path and parse
+/// the redqueen breakpoints from binary ninja.
+///
+/// Example:
+///
+///  0x555555555268,0x4,reg eax,CMP_SLT,load_from add reg rbp -0x1c
+///
+/// (0x555555555268, RedqueenArguments {
+///     size: Size::U32,
+///     operation: Operation::SignedLessThan,
+///     left_op: Operand::Register(EAX),
+///     right_op: Operand::Memory {
+///         register: RBP,
+///         displacement: -0x1c,
+///     },
+/// })
+///
+/// # Errors
+///
+/// * Failed to read cmps file
+pub fn parse_cmps(cmps_path: &Path) -> Result<()> {
+    // Read the breakpoints
+    let data = std::fs::read_to_string(cmps_path).context("Failed to read cmps file")?;
+    let lines: Vec<_> = data.lines().collect();
+
+    let mut index = 0;
+    while index < lines.len() {
+        let mut line = lines[index].to_string();
+        index += 1;
+
+        // look ahead to see if the next line also has the same address. it's possible currently for the
+        // same address to have different comparisons (like checking doubles)
+        // example:
+        // 5555555558a0 zmm0 < zmm1
+        // 5555555558a0 zmm0 == zmm1
+        for _ in 0..4 {
+            // Break if there are no more lines
+            let Some(next_line) = lines.get(index) else {
+                break;
+            };
+
+            let Some([line_addr, line_cmp_size, line_left, line_op, line_right]) =
+                line.split(",").array_chunks().next()
+            else {
+                panic!("invalid cmp analysis rule found: {line:?}");
+            };
+
+            let line_addr = u64::from_str_radix(&line_addr.replace("0x", ""), 16).unwrap();
+
+            let Some(
+                [next_line_addr, next_line_cmp_size, next_line_left, next_line_op, next_line_right],
+            ) = line.split(",").array_chunks().next()
+            else {
+                panic!("invalid cmp analysis rule found: {line:?}");
+            };
+            let next_line_addr =
+                u64::from_str_radix(&next_line_addr.replace("0x", ""), 16).unwrap();
+            if line_addr != next_line_addr {
+                break;
+            }
+        }
+
+        // Expected rule format: 0x555555555246,4,load_from add rbp -0x10,NE,0x11111111
+        let Some([addr, cmp_size, left_op, operation, right_op]) =
+            line.split(',').array_chunks().next()
+        else {
+            panic!("Invalid cmp analysis rule found: {line}");
+        };
+
+        let addr = u64::from_str_radix(&addr.replace("0x", ""), 16)
+            .expect("Failed to parse cmp analysis address");
+
+        let operation = match operation {
+            "CMP_E" => Operation::Equal,
+            "CMP_NE" => Operation::NotEqual,
+            "CMP_SLT" => Operation::SignedLessThan,
+            "CMP_ULT" => Operation::UnsignedLessThan,
+            "CMP_SLE" => Operation::SignedLessThanEqual,
+            "CMP_ULE" => Operation::UnsignedLessThanEqual,
+            "CMP_SGT" => Operation::SignedGreaterThan,
+            "CMP_UGT" => Operation::UnsignedGreaterThan,
+            "CMP_SGE" => Operation::SignedGreaterThanEqual,
+            "CMP_UGE" => Operation::UnsignedGreaterThanEqual,
+            "FCMP_E" => Operation::FloatingPointEqual,
+            "FCMP_NE" => Operation::FloatingPointNotEqual,
+            "FCMP_LT" => Operation::FloatingPointLessThan,
+            "FCMP_LE" => Operation::FloatingPointLessThanEqual,
+            "FCMP_GT" => Operation::FloatingPointGreaterThan,
+            "FCMP_GE" => Operation::FloatingPointGreaterThanEqual,
+            "strcmp" => Operation::Strcmp,
+            "memcmp" => Operation::Memcmp,
+            _ => unimplemented!("Unknown operation: {operation}"),
+        };
+
+        let _ = parse_cmp_operand(left_op)?;
+        let _ = parse_cmp_operand(right_op)?;
+    }
+
+    Ok(())
+}
+
+fn parse_number(num: &str) -> Result<i64> {
+    let without_prefix = num.trim_start_matches("-0x");
+    let is_negative = num.starts_with("-");
+
+    Ok(i64::from_str_radix(without_prefix, 16).map(|n| if is_negative { -n } else { n })?)
+}
+
+/// Parse the cmp line given by the binja plugin and return how to retrieve
+/// the information from a `fuzzvm`.
+///
+/// Example:
+///
+/// BP Address,Size,Operand 1,Operation,Operand 2
+///
+/// 0x555555555514,0x4,reg eax,E,0x912f2593
+/// 0x55555555557e,0x4,load_from add reg rax 0x4,SLT,0x41414141
+///
+/// Operand examples:
+///
+/// reg eax -> eax
+/// load_from add reg rax 0x4 -> [rax + 0x4]
+///
+/// Function calls:
+///
+/// 0x55555555582c,0x30,reg rdi,memcmp,reg rsi -> memcmp(rdi, rsi)
+fn parse_cmp_operand(input: &str) -> Result<Operand> {
+    if let Some(input) = input.strip_prefix("load_from add reg ") {
+        println!("Input: {input}");
+        let mut input = input.split(" ");
+        let reg = input.next().unwrap();
+        let mut offset = 0;
+        if let Some(new_offset) = input.next() {
+            offset = parse_number(new_offset)?;
+        }
+
+        println!("Reg: {reg} Offset: {offset:#x}");
+
+        /*
+        // load_from cmd: Need to deref a memory address
+        let (mut res, input, name) = parse_cmp_operand(input, res, index + 1);
+        res.push_str(&format!(
+            "let {var_name} = fuzzvm.read::<u64>(VirtAddr({name}), CR3).unwrap();\n"
+        ));
+        (res, input, var_name)
+        */
+    }
+
+    /*
+    else if input.starts_with("0x") {
+        // Literal number
+
+        // Get the first element before a space in the input
+        // or the entire string if this is the last element
+        let (num, input) = if let Some(elem) = input.split_once(' ') {
+            elem
+        } else {
+            (input, "")
+        };
+
+        res.push_str(&format!("let {var_name} = {num} as u64;\n"));
+
+        // Return the number and the remainder
+        (res, input, var_name)
+    } else if input.starts_with("-0x") {
+        // Literal negative hex number
+
+        // Get the first element before a space in the input
+        // or the entire string if this is the last element
+        let (num, input) = if let Some(elem) = input.split_once(' ') {
+            elem
+        } else {
+            (input, "")
+        };
+
+        res.push_str(&format!("let {var_name} = ({num}_i64) as u64;\n"));
+        (res, input, var_name)
+    } else if let Some(input) = input.strip_prefix("reg ") {
+        // Get the first element before a space in the input
+        // or the entire string if this is the last element
+        let (reg, input) = if let Some(elem) = input.split_once(' ') {
+            elem
+        } else {
+            (input, "")
+        };
+
+        let as_u64 = if !reg.contains("xmm") { "as u64" } else { "" };
+
+        res.push_str(&format!("let {var_name} = fuzzvm.{reg}() {as_u64};\n"));
+        (res, input, var_name)
+    } else if input.contains(".") {
+        let (num, input) = if let Some(elem) = input.split_once(' ') {
+            elem
+        } else {
+            (input, "")
+        };
+
+        res.push_str(&format!("let {var_name} = {num};\n"));
+        (res, input, var_name)
+    } else {
+        for (cmd, func) in &[
+            ("add ", "wrapping_add"),
+            ("and ", "bitand"),
+            ("sub ", "wrapping_sub"),
+            ("logical_shift_left ", "shl"),
+            ("left_shift_left ", "shl"),
+        ] {
+            if let Some(input) = input.strip_prefix(cmd) {
+                // Found a command. Get the left and right operands for this command
+                let (res, input, left_var) = parse_cmp_operand(input, res, index + 1);
+                let (mut res, input, right_var) = parse_cmp_operand(input, res, index + 2);
+
+                res.push_str(&format!(
+                    "let {var_name} = {left_var}.{func}({right_var});\n"
+                ));
+
+                // Return the result
+                return (res, input, var_name);
+            }
+        }
+
+        // No command was found. Return Unknown
+        (format!("UNKNOWN: {input}"), input, "unknown".to_string())
+    }
+    */
+
+    Ok(Operand::ConstU8(1))
 }
