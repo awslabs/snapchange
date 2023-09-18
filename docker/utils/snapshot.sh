@@ -295,6 +295,7 @@ if [[ "$GENERATE_COVERAGE_BREAKPOINTS" -eq 1 ]]; then
   else
     $COVERAGE_BREAKPOINT_COMMAND "$BASE" "$OUTPUT/$BIN_NAME.bin" 2>&1 | tee "$OUTPUT/custom_coverage_command.log"
   fi
+  mv *.covbps "$OUTPUT/" || true
   log_msg "[+] generated $(cat "$OUTPUT"/*.covbps | wc -l) coverage breakpoints"
 else
   log_msg "Skipping generating coverage breakpoints"

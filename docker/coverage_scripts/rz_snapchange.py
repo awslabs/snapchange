@@ -45,5 +45,6 @@ for func in funcs:
     blocks = p.cmdj("afbj @ " + hex(func['offset']))
     bb_addrs.update(b['addr'] for b in blocks)
 
-with open(f"{binary_name}.rz.covbps", "w") as f:
+outfile = args.binary.parent / f"{binary_name}.rz.covbps"
+with outfile.open("w") as f:
     f.write("\n".join(map(hex, sorted(bb_addrs))))
