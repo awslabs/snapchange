@@ -76,6 +76,9 @@ fn start_core<FUZZER: Fuzzer>(
     #[cfg(feature = "redqueen")]
     let redqueen_rules = BTreeMap::new();
 
+    #[cfg(feature = "redqueen")]
+    let redqueen_breakpoints = None;
+
     // Create a 64-bit VM for fuzzing
     let mut fuzzvm = FuzzVm::create(
         u64::try_from(core_id.id)?,
@@ -92,6 +95,8 @@ fn start_core<FUZZER: Fuzzer>(
         unwinders.clone(),
         #[cfg(feature = "redqueen")]
         redqueen_rules,
+        #[cfg(feature = "redqueen")]
+        redqueen_breakpoints,
     )?;
 
     // Enable single step for tracing

@@ -22,9 +22,10 @@ use std::{
 
 #[cfg(feature = "redqueen")]
 use crate::{
-    cmdline, config::Config, fuzz_input::FuzzInput, fuzzer::Fuzzer, fuzzvm, fuzzvm::FuzzVm,
-    init_environment, memory::Memory, stack_unwinder::StackUnwinders, unblock_sigalrm, Cr3,
-    KvmEnvironment, ProjectState, ResetBreakpointType, Symbol, VbCpu, VirtAddr, THREAD_IDS,
+    cmdline, cmp_analysis::RedqueenArguments, config::Config, fuzz_input::FuzzInput,
+    fuzzer::Fuzzer, fuzzvm, fuzzvm::FuzzVm, init_environment, memory::Memory,
+    stack_unwinder::StackUnwinders, unblock_sigalrm, Cr3, KvmEnvironment, ProjectState,
+    ResetBreakpointType, Symbol, VbCpu, VirtAddr, THREAD_IDS,
 };
 
 /// Execute the c subcommand to gather coverage for a particular input
@@ -73,6 +74,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         &args.path,
         &project_state.binaries,
         project_state.config.clone(),
+        project_state.redqueen_breakpoints.clone(),
     )?;
 
     // Success
@@ -94,6 +96,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     input_case: &Path,
     binaries: &[PathBuf],
     config: Config,
+    redqueen_breakpoints: Option<Vec<(u64, RedqueenArguments)>>,
 ) -> Result<()> {
     // Store the thread ID of this thread used for passing the SIGALRM to this thread
     let thread_id = unsafe { libc::pthread_self() };
@@ -141,6 +144,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         config,
         StackUnwinders::default(),
         prev_redqueen_rules,
+        redqueen_breakpoints,
     )?;
 
     // Get the input to trace

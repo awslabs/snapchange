@@ -5,16 +5,12 @@
 #![allow(clippy::cast_lossless)]
 
 use anyhow::Result;
-use rand::seq::SliceRandom;
-use rand::Rng as _;
 
+use crate::constants;
 use snapchange::addrs::{Cr3, VirtAddr};
 use snapchange::fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer};
 use snapchange::fuzzvm::FuzzVm;
-use snapchange::rng::Rng;
 use snapchange::{Execution, FuzzInput};
-
-use crate::constants;
 
 const CR3: Cr3 = Cr3(constants::CR3);
 
@@ -52,42 +48,5 @@ impl Fuzzer for Example05Fuzzer {
                 Ok(Execution::Continue)
             },
         }])
-    }
-
-    fn schedule_next_input(
-        &mut self,
-        corpus: &[Self::Input],
-        rng: &mut Rng,
-        dictionary: &Option<Vec<Vec<u8>>>,
-    ) -> Self::Input {
-        /*
-        // Favor the last input in the corpus since this is a progressive example
-        if rng.gen_bool(0.8) {
-            if let Some(last_input) = corpus.last().cloned() {
-                return last_input;
-            }
-        }
-        */
-
-        // Small chance to make a new input
-        if rng.next() % 0xffff == 42 {
-            Self::Input::generate(corpus, rng, dictionary, Self::MAX_INPUT_LENGTH)
-        } else {
-            // Otherwise attempt to pick one from the corpus
-            if let Some(input) = corpus.choose(rng) {
-                input.clone()
-            } else {
-                // Default to generating a new input
-                Self::Input::generate(corpus, rng, dictionary, Self::MAX_INPUT_LENGTH)
-            }
-        }
-    }
-
-    fn redqueen_breakpoints(&self) -> Option<&[Breakpoint<Self>]> {
-        crate::redqueen::redqueen_breakpoints::<Self>()
-    }
-
-    fn redqueen_breakpoint_addresses() -> &'static [u64] {
-        crate::redqueen::redqueen_breakpoint_addresses()
     }
 }

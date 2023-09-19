@@ -287,22 +287,4 @@ pub trait Fuzzer: Default + Sized {
     fn init_files(&self, _fs: &mut FileSystem) -> Result<()> {
         Ok(())
     }
-
-    /// Get the breakpoints used to gather Redqueen metadata
-    ///
-    /// If a snapshot includes a `.cmps` file, then the fuzzer `build.rs` will attempt to
-    /// generate a set of breakpoints. These breakpoints trigger on comparison operations
-    /// and are used to help to more precisely mutate an input based on this runtime
-    /// information
-    #[cfg(feature = "redqueen")]
-    fn redqueen_breakpoints(&self) -> Option<&[Breakpoint<Self>]> {
-        None
-    }
-
-    /// The addresses of the redqueen breakpoints
-    #[must_use]
-    #[cfg(feature = "redqueen")]
-    fn redqueen_breakpoint_addresses() -> &'static [u64] {
-        &[]
-    }
 }

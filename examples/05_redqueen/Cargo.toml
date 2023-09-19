@@ -17,7 +17,6 @@ thiserror = "1.0.44"
 
 [build-dependencies]
 regex = "1"
-snapchange = { version = "0.1.0", path = "../..", features = ["redqueen"] }
 
 [profile.release]
 panic = "abort"

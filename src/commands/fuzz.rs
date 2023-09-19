@@ -39,7 +39,7 @@ use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
 use x86_64::registers::rflags::RFlags;
 
 #[cfg(feature = "redqueen")]
-use crate::cmp_analysis::RedqueenRule;
+use crate::cmp_analysis::{RedqueenArguments, RedqueenRule};
 
 use crate::stack_unwinder::StackUnwinders;
 
@@ -309,6 +309,20 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         result
     };
 
+    #[cfg(feature = "redqueen")]
+    let mut starting_redqueen_breakpoints = {
+        let start = std::time::Instant::now();
+        let result = (0..=cores)
+            .map(|_| project_state.redqueen_breakpoints.clone())
+            .collect::<Vec<_>>();
+        log::info!(
+            "Cloned {} redqueen breakpoints in {:?}",
+            cores,
+            start.elapsed()
+        );
+        result
+    };
+
     let start = std::time::Instant::now();
     let mut starting_sym_breakpoints = (0..=cores)
         .map(|_| symbol_breakpoints.clone())
@@ -390,6 +404,9 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         #[cfg(feature = "redqueen")]
         let redqueen_rules = std::mem::take(&mut starting_redqueen_rules[id]);
 
+        #[cfg(feature = "redqueen")]
+        let redqueen_breakpoints = std::mem::take(&mut starting_redqueen_breakpoints[id]);
+
         // Get an owned copy of the crash dir for this core
         let project_dir = project_state.path.clone();
 
@@ -431,7 +448,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
                     #[cfg(feature = "redqueen")]
                     redqueen_rules,
                     #[cfg(feature = "redqueen")]
-                    project_state.redqueen_available,
+                    redqueen_breakpoints,
                 )
             });
 
@@ -661,7 +678,7 @@ fn start_core<FUZZER: Fuzzer>(
     unwinders: StackUnwinders,
     #[cfg(feature = "redqueen")] prev_redqueen_coverage: BTreeSet<(VirtAddr, RFlags)>,
     #[cfg(feature = "redqueen")] redqueen_rules: BTreeMap<u64, BTreeSet<RedqueenRule>>,
-    #[cfg(feature = "redqueen")] redqueen_availble: bool,
+    #[cfg(feature = "redqueen")] redqueen_breakpoints: Option<Vec<(u64, RedqueenArguments)>>,
 ) -> Result<()> {
     /// Helper macro to time the individual components of resetting the guest state
     macro_rules! time {
@@ -725,6 +742,8 @@ fn start_core<FUZZER: Fuzzer>(
         unwinders,
         #[cfg(feature = "redqueen")]
         redqueen_rules,
+        #[cfg(feature = "redqueen")]
+        redqueen_breakpoints,
     )?;
 
     let mut coverage = prev_coverage;
@@ -865,7 +884,7 @@ fn start_core<FUZZER: Fuzzer>(
 
         // Gather redqueen for this input if there aren't already replacement rules found
         #[cfg(feature = "redqueen")]
-        if redqueen_availble {
+        if fuzzvm.redqueen_breakpoints.is_some() {
             time!(Redqueen, {
                 // If this input has never been through redqueen or hit the small change to go through again,
                 // execute redqueen on this input
@@ -1253,7 +1272,8 @@ fn start_core<FUZZER: Fuzzer>(
         log_fuzzvm_perf_stats!(ApplyCoverageBreakpoint, apply_coverage_breakpoints);
         log_fuzzvm_perf_stats!(InitVm, init_vm);
         core_stats.lock().unwrap().dirty_pages_kvm += try_u64!(guest_reset_perf.restored_kvm_pages);
-        core_stats.lock().unwrap().dirty_pages_custom += try_u64!(guest_reset_perf.restored_custom_pages);
+        core_stats.lock().unwrap().dirty_pages_custom +=
+            try_u64!(guest_reset_perf.restored_custom_pages);
 
         /*
         if guest_reset_perf.restored_pages > 60000 {

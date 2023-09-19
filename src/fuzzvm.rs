@@ -609,6 +609,14 @@ pub struct FuzzVm<'a, FUZZER: Fuzzer> {
     /// Set of redqueen rules used for cmp analysis (our RedQueen implementation)
     #[cfg(feature = "redqueen")]
     pub redqueen_rules: BTreeMap<u64, BTreeSet<RedqueenRule>>,
+
+    /// Parsed redqueen breakpoints used to gather runtime comparison operands
+    #[cfg(feature = "redqueen")]
+    pub redqueen_breakpoints: Option<Vec<(u64, RedqueenArguments)>>,
+
+    /// Parsed redqueen breakpoints used to gather runtime comparison operands
+    #[cfg(feature = "redqueen")]
+    pub redqueen_breakpoint_addresses: Option<BTreeSet<u64>>,
 }
 
 /// Copy 4096 bytes of the page at `source` to the page at `dest`
@@ -685,6 +693,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         config: Config,
         unwinders: StackUnwinders,
         #[cfg(feature = "redqueen")] redqueen_rules: BTreeMap<u64, BTreeSet<RedqueenRule>>,
+        #[cfg(feature = "redqueen")] redqueen_breakpoints: Option<Vec<(u64, RedqueenArguments)>>,
     ) -> Result<Self> {
         // Create a PIT2 timer
         let pit_config = kvm_pit_config::default();
@@ -750,6 +759,16 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         let exit_on_syscall =
             !fuzzer.syscall_whitelist().is_empty() || !fuzzer.syscall_blacklist().is_empty();
 
+        // Create an set for easily searchable redqueen breakpoint addresses
+        let mut redqueen_breakpoint_addresses = None;
+        if let Some(ref redqueen_bps) = redqueen_breakpoints {
+            let mut result = BTreeSet::new();
+            redqueen_bps.iter().for_each(|(addr, _)| {
+                result.insert(*addr);
+            });
+            redqueen_breakpoint_addresses = Some(result);
+        }
+
         // Create the overall FuzzVm struct
         let mut fuzzvm = Self {
             core_id,
@@ -794,6 +813,10 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             config,
             #[cfg(feature = "redqueen")]
             redqueen_rules,
+            #[cfg(feature = "redqueen")]
+            redqueen_breakpoints,
+            #[cfg(feature = "redqueen")]
+            redqueen_breakpoint_addresses,
             unwinders: Some(unwinders),
         };
 
@@ -3229,45 +3252,18 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
         let start = std::time::Instant::now();
 
-        panic!("Write the parser to convert the binja rules to RedqueenArguments");
-
-        self.set_breakpoint(
-            VirtAddr(0x5555_5555_52f2),
-            self.cr3(),
-            BreakpointType::Repeated,
-            BreakpointMemory::Dirty,
-            BreakpointHook::Redqueen(RedqueenArguments {
-                size: cmp_analysis::Size::U32,
-                operation: cmp_analysis::Operation::Equal,
-                left_op: cmp_analysis::Operand::Register(iced_x86::Register::RAX),
-                right_op: cmp_analysis::Operand::ConstU32(0xd39a8f32),
-            }),
-        );
-
-        if let Some(bps) = fuzzer.redqueen_breakpoints() {
-            for Breakpoint {
-                lookup,
-                bp_type,
-                bp_hook,
-            } in bps
-            {
-                match lookup {
-                    AddressLookup::Virtual(virt_addr, cr3) => {
-                        self.set_breakpoint(
-                            *virt_addr,
-                            *cr3,
-                            *bp_type,
-                            BreakpointMemory::Dirty,
-                            BreakpointHook::Func(*bp_hook),
-                        )?;
-
-                        bps_set += 1;
-                    }
-                    AddressLookup::SymbolOffset(_symbol, _offset) => {
-                        return Err(Error::SymbolBreakpointsNotImplForRedqueen.into());
-                    }
-                }
+        if let Some(redqueen_bps) = self.redqueen_breakpoints.take() {
+            for (addr, args) in &redqueen_bps {
+                self.set_breakpoint(
+                    VirtAddr(*addr),
+                    self.cr3(),
+                    BreakpointType::Repeated,
+                    BreakpointMemory::Dirty,
+                    BreakpointHook::Redqueen(*args),
+                );
             }
+
+            self.redqueen_breakpoints = Some(redqueen_bps);
         }
 
         log::debug!(
@@ -4218,15 +4214,19 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
             // If this breakpoint was a redqueen breakpoint, add the rip and the rflags pairing
             // to the coverage
-            if FUZZER::redqueen_breakpoint_addresses().contains(&self.rip()) {
-                // Keep the Carry and Zero flags as part of the coverage
-                let flag_mask = RFlags::ZERO_FLAG | RFlags::CARRY_FLAG;
-                // flag_mask |= RFlags::SIGN_FLAG;
-                // flag_mask |= RFlags::AUXILIARY_CARRY_FLAG;
+            if let Some(ref rq_breakpoint_addrs) = self.redqueen_breakpoint_addresses {
+                if rq_breakpoint_addrs.contains(&self.rip()) {
+                    // Keep the Carry and Zero flags as part of the coverage
+                    let flag_mask = RFlags::ZERO_FLAG | RFlags::CARRY_FLAG;
+                    // flag_mask |= RFlags::SIGN_FLAG;
+                    // flag_mask |= RFlags::AUXILIARY_CARRY_FLAG;
 
-                let rflags = RFlags::from_bits_truncate(self.rflags() & flag_mask.bits());
+                    let rflags = RFlags::from_bits_truncate(self.rflags() & flag_mask.bits());
 
-                rq_coverage.insert((VirtAddr(self.rip()), rflags));
+                    rq_coverage.insert((VirtAddr(self.rip()), rflags));
+                }
+            } else {
+                panic!("Unknown redqueen addresses");
             }
 
             // Handle the FuzzVmExit to determine
@@ -4458,11 +4458,11 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 self.reset_and_run_with_redqueen(&max_entropy_input, fuzzer, vm_timeout, coverage)?;
 
             if let Some(rules) = self.redqueen_rules.remove(&max_entropy_input.fuzz_hash()) {
-                log::info!("Calling RQ from {fuzz_hash:#x}: {rules:x?}");
+                // log::info!("Calling RQ from {fuzz_hash:#x}: {rules:x?}");
                 for rule in &rules {
                     // Apply this redqueen rule
                     let candidates = max_entropy_input.get_redqueen_rule_candidates(rule);
-                    log::info!("{rule:x?} Candidates {}", candidates.len());
+                    // log::info!("{rule:x?} Candidates {}", candidates.len());
 
                     for candidate in &candidates {
                         let mut new_input = max_entropy_input.clone();
@@ -4539,7 +4539,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                             // Add the new input to the corpus
                             corpus.push(new_input.clone());
 
-                            // Recursively attempt to call Redqueen for this ne winput
+                            // Recursively attempt to call Redqueen for this new input
                             self.gather_redqueen(
                                 &new_input,
                                 fuzzer,

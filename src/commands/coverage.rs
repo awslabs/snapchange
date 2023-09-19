@@ -163,6 +163,9 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     #[cfg(feature = "redqueen")]
     let redqueen_rules = BTreeMap::new();
 
+    #[cfg(feature = "redqueen")]
+    let redqueen_breakpoints = None;
+
     // Create a 64-bit VM for fuzzing
     let mut fuzzvm = FuzzVm::<FUZZER>::create(
         u64::try_from(core_id.id)?,
@@ -179,6 +182,8 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         crate::stack_unwinder::StackUnwinders::default(),
         #[cfg(feature = "redqueen")]
         redqueen_rules,
+        #[cfg(feature = "redqueen")]
+        redqueen_breakpoints,
     )?;
 
     log::info!("Coverage timeout: {:?}", vm_timeout);
