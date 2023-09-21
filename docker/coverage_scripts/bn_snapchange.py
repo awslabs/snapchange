@@ -35,6 +35,7 @@ from binaryninja import (
     MediumLevelILInstruction,
     MediumLevelILOperation,
 )
+
 # from binaryninja.log import log_debug, log_error, log_info, log_warn
 from binaryninja.lowlevelil import LowLevelILFlag
 
@@ -514,7 +515,7 @@ def write_dict_entry(entry, location: Path):
 
         entry_stripped = entry.strip(b"\x00\t \n\r")
         if entry_stripped != entry:
-            with (location / (str(fname) + _trimmed)).open("wb") as f:
+            with (location / (str(fname) + "_trimmed")).open("wb") as f:
                 f.write(entry_stripped)
     else:
         log_warn(f"cannot deal with {type(entry)} in auto-dict {entry!r}")
@@ -1594,12 +1595,16 @@ def get_cmp_analysis_from_instr_mlil(
         if "temp" in str(curr_instr.src) or "cond" in str(
             curr_instr.src
         ):  # or str(curr_instr.src.type) == 'bool':
-            mlil_func = curr_instr.function
-            ssa_var = mlil_func.get_ssa_var_definition(curr_instr.ssa_form.src)
-            var = get_cmp_analysis_from_instr_mlil(
-                ssa_var, address, expr_indexes, cmp_size, iters + 1
-            )
-            return var
+            try:
+                mlil_func = curr_instr.function
+                ssa_var = mlil_func.get_ssa_var_definition(curr_instr.ssa_form.src)
+                var = get_cmp_analysis_from_instr_mlil(
+                    ssa_var, address, expr_indexes, cmp_size, iters + 1
+                )
+                return var
+            except Exception as e:
+                print(str(e))
+                return "recurs"
         else:
             # Replace the arg values with the registers
             name = str(curr_instr.src)
