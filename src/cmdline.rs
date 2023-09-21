@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::addrs::{Cr3, VirtAddr};
-use crate::cmp_analysis::{Operand, Operation, RedqueenArguments, Size};
+use crate::cmp_analysis::{Conditional, Operand, RedqueenArguments, Size};
 use crate::config::Config;
 use crate::fuzzer::ResetBreakpointType;
 use crate::stack_unwinder::StackUnwinders;
@@ -1617,15 +1617,39 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
     let mut result = Vec::new();
 
     let mut index = 0;
+    let mut invalid = 0;
+
     'done: while index < lines.len() {
         let mut line = lines[index].to_string();
         index += 1;
+
+        if line.contains("x87") {
+            println!("Not impl - x87 line: {line}");
+            invalid += 1;
+            continue;
+        }
+
+        if line.contains("recurs") {
+            println!("Skipping recursion error: {line}");
+            invalid += 1;
+            continue;
+        }
+
+        if line.contains("unknown") {
+            println!("unknown operand found: {line}");
+            invalid += 1;
+            continue;
+        }
 
         // Expected rule format: 0x555555555246,4,load_from add rbp -0x10,NE,0x11111111
         let Some([addr, cmp_size, left_op_str, operation, right_op_str]) =
             line.split(',').array_chunks().next()
         else {
-            panic!("Invalid cmp analysis rule found: {line}");
+            // panic!("Invalid cmp analysis rule found: {line}");
+            println!("ERROR: invalid cmp analysis rule found: {line:?}");
+            invalid += 1;
+            index += 1;
+            continue;
         };
 
         let addr = u64::from_str_radix(&addr.replace("0x", ""), 16)
@@ -1647,7 +1671,10 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
                 [next_line_addr, next_line_cmp_size, next_line_left, next_line_op, next_line_right],
             ) = next_line.split(",").array_chunks().next()
             else {
-                panic!("invalid cmp analysis rule found: {line:?}");
+                println!("ERROR: invalid cmp analysis rule found: {next_line:?}");
+                invalid += 1;
+                index += 1;
+                continue;
             };
 
             let next_line_addr = u64::from_str_radix(&next_line_addr.replace("0x", ""), 16)
@@ -1673,38 +1700,38 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
         };
 
         let operation = match operation {
-            "CMP_E" => Operation::Equal,
-            "CMP_NE" => Operation::NotEqual,
-            "CMP_SLT" => Operation::SignedLessThan,
-            "CMP_ULT" => Operation::UnsignedLessThan,
-            "CMP_SLE" => Operation::SignedLessThanEqual,
-            "CMP_ULE" => Operation::UnsignedLessThanEqual,
-            "CMP_SGT" => Operation::SignedGreaterThan,
-            "CMP_UGT" => Operation::UnsignedGreaterThan,
-            "CMP_SGE" => Operation::SignedGreaterThanEqual,
-            "CMP_UGE" => Operation::UnsignedGreaterThanEqual,
-            "FCMP_E" => Operation::FloatingPointEqual,
-            "FCMP_NE" => Operation::FloatingPointNotEqual,
-            "FCMP_LT" => Operation::FloatingPointLessThan,
-            "FCMP_LE" => Operation::FloatingPointLessThanEqual,
-            "FCMP_GT" => Operation::FloatingPointGreaterThan,
-            "FCMP_GE" => Operation::FloatingPointGreaterThanEqual,
+            "CMP_E" => Conditional::Equal,
+            "CMP_NE" => Conditional::NotEqual,
+            "CMP_SLT" => Conditional::SignedLessThan,
+            "CMP_ULT" => Conditional::UnsignedLessThan,
+            "CMP_SLE" => Conditional::SignedLessThanEqual,
+            "CMP_ULE" => Conditional::UnsignedLessThanEqual,
+            "CMP_SGT" => Conditional::SignedGreaterThan,
+            "CMP_UGT" => Conditional::UnsignedGreaterThan,
+            "CMP_SGE" => Conditional::SignedGreaterThanEqual,
+            "CMP_UGE" => Conditional::UnsignedGreaterThanEqual,
+            "FCMP_E" => Conditional::FloatingPointEqual,
+            "FCMP_NE" => Conditional::FloatingPointNotEqual,
+            "FCMP_LT" => Conditional::FloatingPointLessThan,
+            "FCMP_LE" => Conditional::FloatingPointLessThanEqual,
+            "FCMP_GT" => Conditional::FloatingPointGreaterThan,
+            "FCMP_GE" => Conditional::FloatingPointGreaterThanEqual,
             "strcmp" => {
                 // strcmp's size should just be a Size::Bytes regardless of the given size
                 size = Size::Bytes(0x1234);
-                Operation::Strcmp
+                Conditional::Strcmp
             }
             "memcmp" => {
                 // memcmp's size should always be a Size::Bytes
                 size = Size::Bytes(usize::from_str_radix(&cmp_size.replace("0x", ""), 16)?);
-                Operation::Memcmp
+                Conditional::Memcmp
             }
             _ => unimplemented!("Unknown operation: {operation}"),
         };
 
         // Parse the left and right operands
-        let left_op = parse_cmp_operand(left_op_str)?;
-        let right_op = parse_cmp_operand(right_op_str)?;
+        let (left_op, remaining_str) = parse_cmp_operand(left_op_str)?;
+        let (right_op, remaining_str) = parse_cmp_operand(right_op_str)?;
 
         let arg = RedqueenArguments {
             size,
@@ -1715,6 +1742,8 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
 
         result.push((addr, arg));
     }
+
+    println!("Skipped {invalid}/{} cmp breakpoints", lines.len());
 
     Ok(result)
 }
@@ -1751,55 +1780,107 @@ fn parse_number(num: &str) -> Result<i64> {
 /// Function calls:
 ///
 /// 0x55555555582c,0x30,reg rdi,memcmp,reg rsi -> memcmp(rdi, rsi)
-fn parse_cmp_operand(input: &str) -> Result<Operand> {
-    log::info!("INPUT: {input}");
-    if let Some(args) = input.strip_prefix("load_from add reg ") {
-        // Parses load_from add reg <reg> [<offset>]
-        let mut args = args.split(" ");
+fn parse_cmp_operand(input: &str) -> Result<(Operand, &str)> {
+    if let Some(args) = input.strip_prefix("load_from ") {
+        let (address, remaining) = parse_cmp_operand(args)?;
 
-        let reg = parse_register(
-            args.next()
-                .context("Invalid cmp register in cmp line: {input}")?,
-        );
+        Ok((
+            Operand::Load {
+                address: Box::new(address),
+            },
+            remaining,
+        ))
+    } else if let Some(args) = input.strip_prefix("and ") {
+        // Parses and <operation>
+        let (left, remaining) = parse_cmp_operand(args)?;
+        let (right, remaining) = parse_cmp_operand(remaining)?;
 
-        let mut offset = 0;
-        if let Some(new_offset) = args.next() {
-            offset = parse_number(new_offset)?;
-        }
+        Ok((
+            Operand::And {
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            remaining,
+        ))
+    } else if let Some(args) = input.strip_prefix("neg ") {
+        // Parses neg <operation>
 
-        Ok(Operand::RegisterMemory {
-            register: reg,
-            offset,
-        })
-    } else if let Some(args) = input.strip_prefix("load_from 0x") {
-        // Parses load_from 0x<address>
-        let mut args = args.split(" ");
+        // Parse the register
+        let (src, remaining) = parse_cmp_operand(args)?;
 
-        let address = args.next().context("No address found: {input}")?;
-        let address = parse_number(address)? as u64;
+        Ok((Operand::Neg { src: Box::new(src) }, remaining))
+    } else if let Some(args) = input.strip_prefix("not ") {
+        // Parses not <operation>
 
-        Ok(Operand::ConstMemory { address })
+        // Parse the register
+        let (src, remaining) = parse_cmp_operand(args)?;
+
+        Ok((Operand::Not { src: Box::new(src) }, remaining))
+    } else if let Some(args) = input.strip_prefix("add ") {
+        // Parses add <operation>
+        let (left, remaining) = parse_cmp_operand(args)?;
+        let (right, remaining) = parse_cmp_operand(remaining)?;
+
+        Ok((
+            Operand::Add {
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            remaining,
+        ))
+    } else if let Some(args) = input.strip_prefix("logical_shift_left ") {
+        // Parses add <operation>
+        let (left, remaining) = parse_cmp_operand(args)?;
+        let (right, remaining) = parse_cmp_operand(remaining)?;
+
+        Ok((
+            Operand::LogicalShiftLeft {
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            remaining,
+        ))
+    } else if let Some(args) = input.strip_prefix("sub ") {
+        // Parses sub <operation>
+        let (left, remaining) = parse_cmp_operand(args)?;
+        let (right, remaining) = parse_cmp_operand(remaining)?;
+
+        Ok((
+            Operand::Sub {
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            remaining,
+        ))
     } else if let Some(args) = input.strip_prefix("reg ") {
         // Parses reg <reg>
-        let mut args = args.split(" ");
 
-        let reg = parse_register(
-            args.next()
-                .context("Invalid cmp register in cmp line: {input}")?,
-        );
+        // Split on the first space if there is one
+        let (reg_str, remaining) = args.split_once(' ').unwrap_or((args, ""));
 
-        Ok(Operand::Register(reg))
+        // Parse the register
+        let reg = parse_register(reg_str);
+
+        Ok((Operand::Register(reg), remaining))
     } else if let Some(args) = input.strip_prefix("0x") {
         // Parses 0x<value>
-        let mut args = args.split(" ");
+        let (value_str, remaining) = args.split_once(' ').unwrap_or((args, ""));
 
-        let value = args.next().context("No value found: {input}")?;
-        let value = parse_number(value)? as u64;
+        // Parse the value
+        let value = parse_number(value_str)? as u64;
 
-        Ok(Operand::ConstU64(value))
+        Ok((Operand::ConstU64(value), remaining))
+    } else if let Some(args) = input.strip_prefix("-0x") {
+        // Parses 0x<value>
+        let (value_str, remaining) = args.split_once(' ').unwrap_or((args, ""));
+
+        // Parse the value
+        let value = parse_number(value_str)? as u64;
+
+        Ok((Operand::ConstU64(value), remaining))
     } else if let Ok(float_num) = input.parse::<f64>() {
         // Parses <f64>
-        Ok(Operand::ConstF64(float_num))
+        Ok((Operand::ConstF64(float_num), "NOTHERE"))
     } else {
         Err(Error::UnimplementedCmpOperand(input.to_string()).into())
     }
@@ -1810,6 +1891,9 @@ fn parse_register(reg: &str) -> iced_x86::Register {
 
     match reg.to_ascii_lowercase().as_str() {
         "al" => Register::AL,
+        "bl" => Register::BL,
+        "cl" => Register::AL,
+        "dl" => Register::DL,
         "ch" => Register::CH,
         "dh" => Register::DH,
         "bh" => Register::BH,
@@ -1817,14 +1901,14 @@ fn parse_register(reg: &str) -> iced_x86::Register {
         "bpl" => Register::BPL,
         "sil" => Register::SIL,
         "dil" => Register::DIL,
-        "r8l" => Register::R8L,
-        "r9l" => Register::R9L,
-        "r10l" => Register::R10L,
-        "r11l" => Register::R11L,
-        "r12l" => Register::R12L,
-        "r13l" => Register::R13L,
-        "r14l" => Register::R14L,
-        "r15l" => Register::R15L,
+        "r8b" => Register::R8L,
+        "r9b" => Register::R9L,
+        "r10b" => Register::R10L,
+        "r11b" => Register::R11L,
+        "r12b" => Register::R12L,
+        "r13b" => Register::R13L,
+        "r14b" => Register::R14L,
+        "r15b" => Register::R15L,
         "ax" => Register::AX,
         "cx" => Register::CX,
         "dx" => Register::DX,
@@ -2053,6 +2137,7 @@ fn parse_register(reg: &str) -> iced_x86::Register {
         "tmm5" => Register::TMM5,
         "tmm6" => Register::TMM6,
         "tmm7" => Register::TMM7,
+        "fsbase" => Register::DontUseFA,
         x => panic!("Unknown register value: {x:?}"),
     }
 }

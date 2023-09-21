@@ -39,13 +39,13 @@ pub enum RedqueenRule {
 }
 
 /// The arguments used to describe a redqueen breakpoint
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub struct RedqueenArguments {
     /// Number of bytes compared in this rule
     pub size: Size,
 
     /// The comparison operation for this rule
-    pub operation: Operation,
+    pub operation: Conditional,
 
     /// Left operand
     pub left_op: Operand,
@@ -85,7 +85,7 @@ pub enum Size {
 /// Comparison operations
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Eq, Ord, PartialOrd, PartialEq)]
-pub enum Operation {
+pub enum Conditional {
     /// ==
     Equal,
     /// !=
@@ -127,34 +127,34 @@ pub enum Operation {
     Memcmp,
 }
 
-impl From<&str> for Operation {
-    fn from(val: &str) -> Operation {
+impl From<&str> for Conditional {
+    fn from(val: &str) -> Conditional {
         match val {
-            "CMP_E" => Operation::Equal,
-            "CMP_NE" => Operation::NotEqual,
-            "CMP_SLT" => Operation::SignedLessThan,
-            "CMP_ULT" => Operation::UnsignedLessThan,
-            "CMP_SLE" => Operation::SignedLessThanEqual,
-            "CMP_ULE" => Operation::UnsignedLessThanEqual,
-            "CMP_SGT" => Operation::SignedGreaterThan,
-            "CMP_UGT" => Operation::UnsignedGreaterThan,
-            "CMP_SGE" => Operation::SignedGreaterThanEqual,
-            "CMP_UGE" => Operation::UnsignedGreaterThanEqual,
-            "FCMP_E" => Operation::FloatingPointEqual,
-            "FCMP_NE" => Operation::FloatingPointNotEqual,
-            "FCMP_LT" => Operation::FloatingPointLessThan,
-            "FCMP_LE" => Operation::FloatingPointLessThanEqual,
-            "FCMP_GT" => Operation::FloatingPointGreaterThan,
-            "FCMP_GE" => Operation::FloatingPointGreaterThanEqual,
-            "strcmp" => Operation::Strcmp,
-            "memcmp" => Operation::Memcmp,
+            "CMP_E" => Conditional::Equal,
+            "CMP_NE" => Conditional::NotEqual,
+            "CMP_SLT" => Conditional::SignedLessThan,
+            "CMP_ULT" => Conditional::UnsignedLessThan,
+            "CMP_SLE" => Conditional::SignedLessThanEqual,
+            "CMP_ULE" => Conditional::UnsignedLessThanEqual,
+            "CMP_SGT" => Conditional::SignedGreaterThan,
+            "CMP_UGT" => Conditional::UnsignedGreaterThan,
+            "CMP_SGE" => Conditional::SignedGreaterThanEqual,
+            "CMP_UGE" => Conditional::UnsignedGreaterThanEqual,
+            "FCMP_E" => Conditional::FloatingPointEqual,
+            "FCMP_NE" => Conditional::FloatingPointNotEqual,
+            "FCMP_LT" => Conditional::FloatingPointLessThan,
+            "FCMP_LE" => Conditional::FloatingPointLessThanEqual,
+            "FCMP_GT" => Conditional::FloatingPointGreaterThan,
+            "FCMP_GE" => Conditional::FloatingPointGreaterThanEqual,
+            "strcmp" => Conditional::Strcmp,
+            "memcmp" => Conditional::Memcmp,
             _ => unimplemented!("Unknown operation: {val}"),
         }
     }
 }
 
 /// Information on how to retrieve the left operand comparison value
-#[derive(Debug, Clone, Copy, PartialOrd, PartialEq)]
+#[derive(Debug, Clone, PartialOrd, PartialEq)]
 pub enum Operand {
     /// A single register operand
     Register(IcedRegister),
@@ -177,19 +177,67 @@ pub enum Operand {
     /// A constant f64
     ConstF64(f64),
 
-    /// A memory location to read the operand from based in a register
-    RegisterMemory {
-        /// The register containing the base address for this memory read
-        register: iced_x86::Register,
-
-        /// The offset from the base address
-        offset: i64,
+    /// A memory location to read the operand
+    Load {
+        /// The operand to get the address to read from memory
+        address: Box<Operand>,
     },
 
-    /// A memory location to read the operand from based by a constant
-    ConstMemory {
-        /// Const address to read from
-        address: u64,
+    /// Bitwise inversion of the operand
+    Not {
+        /// The operand to get the address to read from memory
+        src: Box<Operand>,
+    },
+
+    /// Sign inversion of the operand
+    Neg {
+        /// The operand to get the address to read from memory
+        src: Box<Operand>,
+    },
+
+    /// Bitwise AND
+    And {
+        /// Left operand
+        left: Box<Operand>,
+
+        /// Left operand
+        right: Box<Operand>,
+    },
+
+    /// Bitwise OR
+    Or {
+        /// Left operand
+        left: Box<Operand>,
+
+        /// Left operand
+        right: Box<Operand>,
+    },
+
+    /// Add the two operands
+    Add {
+        /// Left operand
+        left: Box<Operand>,
+
+        /// Left operand
+        right: Box<Operand>,
+    },
+
+    /// Subtract the two operands
+    Sub {
+        /// Left operand
+        left: Box<Operand>,
+
+        /// Left operand
+        right: Box<Operand>,
+    },
+
+    /// Shift the left operand by right bits
+    LogicalShiftLeft {
+        /// Left operand
+        left: Box<Operand>,
+
+        /// Left operand
+        right: Box<Operand>,
     },
 }
 
@@ -221,14 +269,19 @@ macro_rules! impl_read_for_type {
                 Operand::ConstU64(val) => Ok(*val as $ty),
                 Operand::ConstU128(val) => Ok(*val as $ty),
                 Operand::ConstF64(val) => Ok(*val as $ty),
-                Operand::RegisterMemory { register, offset } => {
-                    let addr: i64 = fuzzvm.get_iced_reg(*register).try_into().unwrap();
-                    let addr = addr + offset;
-                    let addr = VirtAddr(addr as u64);
+                Operand::Load { address } => {
+                    let addr = address.read_u64(fuzzvm)?;
+                    let addr = VirtAddr(addr);
                     fuzzvm.read::<$ty>(addr, fuzzvm.cr3())
                 }
-                Operand::ConstMemory { address } => {
-                    fuzzvm.read::<$ty>(VirtAddr(*address), fuzzvm.cr3())
+                Operand::And { left, right } => Ok(left.$func(fuzzvm)? & right.$func(fuzzvm)?),
+                Operand::Add { left, right } => Ok(left.$func(fuzzvm)? + right.$func(fuzzvm)?),
+                Operand::Sub { left, right } => Ok(left.$func(fuzzvm)? - right.$func(fuzzvm)?),
+                Operand::Or { left, right } => Ok(left.$func(fuzzvm)? | right.$func(fuzzvm)?),
+                Operand::Not { src } => Ok(!src.$func(fuzzvm)?),
+                Operand::Neg { src } => Ok(src.$func(fuzzvm)?.wrapping_neg()),
+                Operand::LogicalShiftLeft { left, right } => {
+                    Ok(left.$func(fuzzvm)? << right.$func(fuzzvm)?)
                 }
             }
         }
@@ -263,7 +316,6 @@ impl Operand {
             Operand::Register(IcedRegister::XMM15) => Ok(fuzzvm.xmm15_f32()),
             Operand::Register(reg) => {
                 panic!("Unknown regsiter for read_f32: {reg:?}");
-                // Ok(fuzzvm.get_iced_reg(*reg) as $ty),
             }
             Operand::ConstU8(val) => Ok(*val as f32),
             Operand::ConstU16(val) => Ok(*val as f32),
@@ -271,18 +323,23 @@ impl Operand {
             Operand::ConstU64(val) => Ok(*val as f32),
             Operand::ConstU128(val) => Ok(*val as f32),
             Operand::ConstF64(val) => Ok(*val as f32),
-            Operand::RegisterMemory { register, offset } => {
-                /*
-                let addr: i64 = fuzzvm.get_iced_reg(*register).try_into().unwrap();
-                let addr = addr + offset;
-                let addr = VirtAddr(addr as u64);
-                fuzzvm.read::<$ty>(addr, fuzzvm.cr3())
-                */
-                unimplemented!("Reading memory from register for f32");
+            Operand::Load { address } => {
+                unimplemented!("Reading memory for f32");
             }
-            Operand::ConstMemory { address } => {
-                unimplemented!("Reading memory from const for f32");
-                // fuzzvm.read::<$ty>(VirtAddr(*address), fuzzvm.cr3())
+            Operand::Add { left, right } => Ok(left.read_f32(fuzzvm)? + right.read_f32(fuzzvm)?),
+            Operand::Sub { left, right } => Ok(left.read_f32(fuzzvm)? - right.read_f32(fuzzvm)?),
+            Operand::Neg { src } => Ok(-src.read_f32(fuzzvm)?),
+            Operand::LogicalShiftLeft { left, right } => {
+                unimplemented!("Cannot LSL f32 values")
+            }
+            Operand::And { left, right } => {
+                unimplemented!("Cannot AND f32 values")
+            }
+            Operand::Or { left, right } => {
+                unimplemented!("Cannot OR f32 values")
+            }
+            Operand::Not { src } => {
+                unimplemented!("Cannot NOT f32 values")
             }
         }
     }
@@ -316,18 +373,23 @@ impl Operand {
             Operand::ConstU64(val) => Ok(*val as f64),
             Operand::ConstU128(val) => Ok(*val as f64),
             Operand::ConstF64(val) => Ok(*val as f64),
-            Operand::RegisterMemory { register, offset } => {
-                /*
-                let addr: i64 = fuzzvm.get_iced_reg(*register).try_into().unwrap();
-                let addr = addr + offset;
-                let addr = VirtAddr(addr as u64);
-                fuzzvm.read::<$ty>(addr, fuzzvm.cr3())
-                */
-                unimplemented!("Reading memory from register for f64");
+            Operand::Load { address } => {
+                unimplemented!("Reading memory for f32");
             }
-            Operand::ConstMemory { address } => {
-                unimplemented!("Reading memory from const for f64");
-                // fuzzvm.read::<$ty>(VirtAddr(*address), fuzzvm.cr3())
+            Operand::Add { left, right } => Ok(left.read_f64(fuzzvm)? + right.read_f64(fuzzvm)?),
+            Operand::Sub { left, right } => Ok(left.read_f64(fuzzvm)? - right.read_f64(fuzzvm)?),
+            Operand::Neg { src } => Ok(-src.read_f64(fuzzvm)?),
+            Operand::LogicalShiftLeft { left, right } => {
+                unimplemented!("Cannot LSL f64 values")
+            }
+            Operand::And { left, right } => {
+                unimplemented!("Cannot AND f64 values")
+            }
+            Operand::Or { left, right } => {
+                unimplemented!("Cannot OR f64 values")
+            }
+            Operand::Not { src } => {
+                unimplemented!("Cannot NOT f64 values")
             }
         }
     }
@@ -358,10 +420,10 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                         let left_val = left_op.$func(fuzzvm)?;
                         let right_val = right_op.$func(fuzzvm)?;
                         match operation {
-                            Operation::Equal | Operation::NotEqual => {
+                            Conditional::Equal | Conditional::NotEqual => {
                                 let condition = match operation {
-                                    Operation::Equal => left_val.eq(&right_val),
-                                    Operation::NotEqual => !left_val.ne(&right_val),
+                                    Conditional::Equal => left_val.eq(&right_val),
+                                    Conditional::NotEqual => !left_val.ne(&right_val),
                                     _ => unreachable!()
                                 };
 
@@ -411,15 +473,15 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     }
                                 }
                             }
-                            Operation::SignedLessThan
-                            | Operation::SignedGreaterThanEqual
-                            | Operation::UnsignedLessThan
-                            | Operation::UnsignedGreaterThanEqual  => {
+                            Conditional::SignedLessThan
+                            | Conditional::SignedGreaterThanEqual
+                            | Conditional::UnsignedLessThan
+                            | Conditional::UnsignedGreaterThanEqual  => {
                                 let condition = match operation {
-                                    Operation::SignedLessThan  | Operation::UnsignedLessThan => {
+                                    Conditional::SignedLessThan  | Conditional::UnsignedLessThan => {
                                         left_val.lt(&right_val)
                                     }
-                                    Operation::SignedGreaterThanEqual | Operation::UnsignedGreaterThanEqual => {
+                                    Conditional::SignedGreaterThanEqual | Conditional::UnsignedGreaterThanEqual => {
                                         !left_val.ge(&right_val)
                                     }
                                     _ => unreachable!()
@@ -489,15 +551,15 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     }
                                 }
                             }
-                            Operation::SignedLessThanEqual
-                            | Operation::UnsignedLessThanEqual
-                            | Operation::SignedGreaterThan
-                            | Operation::UnsignedGreaterThan => {
+                            Conditional::SignedLessThanEqual
+                            | Conditional::UnsignedLessThanEqual
+                            | Conditional::SignedGreaterThan
+                            | Conditional::UnsignedGreaterThan => {
                                 let condition = match operation {
-                                    Operation::SignedLessThanEqual  | Operation::UnsignedLessThanEqual => {
+                                    Conditional::SignedLessThanEqual  | Conditional::UnsignedLessThanEqual => {
                                         left_val.le(&right_val)
                                     }
-                                    Operation::SignedGreaterThan | Operation::UnsignedGreaterThan => {
+                                    Conditional::SignedGreaterThan | Conditional::UnsignedGreaterThan => {
                                         !left_val.gt(&right_val)
                                     }
                                     _ => unreachable!()
@@ -576,7 +638,7 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                         let right_val = right_op.read_u64(fuzzvm)?;
 
                         match operation {
-                            Operation::Strcmp => {
+                            Conditional::Strcmp => {
                                 let mut left_bytes = fuzzvm.read_bytes_until(VirtAddr(left_val as u64), fuzzvm.cr3(), 0, 16 * 1024);
                                 let mut right_bytes = fuzzvm.read_bytes_until(VirtAddr(right_val as u64), fuzzvm.cr3(), 0, 16 * 1024);
 
@@ -637,7 +699,7 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                 }
 
                             }
-                            Operation::Memcmp => {
+                            Conditional::Memcmp => {
                                 let mut left_bytes = vec![0_u8; *len];
                                 let mut right_bytes = vec![0_u8; *len];
 
@@ -692,10 +754,10 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                         let right_val = right_op.$func(fuzzvm)?;
                         log::info!("FLOAT {size:?} {operation:?} Left {left_val:x?} Right {right_val:x?}");
                         match operation {
-                            Operation::FloatingPointEqual | Operation::FloatingPointNotEqual => {
+                            Conditional::FloatingPointEqual | Conditional::FloatingPointNotEqual => {
                                 let condition = match operation {
-                                    Operation::FloatingPointEqual => left_val.eq(&right_val),
-                                    Operation::FloatingPointNotEqual => !left_val.ne(&right_val),
+                                    Conditional::FloatingPointEqual => left_val.eq(&right_val),
+                                    Conditional::FloatingPointNotEqual => !left_val.ne(&right_val),
                                     _ => unreachable!()
                                 };
 
@@ -753,12 +815,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     }
                                 }
                             }
-                            Operation::FloatingPointLessThan | Operation::FloatingPointGreaterThanEqual => {
+                            Conditional::FloatingPointLessThan | Conditional::FloatingPointGreaterThanEqual => {
                                 let condition = match operation {
-                                    Operation::FloatingPointLessThan => {
+                                    Conditional::FloatingPointLessThan => {
                                         left_val.lt(&right_val)
                                     }
-                                    Operation::FloatingPointGreaterThanEqual => {
+                                    Conditional::FloatingPointGreaterThanEqual => {
                                         !left_val.ge(&right_val)
                                     }
                                     _ => unreachable!()
@@ -824,12 +886,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     }
                                 }
                             }
-                            Operation::FloatingPointLessThanEqual | Operation::FloatingPointGreaterThan => {
+                            Conditional::FloatingPointLessThanEqual | Conditional::FloatingPointGreaterThan => {
                                 let condition = match operation {
-                                    Operation::FloatingPointLessThanEqual => {
+                                    Conditional::FloatingPointLessThanEqual => {
                                         left_val.le(&right_val)
                                     }
-                                    Operation::FloatingPointGreaterThan => {
+                                    Conditional::FloatingPointGreaterThan => {
                                         !left_val.gt(&right_val)
                                     }
                                     _ => unreachable!()

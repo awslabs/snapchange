@@ -3259,7 +3259,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                     self.cr3(),
                     BreakpointType::Repeated,
                     BreakpointMemory::Dirty,
-                    BreakpointHook::Redqueen(*args),
+                    BreakpointHook::Redqueen(args.clone()),
                 );
             }
 

@@ -458,6 +458,8 @@ impl<FUZZER: Fuzzer> FuzzVm<'_, FUZZER> {
             Register::YMM14 => 0xdead_000e,
             Register::YMM15 => 0xdead_000f,
 
+            Register::DontUseFA => self.fsbase() as i128,
+
             _ => unimplemented!("Unimpl reg: {:?}", reg),
         }
     }
