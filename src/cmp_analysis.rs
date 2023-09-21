@@ -412,6 +412,21 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
         right_op,
     } = args;
 
+    // Ignore U8 rules for now since we have the byte flipper as a normal mutator
+    if *size == Size::U8 {
+        return Ok(Execution::Continue);
+    }
+
+    let input_hash = input.fuzz_hash();
+
+    // Initialize an empty set of redqueen rules for this input
+    if !fuzzvm.redqueen_rules.contains_key(&input_hash) {
+        fuzzvm
+            .redqueen_rules
+            .insert(input_hash, std::collections::BTreeSet::new());
+        assert!(fuzzvm.redqueen_rules.contains_key(&input_hash));
+    }
+
     macro_rules! impl_primitive_sizes {
         ($($size:ident, $ty:ty, $func:ident, $rule:ident),*) => {
             match size {
@@ -441,7 +456,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
                                 } else {
@@ -458,7 +472,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
 
@@ -468,7 +481,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
                                 }
@@ -502,7 +514,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                         // Only add this rule to the redqueen rules if the left operand
                                         // is actually in the input
                                         if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                            let input_hash = crate::utils::calculate_hash(input);
                                             fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                         }
                                     }
@@ -514,7 +525,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                         // Only add this rule to the redqueen rules if the left operand
                                         // is actually in the input
                                         if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                            let input_hash = crate::utils::calculate_hash(input);
                                             fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                         }
                                     }
@@ -533,7 +543,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                         // Only add this rule to the redqueen rules if the left operand
                                         // is actually in the input
                                         if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                            let input_hash = crate::utils::calculate_hash(input);
                                             fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                         }
                                     }
@@ -545,7 +554,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                         // Only add this rule to the redqueen rules if the left operand
                                         // is actually in the input
                                         if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                            let input_hash = crate::utils::calculate_hash(input);
                                             fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                         }
                                     }
@@ -580,7 +588,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                         // Only add this rule to the redqueen rules if the left operand
                                         // is actually in the input
                                         if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                            let input_hash = crate::utils::calculate_hash(input);
                                             fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                         }
                                     }
@@ -592,7 +599,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                         // Only add this rule to the redqueen rules if the left operand
                                         // is actually in the input
                                         if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                            let input_hash = crate::utils::calculate_hash(input);
                                             fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                         }
                                     }
@@ -611,7 +617,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                         // Only add this rule to the redqueen rules if the left operand
                                         // is actually in the input
                                         if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                            let input_hash = crate::utils::calculate_hash(input);
                                             fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                         }
                                     }
@@ -623,7 +628,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                         // Only add this rule to the redqueen rules if the left operand
                                         // is actually in the input
                                         if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                            let input_hash = crate::utils::calculate_hash(input);
                                             fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                         }
                                     }
@@ -652,7 +656,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // is actually in the input
                                     let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
 
@@ -660,7 +663,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // is actually in the input
                                     let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
 
@@ -673,7 +675,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // is actually in the input
                                     let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
 
@@ -681,7 +682,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // is actually in the input
                                     let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
                                 } else {
@@ -693,7 +693,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     let rule =  RedqueenRule::Bytes(left_bytes, right_bytes);
 
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
                                 }
@@ -710,13 +709,11 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
 
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
 
                                     let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
 
@@ -729,7 +726,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     let rule =  RedqueenRule::Bytes(left_bytes, right_bytes);
 
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
                                 }
@@ -778,7 +774,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // is actually in the input
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         log::info!("FLOAT RULE 1: {rule:x?}");
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
                                 } else {
@@ -792,14 +787,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Generate the rule to satisfy this comparison
                                     let rule =  RedqueenRule::$rule(left_val.to_le_bytes().to_vec(), right_val.to_le_bytes().to_vec());
 
-                                    let input_hash = crate::utils::calculate_hash(input);
                                     log::info!("{input_hash:#x} Rule: {rule:x?}");
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         log::info!("FLOAT RULE 2: {rule:x?}");
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
 
@@ -810,7 +803,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // is actually in the input
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         log::info!("FLOAT RULE 3: {rule:x?}");
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
                                 }
@@ -841,7 +833,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
 
@@ -852,7 +843,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
                                 } else {
@@ -870,7 +860,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
 
@@ -881,7 +870,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
                                 }
@@ -913,7 +901,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
 
@@ -925,7 +912,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
                                 } else {
@@ -944,7 +930,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
 
@@ -956,7 +941,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        let input_hash = crate::utils::calculate_hash(input);
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
                                 }

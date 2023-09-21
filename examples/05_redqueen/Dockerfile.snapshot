@@ -4,10 +4,13 @@ RUN apt-get update -q && \
 	apt-get install -q -y gdb python3 binutils python-is-python3 libc6-dbg libssl-dev libssl3 && \
 	apt-get clean -y
 
-COPY harness/redqueen_ami /opt
+# Copy the binary and create a sample input
+COPY harness/test_cmpsolves /opt
+RUN truncate -s 16383 /opt/input
 	
 FROM snapchange_snapshot
 COPY --from=target / "$SNAPSHOT_INPUT"
 
-ENV SNAPSHOT_ENTRYPOINT=/opt/redqueen_ami
+ENV SNAPSHOT_ENTRYPOINT=/opt/test_cmpsolves
+ENV SNAPSHOT_ENTRYPOINT_ARGUMENTS=/opt/input
 ENV GENERATE_COVERAGE_BREAKPOINTS=0

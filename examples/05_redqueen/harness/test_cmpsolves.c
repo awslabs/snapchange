@@ -239,7 +239,7 @@ char *const_strmemcmp(char *data) {
   data = data + 19;
   CHECK((strncasecmp(data, "wordpassblablub", 6) == 0));
   CHECK((strncasecmp(data + 1, "ordpass\x00", 32) == 0));
-  data = data + 9;
+  data = data + 10;
   CHECK((memcmpct("IjKFl", data, 5) == 0));
   data = data + 5;
   return data;

@@ -886,11 +886,12 @@ fn start_core<FUZZER: Fuzzer>(
         #[cfg(feature = "redqueen")]
         if fuzzvm.redqueen_breakpoints.is_some() {
             time!(Redqueen, {
+                let input_hash = input.fuzz_hash();
+
                 // If this input has never been through redqueen or hit the small change to go through again,
                 // execute redqueen on this input
                 if fuzzvm.core_id <= config.redqueen.cores
-                    && (!fuzzvm.redqueen_rules.contains_key(&input.fuzz_hash())
-                        || (fuzzvm.rng.next() % 1000) == 42)
+                    && !fuzzvm.redqueen_rules.contains_key(&input_hash)
                 {
                     let redqueen_time_spent = Duration::from_secs(0);
 
@@ -911,6 +912,10 @@ fn start_core<FUZZER: Fuzzer>(
                         redqueen_time_spent,
                         &project_dir.join("metadata"),
                     )?;
+
+                    let Some(rules) = fuzzvm.redqueen_rules.get(&input_hash) else {
+                        panic!("No rules generated for hash: {input_hash:#x}");
+                    };
 
                     // Signal this thread is in not in redqueen
                     core_stats.lock().unwrap().in_redqueen = false;
@@ -947,9 +952,17 @@ fn start_core<FUZZER: Fuzzer>(
         }
 
         // Mutate the input based on the fuzzer
+        let input_hash = input.fuzz_hash();
         let mutation = time!(
             InputMutate,
-            fuzzer.mutate_input(&mut input, &corpus, &mut rng, dictionary)
+            fuzzer.mutate_input(
+                &mut input,
+                &corpus,
+                &mut rng,
+                dictionary,
+                #[cfg(feature = "redqueen")]
+                fuzzvm.redqueen_rules.get(&input_hash)
+            )
         );
 
         // Set the input into the VM as per the fuzzer

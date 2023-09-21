@@ -170,13 +170,15 @@ pub trait Fuzzer: Default + Sized {
         dictionary: &Option<Vec<Vec<u8>>>,
     ) -> Self::Input {
         // Small chance to make a new input
-        if rng.next() % 0xffff == 42 {
+        if rng.next() % 0xffffff == 42 {
             Self::Input::generate(corpus, rng, dictionary, Self::MAX_INPUT_LENGTH)
         } else {
             // Otherwise attempt to pick one from the corpus
             if let Some(input) = corpus.choose(rng) {
                 input.clone()
             } else {
+                log::info!("DEFAULT GENERATE");
+
                 // Default to generating a new input
                 Self::Input::generate(corpus, rng, dictionary, Self::MAX_INPUT_LENGTH)
             }
@@ -190,6 +192,7 @@ pub trait Fuzzer: Default + Sized {
         corpus: &[Self::Input],
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
+        #[cfg(feature = "redqueen")] redqueen_rules: Option<&BTreeSet<RedqueenRule>>,
     ) -> Vec<String> {
         Self::Input::mutate(
             input,
@@ -198,6 +201,8 @@ pub trait Fuzzer: Default + Sized {
             dictionary,
             Self::MAX_INPUT_LENGTH,
             Self::MAX_MUTATIONS,
+            #[cfg(feature = "redqueen")]
+            redqueen_rules,
         )
     }
 

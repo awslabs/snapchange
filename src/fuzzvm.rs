@@ -3260,7 +3260,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                     BreakpointType::Repeated,
                     BreakpointMemory::Dirty,
                     BreakpointHook::Redqueen(args.clone()),
-                );
+                )?;
             }
 
             self.redqueen_breakpoints = Some(redqueen_bps);
@@ -4504,7 +4504,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                             let hash = new_input.fuzz_hash();
 
                             let mutation = format!(
-                                "RQ_{}_{candidate:x?}",
+                                "RQ_{}",
                                 mutation.unwrap_or_else(|| String::from("rq_unknown"))
                             );
 
@@ -4562,14 +4562,19 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 self.redqueen_rules
                     .insert(max_entropy_input.fuzz_hash(), rules);
             } else {
-                println!("No rules for {:#x}", max_entropy_input.fuzz_hash());
+                // println!("No rules for {:#x}", max_entropy_input.fuzz_hash());
             }
 
             // Restore the original input redqueen rules
             self.redqueen_rules.insert(fuzz_hash, orig_rules);
         } else {
-            // No redqueen rules generated for this input
+            // log::warn!("No RQ rules generated!");
         }
+
+        assert!(
+            self.redqueen_rules.contains_key(&fuzz_hash),
+            "No rules found after redqueen"
+        );
 
         // Reset the guest state to remove redqueen breakpoints
         let _perf = self.reset_guest_state(fuzzer)?;

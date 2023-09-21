@@ -22,7 +22,8 @@ pub struct Example05Fuzzer;
 impl Fuzzer for Example05Fuzzer {
     type Input = Vec<u8>; // [0]
     const START_ADDRESS: u64 = constants::RIP;
-    const MAX_INPUT_LENGTH: usize = 0x400; // [1]
+    const MAX_INPUT_LENGTH: usize = 0x4000; // [1]
+    const MAX_MUTATIONS: u64 = 3;
 
     fn set_input(&mut self, input: &Self::Input, fuzzvm: &mut FuzzVm<Self>) -> Result<()> {
         // Write the mutated input

@@ -7,6 +7,7 @@ use std::io::Write;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=./snapshot/fuzzvm.qemuregs");
 
     let qemuregs = std::fs::read_to_string("./snapshot/fuzzvm.qemuregs").unwrap();
     let mut w = File::create("src/constants.rs").unwrap();

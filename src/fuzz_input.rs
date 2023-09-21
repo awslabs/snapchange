@@ -15,6 +15,7 @@ use rand::{Rng as _, RngCore};
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_hex::{CompactPfx, SerHex};
+use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::hash::Hash;
 
@@ -57,6 +58,7 @@ pub trait FuzzInput:
         dictionary: &Option<Vec<Vec<u8>>>,
         max_length: usize,
         max_mutations: u64,
+        #[cfg(feature = "redqueen")] redqueen_rules: Option<&BTreeSet<RedqueenRule>>,
     ) -> Vec<String>;
 
     /// Basic mutators available to mutate this fuzzer's input
@@ -147,6 +149,7 @@ impl FuzzInput for Vec<u8> {
         dictionary: &Option<Vec<Vec<u8>>>,
         max_length: usize,
         max_mutations: u64,
+        #[cfg(feature = "redqueen")] redqueen_rules: Option<&BTreeSet<RedqueenRule>>,
     ) -> Vec<String> {
         // Get the number of changes to make to the input
         let num_change = (rng.next_u64() % max_mutations).max(1);
@@ -156,6 +159,40 @@ impl FuzzInput for Vec<u8> {
 
         // Perform some number of mutations on the input
         for _ in 0..num_change {
+            // Special case the redqueen mutation if there are available rules
+            #[cfg(feature = "redqueen")]
+            if let Some(rules) = redqueen_rules {
+                let total_mutators = Self::mutators().len() + Self::expensive_mutators().len();
+
+                if !rules.is_empty() && rng.gen::<usize>() % total_mutators == 0 {
+                    // Select one of the redqueen rules
+                    let rule_index = rng.gen::<usize>() % rules.len();
+                    let Some(curr_rule) = rules.iter().nth(rule_index) else {
+                        continue;
+                    };
+
+                    // Select one of the possible locations in the input to apply this rule
+                    let candidates = input.get_redqueen_rule_candidates(curr_rule);
+                    if candidates.is_empty() {
+                        log::warn!(
+                            "Found no candidates for this rule: {:#x} {curr_rule:?}",
+                            input.fuzz_hash()
+                        );
+                        continue;
+                    }
+
+                    let candidate_index = rng.gen::<usize>() % candidates.len();
+                    let curr_candidate = &candidates[candidate_index];
+
+                    // Apply the redqueen rule to the current input
+                    if let Some(mutation) = input.apply_redqueen_rule(&curr_rule, curr_candidate) {
+                        mutations.push(format!("FORCED_{mutation}"));
+                    }
+
+                    continue;
+                }
+            }
+
             // Choose which mutators to use for this mutation. Expensive mutators are
             // harder to hit since they are a bit more costly
             let curr_mutators = if rng.next_u64() % max_mutations * 5 == 0 {
@@ -384,20 +421,17 @@ impl FuzzInput for Vec<u8> {
         // For this reason, we add all the smaller rules that make up each larger type's rule.
         // So a u16 comparison will add a u16 rule and a u8 rule,
         // A u32 comparison will add a u32, u16, and u8 rule, ect.
-        let include_sub_rules = false;
         match rule {
             RedqueenRule::SingleU128(from, to) => {
                 find_needle!(u128, *from, *to, rule.clone());
-                if include_sub_rules {
-                    if *from as u64 <= u64::MAX && *to as u64 <= u64::MAX {
-                        find_needle!(u64, *from, *to, SingleU64(*from as u64, *to as u64));
-                        if *from as u32 <= u32::MAX && *to as u32 <= u32::MAX {
-                            find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
-                            if *from as u16 <= u16::MAX && *to as u16 <= u16::MAX {
-                                find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
-                                if *from as u8 <= u8::MAX && *to as u8 <= u8::MAX {
-                                    find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
-                                }
+                if *from as u64 <= u64::MAX && *to as u64 <= u64::MAX {
+                    find_needle!(u64, *from, *to, SingleU64(*from as u64, *to as u64));
+                    if *from as u32 <= u32::MAX && *to as u32 <= u32::MAX {
+                        find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
+                        if *from as u16 <= u16::MAX && *to as u16 <= u16::MAX {
+                            find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
+                            if *from as u8 <= u8::MAX && *to as u8 <= u8::MAX {
+                                find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
                             }
                         }
                     }
@@ -405,23 +439,8 @@ impl FuzzInput for Vec<u8> {
             }
             RedqueenRule::SingleU64(from, to) => {
                 find_needle!(u64, *from, *to, rule.clone());
-                if include_sub_rules {
-                    if *from as u32 <= u32::MAX && *to as u32 <= u32::MAX {
-                        find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
-                        if *from as u16 <= u16::MAX && *to as u16 <= u16::MAX {
-                            find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
-                            /*
-                            if *from as u8 <= u8::MAX && *to as u8 <= u8::MAX {
-                                find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
-                            }
-                            */
-                        }
-                    }
-                }
-            }
-            RedqueenRule::SingleU32(from, to) => {
-                find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
-                if include_sub_rules {
+                if *from as u32 <= u32::MAX && *to as u32 <= u32::MAX {
+                    find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
                     if *from as u16 <= u16::MAX && *to as u16 <= u16::MAX {
                         find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
                         /*
@@ -430,6 +449,17 @@ impl FuzzInput for Vec<u8> {
                         }
                         */
                     }
+                }
+            }
+            RedqueenRule::SingleU32(from, to) => {
+                find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
+                if *from as u16 <= u16::MAX && *to as u16 <= u16::MAX {
+                    find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
+                    /*
+                    if *from as u8 <= u8::MAX && *to as u8 <= u8::MAX {
+                        find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
+                    }
+                    */
                 }
             }
             RedqueenRule::SingleU16(from, to) => {
