@@ -19,6 +19,7 @@ import argparse
 import string
 import json
 import math
+import struct
 
 from pathlib import Path
 
@@ -183,8 +184,17 @@ def int_is_interesting(i, size):
         if abs(i) in (shift, shift - 1):
             return False
     # check for some bitmask-like things to weed out.
-    if i in (0xFFF, 0xFFFFF, 0xFFFFFF, 0xFFFFFFF, 0xFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFF):
-        return False
+    mask = 0
+    for shift in range(0, 60, 4):
+        mask = mask << 4
+        mask |= 0xF
+        if i == mask:
+            return False
+    try:
+        if all(b in (0, 0xFF, 0xF0, 0x0F) for b in i.to_bytes(size, "little")):
+            return False
+    except OverflowError:
+        pass
     # check if address -> ignore
     if p.loader.main_object.contains_addr(i):
         return False
@@ -278,6 +288,7 @@ for func in cfg.functions.values():
         try:
             irsb = block.vex
         except (pyvex.errors.PyVEXError, angr.errors.SimTranslationError):
+            logger.warning("failed to translate block to vex")
             continue
         worklist = []
         for stmt in irsb.statements:
@@ -657,6 +668,26 @@ for entry in auto_dictionary:
             data = entry.to_bytes(size, endian)
             fname = endian + "_" + hex(entry)
             auto_dict_files[fname] = data
+
+        fname = "int_str_" + str(entry).replace("-", "neg")
+        auto_dict_files[fname] = str(entry)
+
+    elif isinstance(entry, float):
+        # emit using struct.pack in various formats
+        for float_fmt in ("e", "f", "d"):
+            for endian in (("<", "le"), (">", "be")):
+                fmt = endian[0] + float_fmt
+                try:
+                    buf = struct.pack(fmt, entry)
+                    fname = "_".join([float_fmt, endian[1], hex(hash(entry))[2:]])
+                    auto_dict_files[fname] = buf
+                except (ValueError, OverflowError):
+                    pass
+
+        # emit as ascii str
+        fname = "float_str_" + str(entry).replace(".", "_").replace("-", "neg")
+        with (location / fname).open("w") as f:
+            auto_dict_files[fname] = str(entry)
 
     elif isinstance(entry, (bytes, str)):
         fname = hex(abs(hash(entry)))
