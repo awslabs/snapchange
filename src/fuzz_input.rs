@@ -175,7 +175,7 @@ impl FuzzInput for Vec<u8> {
                     let candidates = input.get_redqueen_rule_candidates(curr_rule);
                     if candidates.is_empty() {
                         log::warn!(
-                            "Found no candidates for this rule: {:#x} {curr_rule:?}",
+                            "Found no candidates for this rule: {:#x} {curr_rule:x?}",
                             input.fuzz_hash()
                         );
                         continue;

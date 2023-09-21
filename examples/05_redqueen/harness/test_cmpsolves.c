@@ -88,8 +88,8 @@ void rand_init(uint64_t *p, size_t sz, uint64_t seed_i_part,
 // constant time memcmp - only check for equal
 int memcmpct(char *a, char *b, size_t sz) {
   char x = 0;
-  for (size_t i = 0; i < sz; sz++) {
-    x |= ((a[i] ^ b[i]) == 0);
+  for (size_t i = 0; i < sz; i++) {
+    x |= a[i] ^ b[i];
   }
   return x == 0;
 }
