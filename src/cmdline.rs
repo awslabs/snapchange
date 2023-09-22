@@ -1729,6 +1729,26 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
             _ => unimplemented!("Unknown operation: {operation}"),
         };
 
+        // Adjust the floating point sizes if invalid in the cmp line
+        if matches!(
+            operation,
+            Conditional::FloatingPointEqual
+                | Conditional::FloatingPointNotEqual
+                | Conditional::FloatingPointLessThan
+                | Conditional::FloatingPointLessThanEqual
+                | Conditional::FloatingPointGreaterThan
+                | Conditional::FloatingPointGreaterThanEqual
+        ) {
+            match size {
+                Size::F32 | Size::F64 => {
+                    // Good floating point size, nothing to do
+                }
+                Size::U32 => size = Size::F32,
+                Size::U64 => size = Size::F64,
+                _ => panic!("Invalid floating point size: {line}"),
+            }
+        }
+
         // Parse the left and right operands
         let (left_op, remaining_str) = parse_cmp_operand(left_op_str)?;
         let (right_op, remaining_str) = parse_cmp_operand(right_op_str)?;

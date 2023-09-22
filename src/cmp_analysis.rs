@@ -324,7 +324,9 @@ impl Operand {
             Operand::ConstU128(val) => Ok(*val as f32),
             Operand::ConstF64(val) => Ok(*val as f32),
             Operand::Load { address } => {
-                unimplemented!("Reading memory for f32");
+                let addr = address.read_u64(fuzzvm)?;
+                let addr = VirtAddr(addr);
+                Ok(fuzzvm.read::<u32>(addr, fuzzvm.cr3())? as f32)
             }
             Operand::Add { left, right } => Ok(left.read_f32(fuzzvm)? + right.read_f32(fuzzvm)?),
             Operand::Sub { left, right } => Ok(left.read_f32(fuzzvm)? - right.read_f32(fuzzvm)?),
@@ -374,7 +376,9 @@ impl Operand {
             Operand::ConstU128(val) => Ok(*val as f64),
             Operand::ConstF64(val) => Ok(*val as f64),
             Operand::Load { address } => {
-                unimplemented!("Reading memory for f32");
+                let addr = address.read_u64(fuzzvm)?;
+                let addr = VirtAddr(addr);
+                Ok(fuzzvm.read::<u64>(addr, fuzzvm.cr3())? as f64)
             }
             Operand::Add { left, right } => Ok(left.read_f64(fuzzvm)? + right.read_f64(fuzzvm)?),
             Operand::Sub { left, right } => Ok(left.read_f64(fuzzvm)? - right.read_f64(fuzzvm)?),
