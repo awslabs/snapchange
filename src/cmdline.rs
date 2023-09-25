@@ -1624,19 +1624,19 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
         index += 1;
 
         if line.contains("x87") {
-            println!("Not impl - x87 line: {line}");
+            println!("[CMP] Not impl - x87 line: {line}");
             invalid += 1;
             continue;
         }
 
         if line.contains("recurs") {
-            println!("Skipping recursion error: {line}");
+            println!("[CMP] Skipping recursion error: {line}");
             invalid += 1;
             continue;
         }
 
         if line.contains("unknown") {
-            println!("unknown operand found: {line}");
+            println!("[CMP] unknown operand found: {line}");
             invalid += 1;
             continue;
         }
@@ -1646,7 +1646,7 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
             line.split(',').array_chunks().next()
         else {
             // panic!("Invalid cmp analysis rule found: {line}");
-            println!("ERROR: invalid cmp analysis rule found: {line:?}");
+            println!("[CMP] ERROR: invalid cmp analysis rule found: {line:?}");
             invalid += 1;
             index += 1;
             continue;
@@ -1726,7 +1726,10 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
                 size = Size::Bytes(usize::from_str_radix(&cmp_size.replace("0x", ""), 16)?);
                 Conditional::Memcmp
             }
-            _ => unimplemented!("Unknown operation: {operation}"),
+            _ => {
+                println!("[CMP] skipping unknown operation: {operation}");
+                continue;
+            },
         };
 
         // Adjust the floating point sizes if invalid in the cmp line
@@ -1750,17 +1753,28 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
         }
 
         // Parse the left and right operands
-        let (left_op, remaining_str) = parse_cmp_operand(left_op_str)?;
-        let (right_op, remaining_str) = parse_cmp_operand(right_op_str)?;
+        match (parse_cmp_operand(left_op_str), parse_cmp_operand(right_op_str)) {
+            (Ok((left_op, left_remaining)), Ok((right_op, right_remaining))) => {
+                let arg = RedqueenArguments {
+                    size,
+                    operation,
+                    left_op,
+                    right_op,
+                };
+                result.push((addr, arg));
+            }
+            (Err(e), _) => {
+                println!("[CMP] skipping rule due to failure parsing LHS: {:?}", left_op_str);
+                invalid += 1;
+            }
+            (Ok(_), Err(e)) => {
+                println!("[CMP] skipping rule due to failure parsing RHS: {:?}", right_op_str);
+                invalid += 1;
+            }
+        }
+        // let (left_op, remaining_str) = parse_cmp_operand(left_op_str)?;
+        // let (right_op, remaining_str) = parse_cmp_operand(right_op_str)?;
 
-        let arg = RedqueenArguments {
-            size,
-            operation,
-            left_op,
-            right_op,
-        };
-
-        result.push((addr, arg));
     }
 
     println!("Skipped {invalid}/{} cmp breakpoints", lines.len());
@@ -1879,7 +1893,7 @@ fn parse_cmp_operand(input: &str) -> Result<(Operand, &str)> {
         let (reg_str, remaining) = args.split_once(' ').unwrap_or((args, ""));
 
         // Parse the register
-        let reg = parse_register(reg_str);
+        let reg = try_parse_register(reg_str)?;
 
         Ok((Operand::Register(reg), remaining))
     } else if let Some(args) = input.strip_prefix("0x") {
@@ -1906,10 +1920,10 @@ fn parse_cmp_operand(input: &str) -> Result<(Operand, &str)> {
     }
 }
 
-fn parse_register(reg: &str) -> iced_x86::Register {
+fn try_parse_register(reg: &str) -> Result<iced_x86::Register> {
     use iced_x86::Register;
 
-    match reg.to_ascii_lowercase().as_str() {
+    Ok(match reg.to_ascii_lowercase().as_str() {
         "al" => Register::AL,
         "bl" => Register::BL,
         "cl" => Register::AL,
@@ -2158,6 +2172,10 @@ fn parse_register(reg: &str) -> iced_x86::Register {
         "tmm6" => Register::TMM6,
         "tmm7" => Register::TMM7,
         "fsbase" => Register::DontUseFA,
-        x => panic!("Unknown register value: {x:?}"),
-    }
+        x => anyhow::bail!("Unknown register value: {x:?}"),
+    })
+}
+
+fn parse_register(reg: &str) -> iced_x86::Register {
+    try_parse_register(reg).unwrap()
 }
