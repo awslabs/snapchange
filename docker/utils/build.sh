@@ -52,6 +52,9 @@ fi
 if [[ -z "$BUSYBOX_STATIC" ]]; then
     BUSYBOX_STATIC=/busybox.static
 fi
+if [[ -z "$SNAPSHOT_ENV" ]]; then
+    SNAPSHOT_ENV=""
+fi
 
 source $SNAPCHANGE_ROOT/utils/log.sh || { echo "Failed to source $SNAPCHANGE_ROOT/utils/log.sh"; exit 1; }
 
@@ -152,9 +155,11 @@ echo "[+] snapshotting program: $SNAPSHOT_ENTRYPOINT $SNAPSHOT_ENTRYPOINT_ARGUME
 
 EOF
 
-for var in $SNAPSHOT_ENV; do
-    echo "export $var" >> "$RC_LOCAL"
-done
+if test -n "$SNAPSHOT_ENV"; then
+    for var in $SNAPSHOT_ENV; do
+        echo "export $var" >> "$RC_LOCAL"
+    done
+fi
 
 DIR_HAS_GDB=0
 GDB_PATH="$(find "$DIR" -name gdb -type f | head -n 1)"
