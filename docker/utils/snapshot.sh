@@ -153,7 +153,7 @@ function extract_output {
       log_msg "Combining root and user symbols"
       mv "$DIR/gdb.symbols.root" .
       mv gdb.symbols gdb.symbols.user 
-      python3 combine_symbols.py
+      python3 $SNAPCHANGE_ROOT/utils/combine_symbols.py
   fi
 
   # Ensure the files are the current user and not root anymore

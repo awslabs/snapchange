@@ -198,13 +198,33 @@ fi
 
 # If user is not root, run gdb under gdb in order to gain kernel symbols as root
 if [ $USER != 'root' ]; then
+    pushd /tmp/
+    # we build a small program that does nothing but trigger a pre-set
+    # breakpoint. We can use this program to run gdb under root; wait till we
+    # hit the breakpoint. dump all symbols (including kernel symbols) using the
+    # normal gdb commands. Kernel symbols won't change across processes so this
+    # is fine. However, we don't want symbols of the true.bp binary, so we
+    # strip the binary.
+    cat > true.bp.c <<EOF
+int main(void) {
+__asm("int3");
+return 0;
+}
+EOF
+    # we create the true.bp binary with CFLAGS to achieve minimal size
+    make true.bp CFLAGS="-Os -static -s -ffunction-sections -fdata-sections -Wl,-gc-sections"
+    strip true.bp
+    du -H true.bp
+    mv true.bp $DIR/
+    rm true.bp.c
+    popd
+
     cat >> "$RC_LOCAL" <<EOF
-echo "[+] obtaining kernel symbols by running gdb under gdb"
-\$GDB --batch --command=$GDBCMDS --args \$GDB
+echo "[+] obtaining kernel symbols by running gdb as root"
+\$GDB --batch --command=$GDBCMDS --args /true.bp
 mv /tmp/gdb.symbols /tmp/gdb.symbols.root
 rm /tmp/gdb.modules
 rm /tmp/gdb.vmmap
-
 EOF
 fi
 
