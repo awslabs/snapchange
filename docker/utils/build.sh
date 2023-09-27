@@ -198,9 +198,9 @@ fi
 
 # If user is not root, run gdb under gdb in order to gain kernel symbols as root
 if [ $USER != 'root' ]; then
-    cat > "$RC_LOCAL" <<EOF
+    cat >> "$RC_LOCAL" <<EOF
 echo "[+] obtaining kernel symbols by running gdb under gdb"
-\$GDB --command=$GDBCMDS --args \$GDB
+\$GDB --batch --command=$GDBCMDS --args \$GDB
 mv /tmp/gdb.symbols /tmp/gdb.symbols.root
 rm /tmp/gdb.modules
 rm /tmp/gdb.vmmap
