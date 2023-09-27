@@ -1,5 +1,6 @@
 # fill in correct name of the image!
-FROM projectname_harness as base
+ARG BASEIMG=harness
+FROM $BASEIMG as base
 
 #### snapchange snapshot container ####
 FROM ghcr.io/awslabs/snapchange
