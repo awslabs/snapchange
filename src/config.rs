@@ -128,7 +128,7 @@ impl std::default::Default for Redqueen {
     fn default() -> Self {
         Self {
             entropy_threshold: 100,
-            timeout: Duration::from_secs(2),
+            timeout: Duration::from_secs(60),
             cores: 8,
         }
     }

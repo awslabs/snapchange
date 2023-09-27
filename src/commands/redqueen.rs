@@ -4,6 +4,9 @@
 use anyhow::{anyhow, ensure, Context, Result};
 
 #[cfg(feature = "redqueen")]
+use x86_64::registers::rflags::RFlags;
+
+#[cfg(feature = "redqueen")]
 use core_affinity::CoreId;
 #[cfg(feature = "redqueen")]
 use kvm_bindings::CpuId;
@@ -22,10 +25,18 @@ use std::{
 
 #[cfg(feature = "redqueen")]
 use crate::{
-    cmdline, cmp_analysis::RedqueenArguments, config::Config, fuzz_input::FuzzInput,
-    fuzzer::Fuzzer, fuzzvm, fuzzvm::FuzzVm, init_environment, memory::Memory,
-    stack_unwinder::StackUnwinders, unblock_sigalrm, Cr3, KvmEnvironment, ProjectState,
-    ResetBreakpointType, Symbol, VbCpu, VirtAddr, THREAD_IDS,
+    cmdline,
+    cmp_analysis::{RedqueenArguments, RedqueenCoverage},
+    config::Config,
+    fuzz_input::FuzzInput,
+    fuzzer::Fuzzer,
+    fuzzvm,
+    fuzzvm::FuzzVm,
+    init_environment,
+    memory::Memory,
+    stack_unwinder::StackUnwinders,
+    unblock_sigalrm, Cr3, KvmEnvironment, ProjectState, ResetBreakpointType, Symbol, VbCpu,
+    VirtAddr, THREAD_IDS,
 };
 
 /// Execute the c subcommand to gather coverage for a particular input
@@ -162,8 +173,17 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     let coverage =
         fuzzvm.reset_and_run_with_redqueen(&input, &mut fuzzer, vm_timeout, &mut covbps)?;
 
-    for (addr, rflags) in coverage {
-        println!("Address: {addr:#018x?} RFLAGS: {rflags:?}");
+    for RedqueenCoverage {
+        virt_addr,
+        rflags,
+        hit_count,
+    } in coverage
+    {
+        println!(
+            "[{hit_count:5}] Address: {:#018x?} RFLAGS: {:?}",
+            virt_addr.0,
+            RFlags::from_bits_truncate(rflags)
+        );
     }
 
     for (id, rules) in fuzzvm.redqueen_rules {

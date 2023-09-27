@@ -21,7 +21,7 @@ use crate::cmdline::ProjectCoverage;
 use crate::config::Config;
 use crate::coverage_analysis::CoverageAnalysis;
 use crate::enable_manual_dirty_log_protect;
-use crate::fuzz_input::{FuzzInput, InputMetadata};
+use crate::fuzz_input::{CoverageType, FuzzInput, InputMetadata};
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::FuzzVm;
 use crate::rng::Rng;
@@ -39,7 +39,7 @@ use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
 use x86_64::registers::rflags::RFlags;
 
 #[cfg(feature = "redqueen")]
-use crate::cmp_analysis::{RedqueenArguments, RedqueenRule};
+use crate::cmp_analysis::{RedqueenArguments, RedqueenCoverage, RedqueenRule};
 
 use crate::stack_unwinder::StackUnwinders;
 
@@ -676,7 +676,7 @@ fn start_core<FUZZER: Fuzzer>(
     stop_after_time: Option<Duration>,
     stop_after_first_crash: bool,
     unwinders: StackUnwinders,
-    #[cfg(feature = "redqueen")] prev_redqueen_coverage: BTreeSet<(VirtAddr, RFlags)>,
+    #[cfg(feature = "redqueen")] prev_redqueen_coverage: BTreeSet<RedqueenCoverage>,
     #[cfg(feature = "redqueen")] redqueen_rules: BTreeMap<u64, BTreeSet<RedqueenRule>>,
     #[cfg(feature = "redqueen")] redqueen_breakpoints: Option<Vec<(u64, RedqueenArguments)>>,
 ) -> Result<()> {
@@ -891,7 +891,8 @@ fn start_core<FUZZER: Fuzzer>(
                 // If this input has never been through redqueen or hit the small change to go through again,
                 // execute redqueen on this input
                 if fuzzvm.core_id <= config.redqueen.cores
-                    && !fuzzvm.redqueen_rules.contains_key(&input_hash)
+                    && (!fuzzvm.redqueen_rules.contains_key(&input_hash)
+                        || fuzzvm.rng.next() % 0x1000 == 42)
                 {
                     let redqueen_time_spent = Duration::from_secs(0);
 
@@ -1169,7 +1170,10 @@ fn start_core<FUZZER: Fuzzer>(
                 }
             }
 
-            let new_coverage: Vec<u64> = new_coverage_for_input.iter().map(|x| x.0).collect();
+            let new_coverage = new_coverage_for_input
+                .iter()
+                .map(|x| CoverageType::Address(x.0))
+                .collect();
 
             let mut input_bytes = Vec::new();
             input.to_bytes(&mut input_bytes)?;
@@ -1213,7 +1217,10 @@ fn start_core<FUZZER: Fuzzer>(
         // If this input generated new coverage, add the input to the corpus
         if !new_coverage_for_input.is_empty() {
             // Gather the mutation metadata for this iteration
-            let new_coverage: Vec<u64> = new_coverage_for_input.iter().map(|x| x.0).collect();
+            let new_coverage: Vec<_> = new_coverage_for_input
+                .iter()
+                .map(|x| CoverageType::Address(x.0))
+                .collect();
 
             let mutation_metadata = InputMetadata {
                 original_file,

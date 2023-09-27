@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::addrs::{Cr3, VirtAddr};
-use crate::cmp_analysis::{Conditional, Operand, RedqueenArguments, Size};
+use crate::cmp_analysis::{Conditional, Operand, RedqueenArguments, RedqueenCoverage, Size};
 use crate::config::Config;
 use crate::fuzzer::ResetBreakpointType;
 use crate::stack_unwinder::StackUnwinders;
@@ -117,7 +117,7 @@ pub struct ProjectCoverage {
     pub coverage_left: BTreeSet<VirtAddr>,
 
     /// Previously seen redqueen coverage by the fuzzer
-    pub prev_redqueen_coverage: BTreeSet<(VirtAddr, RFlags)>,
+    pub prev_redqueen_coverage: BTreeSet<RedqueenCoverage>,
 }
 
 impl ProjectState {
@@ -158,12 +158,17 @@ impl ProjectState {
                     let Some(rflags) = iter.next() else {
                         return None;
                     };
+                    let hit_count = iter.next().unwrap_or("0x");
 
-                    let addr = u64::from_str_radix(addr.trim_start_matches("0x"), 16);
+                    let virt_addr = u64::from_str_radix(addr.trim_start_matches("0x"), 16);
                     let rflags = u64::from_str_radix(rflags.trim_start_matches("0x"), 16);
-                    if let (Ok(addr), Ok(rflags)) = (addr, rflags) {
-                        let rflags = RFlags::from_bits_truncate(rflags);
-                        Some((VirtAddr(addr), rflags))
+                    let hit_count = u32::from_str_radix(hit_count.trim_start_matches("0x"), 16);
+                    if let (Ok(addr), Ok(rflags), Ok(hit_count)) = (virt_addr, rflags, hit_count) {
+                        Some(RedqueenCoverage {
+                            virt_addr: VirtAddr(addr),
+                            rflags,
+                            hit_count,
+                        })
                     } else {
                         None
                     }
@@ -1623,6 +1628,11 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
         let mut line = lines[index].to_string();
         index += 1;
 
+        // Ignore empty lines
+        if line.is_empty() {
+            continue;
+        }
+
         if line.contains("x87") {
             println!("[CMP] Not impl - x87 line: {line}");
             invalid += 1;
@@ -1666,6 +1676,11 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
                 break;
             };
 
+            // Ignore empty lines
+            if next_line.is_empty() {
+                continue;
+            }
+
             let next_line = lines[index];
             let Some(
                 [next_line_addr, next_line_cmp_size, next_line_left, next_line_op, next_line_right],
@@ -1696,7 +1711,13 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
             "0x10" => Size::U128,
             "f0x4" => Size::F32,
             "f0x8" => Size::F64,
-            x => Size::Bytes(usize::from_str_radix(&x.replace("0x", ""), 16)?),
+            size => {
+                if let Some(reg) = size.strip_prefix("reg ") {
+                    Size::Register(try_parse_register(reg)?)
+                } else {
+                    Size::Bytes(usize::from_str_radix(&size.replace("0x", ""), 16)?)
+                }
+            }
         };
 
         let operation = match operation {
@@ -1722,14 +1743,18 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
                 Conditional::Strcmp
             }
             "memcmp" => {
-                // memcmp's size should always be a Size::Bytes
-                size = Size::Bytes(usize::from_str_radix(&cmp_size.replace("0x", ""), 16)?);
+                size = if let Some(reg) = cmp_size.strip_prefix("reg ") {
+                    Size::Register(try_parse_register(reg)?)
+                } else {
+                    Size::Bytes(usize::from_str_radix(&cmp_size.replace("0x", ""), 16)?)
+                };
+
                 Conditional::Memcmp
             }
             _ => {
                 println!("[CMP] skipping unknown operation: {operation}");
                 continue;
-            },
+            }
         };
 
         // Adjust the floating point sizes if invalid in the cmp line
@@ -1748,12 +1773,16 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
                 }
                 Size::U32 => size = Size::F32,
                 Size::U64 => size = Size::F64,
-                _ => panic!("Invalid floating point size: {line}"),
+                Size::Bytes(0xa) => size = Size::X87,
+                _ => panic!("Invalid floating point size: {line} {size:?}"),
             }
         }
 
         // Parse the left and right operands
-        match (parse_cmp_operand(left_op_str), parse_cmp_operand(right_op_str)) {
+        match (
+            parse_cmp_operand(left_op_str),
+            parse_cmp_operand(right_op_str),
+        ) {
             (Ok((left_op, left_remaining)), Ok((right_op, right_remaining))) => {
                 let arg = RedqueenArguments {
                     size,
@@ -1761,20 +1790,26 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
                     left_op,
                     right_op,
                 };
+                println!("{arg:x?}");
                 result.push((addr, arg));
             }
             (Err(e), _) => {
-                println!("[CMP] skipping rule due to failure parsing LHS: {:?}", left_op_str);
+                println!(
+                    "[CMP] skipping rule due to failure parsing LHS: {:?}",
+                    left_op_str
+                );
                 invalid += 1;
             }
             (Ok(_), Err(e)) => {
-                println!("[CMP] skipping rule due to failure parsing RHS: {:?}", right_op_str);
+                println!(
+                    "[CMP] skipping rule due to failure parsing RHS: {:?}",
+                    right_op_str
+                );
                 invalid += 1;
             }
         }
         // let (left_op, remaining_str) = parse_cmp_operand(left_op_str)?;
         // let (right_op, remaining_str) = parse_cmp_operand(right_op_str)?;
-
     }
 
     println!("Skipped {invalid}/{} cmp breakpoints", lines.len());
@@ -1784,11 +1819,11 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
 
 /// Parse a number string and return the parsed value
 fn parse_number(num: &str) -> Result<i64> {
-    // Remove 0x or -0x prefixes
-    let without_prefix = num.trim_start_matches("0x").trim_start_matches("-0x");
-
     // Keep negative number if original string was negative
     let is_negative = num.starts_with("-");
+
+    // Remove 0x or -0x prefixes
+    let without_prefix = num.trim_start_matches("0x").trim_start_matches("-0x");
 
     // Return parsed number
     Ok(i64::from_str_radix(without_prefix, 16).map(|n| if is_negative { -n } else { n })?)
@@ -1901,17 +1936,17 @@ fn parse_cmp_operand(input: &str) -> Result<(Operand, &str)> {
         let (value_str, remaining) = args.split_once(' ').unwrap_or((args, ""));
 
         // Parse the value
-        let value = parse_number(value_str)? as u64;
+        let value = parse_number(value_str)?;
 
-        Ok((Operand::ConstU64(value), remaining))
+        Ok((Operand::ConstU64(value as u64), remaining))
     } else if let Some(args) = input.strip_prefix("-0x") {
-        // Parses 0x<value>
+        // Parses -0x<value>
         let (value_str, remaining) = args.split_once(' ').unwrap_or((args, ""));
 
         // Parse the value
-        let value = parse_number(value_str)? as u64;
+        let value = parse_number(value_str)?;
 
-        Ok((Operand::ConstU64(value), remaining))
+        Ok((Operand::ConstU64(-value as u64), remaining))
     } else if let Ok(float_num) = input.parse::<f64>() {
         // Parses <f64>
         Ok((Operand::ConstF64(float_num), "NOTHERE"))
