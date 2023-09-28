@@ -151,9 +151,11 @@ function extract_output {
   # combine the symbols into one gdb.symbols
   if [ -f "$DIR/gdb.symbols.root" ]; then
       log_msg "Combining root and user symbols"
-      mv "$DIR/gdb.symbols.root" .
+      # cat "$DIR/gdb.symbols.root" | grep -v main > gdb.symbols.root
+      cp "$DIR/gdb.symbols.root" .
       mv gdb.symbols gdb.symbols.user 
       python3 $SNAPCHANGE_ROOT/utils/combine_symbols.py
+      # cat gdb.symbols.user gdb.symbols.root | sort -u > gdb.symbols
   fi
 
   # Ensure the files are the current user and not root anymore
