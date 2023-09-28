@@ -238,9 +238,9 @@ pub mod vec {
         }
     }
 
-    /// Overwrite a sub-slice from `&dst[dst_range]` with a subslice `&src[src_range]`. The size of the subslices must not be
-    /// identical. If `&src[src_range]` is larger than `&dst[dst_range]`, then `dst` is grown.
-    /// If `&src[src_range]` is smaller than `&dst[dst_range]`. This helper function is useful, if both
+    /// Overwrite a sub-slice from `&dst[dst_range]` with a subslice `&src[src_range]`. The size of the subslices can be different.
+    /// If `&src[src_range]` is larger than `&dst[dst_range]`, then `dst` is grown.
+    /// If `&src[src_range]` is smaller than `&dst[dst_range]` then `dst` is shrunk. This helper function is useful, if both
     /// sub-slice ranges are generated randomly while fuzzing and you do not want to worry about what
     /// Vec operation to use.
     ///
@@ -371,6 +371,104 @@ pub mod vec {
             dst.set_len(new_len as usize);
         }
     }
+
+    /// Insert new data at a given index, with the data being another sub-slice of the `dst` vec.
+    ///
+    /// This boils down to a:
+    ///
+    /// * Optional: vec growth
+    /// * `memmove`
+    /// * `memcpy`
+    ///
+    /// # Panics:
+    ///
+    /// * if `index` is out of bounds
+    /// * if `src_range` is out of bounds
+    /// * if `index` is within `src_range`
+    /// 
+    /// # Examples:
+    ///
+    /// ```rust
+    /// # use snapchange::utils::vec::insert_from_within;
+    ///
+    /// let mut v = b"abcd".to_vec();
+    /// insert_from_within(&mut v, 0, 2..4);
+    /// assert_eq!(&v, b"cdabcd", "basic test");
+    ///
+    /// let mut v = b"abcd".to_vec();
+    /// insert_from_within(&mut v, 1, 2..4);
+    /// assert_eq!(&v, b"acdbcd", "basic test 2");
+    ///
+    /// let mut v = b"abcd".to_vec();
+    /// insert_from_within(&mut v, 0, 2..);
+    /// assert_eq!(&v, b"cdabcd", "unbounded range");
+    ///
+    /// let mut v = b"abcd".to_vec();
+    /// insert_from_within(&mut v, 0, 0..4);
+    /// assert_eq!(&v, b"abcdabcd", "extend front");
+    ///
+    /// let mut v = b"abcd".to_vec();
+    /// insert_from_within(&mut v, 4, 0..4);
+    /// assert_eq!(&v, b"abcdabcd", "append");
+    ///
+    /// let mut v = b"abcd".to_vec();
+    /// insert_from_within(&mut v, 2, 0..0);
+    /// assert_eq!(&v, b"abcd", "empty range");
+    /// ```
+    pub fn insert_from_within<T: Copy, R: std::ops::RangeBounds<usize>>(
+        dst: &mut Vec<T>,
+        index: usize,
+        src_range: R,
+    ) {
+        // check for index OOB
+        assert!(index <= dst.len());
+        // Deal with generic RangeBounds.
+        let src_start = match src_range.start_bound() {
+            std::ops::Bound::Unbounded => 0,
+            std::ops::Bound::Included(t) => *t,
+            // I don't think there is a range with Excluded start bound?
+            std::ops::Bound::Excluded(_t) => unreachable!(),
+        }
+        .min(dst.len());
+        let src_end = match src_range.end_bound() {
+            std::ops::Bound::Unbounded => dst.len(),
+            std::ops::Bound::Excluded(t) => *t,
+            std::ops::Bound::Included(t) => *t + 1,
+        }
+        .min(dst.len());
+        if src_start == src_end { // no-op
+            return;
+        }
+        assert!(src_start < src_end);
+        assert!(index <= src_start || index >= src_end);
+        
+        let copy_len = src_end - src_start;
+        let src_start = if index <= src_start {
+            // adjust start offset
+            src_start + copy_len
+        } else {
+            src_start
+        };
+
+        // make sure there is enough
+        dst.reserve(copy_len);
+        let old_len = dst.len();
+        let new_len = dst.len() + copy_len;
+
+        // SAFETY: we reserved enough space to stay within bounds.
+        unsafe {
+            // move data back to make space.
+            let dst_ptr = dst.as_mut_ptr().offset(index as isize).offset(copy_len as isize);
+            let src_ptr = dst.as_ptr().offset(index as isize);
+            std::ptr::copy(src_ptr, dst_ptr, old_len - index);
+            // copy the data within.
+            let dst_ptr = dst.as_mut_ptr().offset(index as isize);
+            let src_ptr = dst.as_ptr().offset(src_start as isize);
+            std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, copy_len);
+            // set the Vec's length
+            dst.set_len(new_len);
+        }
+    }
 }
 
 /// Prints a hexdump representation of the given `data` assuming the data starts at
@@ -379,11 +477,11 @@ pub mod vec {
 /// Example:
 ///
 /// ```rust
-/// #use snapchange::utils::hexdump;
-/// hexdump([0x41, 0x42, 0x43, 0x44], 0xdead0000)
+/// # use snapchange::utils::hexdump;
+/// hexdump(&[0x41, 0x42, 0x43, 0x44], 0xdead0000);
 /// ````
 /// Output:
-/// ```non-rust
+/// ```non-rust,ignore
 /// 0xdead0000: 41 42 43 44 | ABCD
 /// ```
 ///
@@ -579,7 +677,7 @@ pub enum Error {
 ///
 /// Examples:
 ///
-/// ```
+/// ```non-rust,ignore
 /// deadbeef
 /// 0xdeadbeef
 /// main

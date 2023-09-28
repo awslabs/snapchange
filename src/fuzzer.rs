@@ -15,7 +15,6 @@ use std::sync::{Arc, RwLock};
 
 use crate::addrs::{Cr3, VirtAddr};
 use crate::cmp_analysis::RedqueenRule;
-use crate::expensive_mutators;
 use crate::feedback::FeedbackTracker;
 use crate::filesystem::FileSystem;
 use crate::fuzz_input::{FuzzInput, InputMetadata, InputWithMetadata};
