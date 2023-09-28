@@ -1790,7 +1790,6 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
                     left_op,
                     right_op,
                 };
-                println!("{arg:x?}");
                 result.push((addr, arg));
             }
             (Err(e), _) => {
@@ -1812,7 +1811,9 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
         // let (right_op, remaining_str) = parse_cmp_operand(right_op_str)?;
     }
 
-    println!("Skipped {invalid}/{} cmp breakpoints", lines.len());
+    if invalid > 0 {
+        println!("Skipped {invalid}/{} invalid cmp breakpoints", lines.len());
+    }
 
     Ok(result)
 }
@@ -1897,7 +1898,10 @@ fn parse_cmp_operand(input: &str) -> Result<(Operand, &str)> {
             },
             remaining,
         ))
-    } else if let Some(args) = input.strip_prefix("logical_shift_left ") {
+    } else if let Some(args) = input
+        .strip_prefix("logical_shift_left ")
+        .or_else(|| input.strip_prefix("lsl "))
+    {
         // Parses add <operation>
         let (left, remaining) = parse_cmp_operand(args)?;
         let (right, remaining) = parse_cmp_operand(remaining)?;
@@ -1918,6 +1922,28 @@ fn parse_cmp_operand(input: &str) -> Result<(Operand, &str)> {
             Operand::Sub {
                 left: Box::new(left),
                 right: Box::new(right),
+            },
+            remaining,
+        ))
+    } else if let Some(args) = input.strip_prefix("arithmetic_shift_right ") {
+        // Parses arithmetic_shift_right <operation>
+        let (left, remaining) = parse_cmp_operand(args)?;
+        let (right, remaining) = parse_cmp_operand(remaining)?;
+
+        Ok((
+            Operand::ArithmeticShiftRight {
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            remaining,
+        ))
+    } else if let Some(args) = input.strip_prefix("sign_extend ") {
+        // Parses sign_extend <operation>
+        let (left, remaining) = parse_cmp_operand(args)?;
+
+        Ok((
+            Operand::SignExtend {
+                src: Box::new(left),
             },
             remaining,
         ))

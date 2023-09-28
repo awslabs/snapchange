@@ -214,6 +214,21 @@ pub enum Operand {
         src: Box<Operand>,
     },
 
+    /// Sign inversion of the operand
+    SignExtend {
+        /// The operand to get the address to read from memory
+        src: Box<Operand>,
+    },
+
+    /// Arithmetic shift right
+    ArithmeticShiftRight {
+        /// Left operand
+        left: Box<Operand>,
+
+        /// Left operand
+        right: Box<Operand>,
+    },
+
     /// Bitwise AND
     And {
         /// Left operand
@@ -310,6 +325,10 @@ macro_rules! impl_read_for_type {
                 Operand::LogicalShiftLeft { left, right } => {
                     Ok(left.$func(fuzzvm)? << right.$func(fuzzvm)?)
                 }
+                Operand::ArithmeticShiftRight { left, right } => {
+                    Ok(left.$func(fuzzvm)? >> right.$func(fuzzvm)?)
+                }
+                Operand::SignExtend { src } => Ok(src.$func(fuzzvm)? as i64 as $ty),
             }
         }
     };
@@ -372,6 +391,12 @@ impl Operand {
             Operand::Not { src } => {
                 unimplemented!("Cannot NOT f32 values")
             }
+            Operand::ArithmeticShiftRight { left, right } => {
+                unimplemented!("Cannot ASR f32 values")
+            }
+            Operand::SignExtend { src } => {
+                unimplemented!("Cannot sign extend f32 values")
+            }
         }
     }
 
@@ -425,6 +450,12 @@ impl Operand {
             }
             Operand::Not { src } => {
                 unimplemented!("Cannot NOT f64 values")
+            }
+            Operand::ArithmeticShiftRight { left, right } => {
+                unimplemented!("Cannot ASR f32 values")
+            }
+            Operand::SignExtend { src } => {
+                unimplemented!("Cannot sign extend f32 values")
             }
         }
     }
@@ -870,8 +901,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Generate the rule to satisfy this comparison
                                     let rule =  RedqueenRule::$rule(left_val.to_le_bytes().to_vec(), right_val.to_le_bytes().to_vec());
-
-                                    log::info!("{input_hash:#x} Rule: {rule:x?}");
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input

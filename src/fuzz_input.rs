@@ -168,8 +168,7 @@ impl FuzzInput for Vec<u8> {
             if let Some(rules) = redqueen_rules {
                 let total_mutators = Self::mutators().len() + Self::expensive_mutators().len();
 
-                // if !rules.is_empty() && rng.gen::<usize>() % total_mutators == 0 {
-                if !rules.is_empty() && rng.gen::<usize>() % 2 == 0 {
+                if !rules.is_empty() && rng.gen::<usize>() % total_mutators == 0 {
                     // Select one of the redqueen rules
                     let rule_index = rng.gen::<usize>() % rules.len();
                     let Some(curr_rule) = rules.iter().nth(rule_index) else {
