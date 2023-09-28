@@ -29,6 +29,7 @@ use std::time::Duration;
 
 use crate::addrs::VirtAddr;
 use crate::cmdline::Modules;
+use crate::cmp_analysis::RedqueenCoverage;
 use crate::config::Config;
 use crate::coverage_analysis::CoverageAnalysis;
 use crate::fuzz_input::FuzzInput;
@@ -665,7 +666,7 @@ pub fn worker<FUZZER: Fuzzer>(
     modules: &Modules,
     project_dir: &Path,
     prev_coverage: BTreeSet<VirtAddr>,
-    prev_redqueen_coverage: BTreeSet<(VirtAddr, RFlags)>,
+    prev_redqueen_coverage: BTreeSet<RedqueenCoverage>,
     input_corpus: &[FUZZER::Input],
     coverage_breakpoints: Option<BTreeSet<VirtAddr>>,
     symbols: &Option<VecDeque<Symbol>>,
@@ -998,7 +999,7 @@ pub fn worker<FUZZER: Fuzzer>(
                             // Try to get the addr2line information for the current address
                             if let Some(loc) = context.find_location(addr)? {
                                 let src = format!(
-                                    "{symbol} -- {}:{}:{}",
+                                    "{addr:#x} {symbol} -- {}:{}:{}",
                                     loc.file.unwrap_or("??unknownfile??"),
                                     loc.line.unwrap_or(0),
                                     loc.column.unwrap_or(0)
@@ -1016,7 +1017,7 @@ pub fn worker<FUZZER: Fuzzer>(
                                     context.find_location(addr.saturating_sub(module_start))?
                                 {
                                     let src = format!(
-                                        "{symbol} -- {}:{}:{}",
+                                        "{addr:#x} {symbol} -- {}:{}:{}",
                                         loc.file.unwrap_or("??unknownfile??"),
                                         loc.line.unwrap_or(0),
                                         loc.column.unwrap_or(0)
@@ -1031,7 +1032,7 @@ pub fn worker<FUZZER: Fuzzer>(
                         // If the source code wasn't found, add the raw symbol instead
                         if !found {
                             // Add the found symbol the symbol timeline
-                            coverage_timeline.push(symbol);
+                            coverage_timeline.push(format!("{addr:#x} {symbol}"));
                         }
                     } else {
                         // Symbol not found, add the address
@@ -1121,9 +1122,7 @@ pub fn worker<FUZZER: Fuzzer>(
                     if let Ok(dir) = std::fs::read_dir(path) {
                         num_crashes += dir.count() as u32;
                     }
-                    if !path.starts_with("timeout")
-                        && !path.starts_with("misc")
-                    {
+                    if !path.starts_with("timeout") && !path.starts_with("misc") {
                         num_interesting_crashes += 1;
                     }
                 }
@@ -1423,7 +1422,15 @@ pub fn worker<FUZZER: Fuzzer>(
             {
                 let redqueen_cov = total_redqueen_coverage
                     .iter()
-                    .map(|(addr, rflags)| format!("{:#x} {:#x}", addr.0, rflags.bits()))
+                    .map(
+                        |RedqueenCoverage {
+                             virt_addr,
+                             rflags,
+                             hit_count,
+                         }| {
+                            format!("{:#x} {rflags:#x} {hit_count:#x}", virt_addr.0)
+                        },
+                    )
                     .collect::<Vec<_>>()
                     .join("\n");
 

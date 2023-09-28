@@ -14,6 +14,19 @@ use crate::regs::x86;
 use crate::Execution;
 use crate::FuzzVm;
 
+/// Coverage found during redqueen
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RedqueenCoverage {
+    /// Virtual address for this coverage
+    pub virt_addr: VirtAddr,
+
+    /// CR3 of this coverage
+    pub rflags: u64,
+
+    /// The nth time coverage has been hit
+    pub hit_count: u32,
+}
+
 /// A replacement rule for cmp analysis
 ///
 /// When applying a replacement rule during mutation, if the left value is
@@ -78,8 +91,14 @@ pub enum Size {
     /// Comparing 8 bytes as an f64
     F64,
 
+    /// Comparing byts as an X87 register
+    X87,
+
     /// Comparing a sequence of bytes
     Bytes(usize),
+
+    /// Comparing a sequence of bytes with length in the given register
+    Register(iced_x86::Register),
 }
 
 /// Comparison operations
@@ -195,6 +214,21 @@ pub enum Operand {
         src: Box<Operand>,
     },
 
+    /// Sign inversion of the operand
+    SignExtend {
+        /// The operand to get the address to read from memory
+        src: Box<Operand>,
+    },
+
+    /// Arithmetic shift right
+    ArithmeticShiftRight {
+        /// Left operand
+        left: Box<Operand>,
+
+        /// Left operand
+        right: Box<Operand>,
+    },
+
     /// Bitwise AND
     And {
         /// Left operand
@@ -262,6 +296,14 @@ macro_rules! impl_read_for_type {
                 Operand::Register(IcedRegister::XMM13) => Ok(fuzzvm.xmm13_f64() as $ty),
                 Operand::Register(IcedRegister::XMM14) => Ok(fuzzvm.xmm14_f64() as $ty),
                 Operand::Register(IcedRegister::XMM15) => Ok(fuzzvm.xmm15_f64() as $ty),
+                Operand::Register(IcedRegister::ST0) => Ok(fuzzvm.st0_f64() as $ty),
+                Operand::Register(IcedRegister::ST1) => Ok(fuzzvm.st1_f64() as $ty),
+                Operand::Register(IcedRegister::ST2) => Ok(fuzzvm.st2_f64() as $ty),
+                Operand::Register(IcedRegister::ST3) => Ok(fuzzvm.st3_f64() as $ty),
+                Operand::Register(IcedRegister::ST4) => Ok(fuzzvm.st4_f64() as $ty),
+                Operand::Register(IcedRegister::ST5) => Ok(fuzzvm.st5_f64() as $ty),
+                Operand::Register(IcedRegister::ST6) => Ok(fuzzvm.st6_f64() as $ty),
+                Operand::Register(IcedRegister::ST7) => Ok(fuzzvm.st7_f64() as $ty),
                 Operand::Register(reg) => Ok(fuzzvm.get_iced_reg(*reg) as $ty),
                 Operand::ConstU8(val) => Ok(*val as $ty),
                 Operand::ConstU16(val) => Ok(*val as $ty),
@@ -283,6 +325,10 @@ macro_rules! impl_read_for_type {
                 Operand::LogicalShiftLeft { left, right } => {
                     Ok(left.$func(fuzzvm)? << right.$func(fuzzvm)?)
                 }
+                Operand::ArithmeticShiftRight { left, right } => {
+                    Ok(left.$func(fuzzvm)? >> right.$func(fuzzvm)?)
+                }
+                Operand::SignExtend { src } => Ok(src.$func(fuzzvm)? as i64 as $ty),
             }
         }
     };
@@ -326,7 +372,9 @@ impl Operand {
             Operand::Load { address } => {
                 let addr = address.read_u64(fuzzvm)?;
                 let addr = VirtAddr(addr);
-                Ok(fuzzvm.read::<u32>(addr, fuzzvm.cr3())? as f32)
+                Ok(f32::from_le_bytes(
+                    fuzzvm.read::<[u8; 4]>(addr, fuzzvm.cr3())?,
+                ))
             }
             Operand::Add { left, right } => Ok(left.read_f32(fuzzvm)? + right.read_f32(fuzzvm)?),
             Operand::Sub { left, right } => Ok(left.read_f32(fuzzvm)? - right.read_f32(fuzzvm)?),
@@ -342,6 +390,12 @@ impl Operand {
             }
             Operand::Not { src } => {
                 unimplemented!("Cannot NOT f32 values")
+            }
+            Operand::ArithmeticShiftRight { left, right } => {
+                unimplemented!("Cannot ASR f32 values")
+            }
+            Operand::SignExtend { src } => {
+                unimplemented!("Cannot sign extend f32 values")
             }
         }
     }
@@ -378,7 +432,9 @@ impl Operand {
             Operand::Load { address } => {
                 let addr = address.read_u64(fuzzvm)?;
                 let addr = VirtAddr(addr);
-                Ok(fuzzvm.read::<u64>(addr, fuzzvm.cr3())? as f64)
+                Ok(f64::from_le_bytes(
+                    fuzzvm.read::<[u8; 8]>(addr, fuzzvm.cr3())?,
+                ))
             }
             Operand::Add { left, right } => Ok(left.read_f64(fuzzvm)? + right.read_f64(fuzzvm)?),
             Operand::Sub { left, right } => Ok(left.read_f64(fuzzvm)? - right.read_f64(fuzzvm)?),
@@ -395,6 +451,27 @@ impl Operand {
             Operand::Not { src } => {
                 unimplemented!("Cannot NOT f64 values")
             }
+            Operand::ArithmeticShiftRight { left, right } => {
+                unimplemented!("Cannot ASR f32 values")
+            }
+            Operand::SignExtend { src } => {
+                unimplemented!("Cannot sign extend f32 values")
+            }
+        }
+    }
+
+    /// Read the given x87 register
+    pub fn read_x87<FUZZER: Fuzzer>(&self, fuzzvm: &mut FuzzVm<FUZZER>) -> Result<Vec<u8>> {
+        match self {
+            Operand::Register(IcedRegister::ST0) => Ok(fuzzvm.fpu()?.fpr[0][..10].to_vec()),
+            Operand::Register(IcedRegister::ST1) => Ok(fuzzvm.fpu()?.fpr[1][..10].to_vec()),
+            Operand::Register(IcedRegister::ST2) => Ok(fuzzvm.fpu()?.fpr[2][..10].to_vec()),
+            Operand::Register(IcedRegister::ST3) => Ok(fuzzvm.fpu()?.fpr[3][..10].to_vec()),
+            Operand::Register(IcedRegister::ST4) => Ok(fuzzvm.fpu()?.fpr[4][..10].to_vec()),
+            Operand::Register(IcedRegister::ST5) => Ok(fuzzvm.fpu()?.fpr[5][..10].to_vec()),
+            Operand::Register(IcedRegister::ST6) => Ok(fuzzvm.fpu()?.fpr[6][..10].to_vec()),
+            Operand::Register(IcedRegister::ST7) => Ok(fuzzvm.fpu()?.fpr[7][..10].to_vec()),
+            _ => unimplemented!("Cannot read bytes for {self:?}"),
         }
     }
 }
@@ -640,7 +717,13 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                             _ => panic!("Unknown operation for primatives: {operation:?} {size:?} {args:x?}"),
                         }
                     }
-                    Size::Bytes(len) => {
+                    Size::Bytes(_) | Size::Register(_) => {
+                        let len = match size {
+                            Size::Bytes(len) => *len,
+                            Size::Register(reg) => fuzzvm.get_iced_reg(*reg) as usize,
+                            _ => { unreachable!() }
+                        };
+
                         // Read the address from each of the operands
                         let left_val = left_op.read_u64(fuzzvm)?;
                         let right_val = right_op.read_u64(fuzzvm)?;
@@ -703,8 +786,8 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                             }
                             Conditional::Memcmp => {
-                                let mut left_bytes = vec![0_u8; *len];
-                                let mut right_bytes = vec![0_u8; *len];
+                                let mut left_bytes = vec![0_u8; len];
+                                let mut right_bytes = vec![0_u8; len];
 
                                 fuzzvm.read_bytes(VirtAddr(left_val as u64), fuzzvm.cr3(), &mut left_bytes)?;
                                 fuzzvm.read_bytes(VirtAddr(right_val as u64), fuzzvm.cr3(), &mut right_bytes)?;
@@ -737,6 +820,37 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                             _ => panic!("Unknown BYTES operation: {operation:?}")
                         }
                     }
+                    Size::X87 => {
+                        let mut left_bytes = left_op.read_x87(fuzzvm)?;
+                        let right_bytes = right_op.read_x87(fuzzvm)?;
+
+                        if left_bytes != right_bytes {
+                            // bytes are not equal, force them to be equal
+                            let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
+
+                            if input.get_redqueen_rule_candidates(&rule).len() > 0 {
+                                fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
+                            }
+
+                            let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
+                            if input.get_redqueen_rule_candidates(&rule).len() > 0 {
+                                fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
+                            }
+
+                        } else {
+                            // bytes are equal. Force them to not be equal.
+
+                            // Only add this rule to the redqueen rules if the left operand
+                            // is actually in the input
+                            left_bytes[0] = left_bytes[0].wrapping_add(1);
+                            let rule =  RedqueenRule::Bytes(left_bytes, right_bytes);
+
+                            if input.get_redqueen_rule_candidates(&rule).len() > 0 {
+                                fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
+                            }
+                        }
+
+                    }
                 )*
                 _ => {
                     // Pass down to the float impls
@@ -752,7 +866,7 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                     Size::$size => {
                         let left_val = left_op.$func(fuzzvm)?;
                         let right_val = right_op.$func(fuzzvm)?;
-                        log::info!("FLOAT {size:?} {operation:?} Left {left_val:x?} Right {right_val:x?}");
+                        // log::info!("FLOAT {size:?} {operation:?} Left {left_val:x?} Right {right_val:x?}");
                         match operation {
                             Conditional::FloatingPointEqual | Conditional::FloatingPointNotEqual => {
                                 let condition = match operation {
@@ -760,8 +874,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     Conditional::FloatingPointNotEqual => !left_val.ne(&right_val),
                                     _ => unreachable!()
                                 };
-
-                                log::info!("Eq Condition: {condition}");
 
                                 if condition {
                                     // OP - ax == bx (true)
@@ -777,7 +889,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        log::info!("FLOAT RULE 1: {rule:x?}");
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
                                 } else {
@@ -791,12 +902,9 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Generate the rule to satisfy this comparison
                                     let rule =  RedqueenRule::$rule(left_val.to_le_bytes().to_vec(), right_val.to_le_bytes().to_vec());
 
-                                    log::info!("{input_hash:#x} Rule: {rule:x?}");
-
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        log::info!("FLOAT RULE 2: {rule:x?}");
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
 
@@ -806,7 +914,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        log::info!("FLOAT RULE 3: {rule:x?}");
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
                                 }

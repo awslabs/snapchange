@@ -4,11 +4,15 @@
 use crate::cmp_analysis::RedqueenRule;
 
 #[cfg(feature = "redqueen")]
-use crate::cmp_analysis::RedqueenRule::{SingleF32, SingleU16, SingleU32, SingleU64, SingleU8};
+use crate::cmp_analysis::{
+    RedqueenCoverage,
+    RedqueenRule::{SingleF32, SingleU16, SingleU32, SingleU64, SingleU8},
+};
 
 use crate::expensive_mutators;
 use crate::mutators;
 use crate::rng::Rng;
+use crate::VirtAddr;
 
 use anyhow::Result;
 use rand::{Rng as _, RngCore};
@@ -174,10 +178,12 @@ impl FuzzInput for Vec<u8> {
                     // Select one of the possible locations in the input to apply this rule
                     let candidates = input.get_redqueen_rule_candidates(curr_rule);
                     if candidates.is_empty() {
+                        /*
                         log::warn!(
                             "Found no candidates for this rule: {:#x} {curr_rule:x?}",
                             input.fuzz_hash()
                         );
+                        */
                         continue;
                     }
 
@@ -186,7 +192,7 @@ impl FuzzInput for Vec<u8> {
 
                     // Apply the redqueen rule to the current input
                     if let Some(mutation) = input.apply_redqueen_rule(&curr_rule, curr_candidate) {
-                        mutations.push(format!("FORCED_{mutation}"));
+                        mutations.push(format!("RQ_MUTATE_{mutation}"));
                     }
 
                     continue;
@@ -287,10 +293,12 @@ impl FuzzInput for Vec<u8> {
             RedqueenRule::Bytes(from, to) => {
                 let index: usize = *index;
 
-                if to.len() == from.len() {
+                let len = if to.len() == from.len() {
                     // Both from and to are the same size, directly copy the bytes
                     let size = to.len();
                     self[index..index + size].copy_from_slice(to);
+
+                    to.len()
                 } else {
                     // If the "to" bytes is longer than the "from" needle, splice the "to" bytes
                     // where the from needle was
@@ -307,9 +315,11 @@ impl FuzzInput for Vec<u8> {
                     new_self[index..index + to.len()].copy_from_slice(to);
                     new_self[index + to.len()..].copy_from_slice(&self[index + from.len()..]);
                     *self = new_self;
-                }
 
-                Some(format!("Bytes_offset_{index:#x}"))
+                    new_length
+                };
+
+                Some(format!("Bytes_offset_{index:#x}_len_{len:#x}"))
             }
         }
     }
@@ -647,6 +657,16 @@ pub enum Endian {
     Big,
 }
 
+/// A particular type of new coverage
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum CoverageType {
+    /// Only a new address was found
+    Address(u64),
+
+    /// A new coverage with rflags and hit count provided by redqueen
+    Redqueen(RedqueenCoverage),
+}
+
 /// Metadata about a crashing input or a new input that found new coverage.
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct InputMetadata {
@@ -659,14 +679,14 @@ pub(crate) struct InputMetadata {
 
     /// New coverage blocks hit by this input
     #[serde(
-        serialize_with = "serialize_vec_u64_as_hex",
-        deserialize_with = "deserialize_vec_u64_from_hex"
+        serialize_with = "serialize_as_hex",
+        deserialize_with = "deserialize_from_hex"
     )]
-    pub(crate) new_coverage: Vec<u64>,
+    pub(crate) new_coverage: Vec<CoverageType>,
 }
 
 /// Custom serialize for Vec<u64>
-fn serialize_vec_u64_as_hex<S>(values: &[u64], serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_as_hex<S>(values: &[CoverageType], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -675,8 +695,16 @@ where
     // Begin the sequence of elements
     let mut seq = serializer.serialize_seq(Some(values.len()))?;
 
-    // Serialize each individual element
-    for element in values.iter().map(|x| format!("{x:#x}")) {
+    for value in values {
+        let element = match value {
+            CoverageType::Address(addr) => format!("{addr:#x}"),
+            CoverageType::Redqueen(RedqueenCoverage {
+                virt_addr,
+                rflags,
+                hit_count,
+            }) => format!("{:#x}|{rflags:#x}|{hit_count:#x}", virt_addr.0),
+        };
+
         seq.serialize_element(&element)?;
     }
 
@@ -685,19 +713,37 @@ where
 }
 
 /// Custom deserialize for Vec<u64>
-fn deserialize_vec_u64_from_hex<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>
+fn deserialize_from_hex<'de, D>(deserializer: D) -> Result<Vec<CoverageType>, D::Error>
 where
     D: Deserializer<'de>,
 {
     // Get a Vec of hex strings from the deserializer
     let hex: Vec<String> = Deserialize::deserialize(deserializer)?;
 
-    // Convert the hex strings back into u64
+    // Convert the hex strings back into CoverageType
     let data = hex
         .iter()
-        .map(|x| u64::from_str_radix(&x[2..], 16))
-        .collect::<Result<Vec<u64>, _>>()
-        .map_err(serde::de::Error::custom)?;
+        .map(|x| {
+            if let Some([addr, rflags, hit_count]) = x.split(&"|").array_chunks().next() {
+                let virt_addr = u64::from_str_radix(&addr[2..], 16)
+                    .expect("Failed to deserialize virt addr: {addr}");
+                let rflags = u64::from_str_radix(&rflags[2..], 16)
+                    .expect("Failed to deserialize rflags: {rflags}");
+                let hit_count = u32::from_str_radix(&hit_count[2..], 16)
+                    .expect("Failed to deserialize hit_count {hit_count}");
+
+                CoverageType::Redqueen(RedqueenCoverage {
+                    virt_addr: VirtAddr(virt_addr),
+                    rflags,
+                    hit_count,
+                })
+            } else {
+                CoverageType::Address(
+                    u64::from_str_radix(&x[2..], 16).expect("Failed to parse coverage addrss {x}"),
+                )
+            }
+        })
+        .collect::<Vec<_>>();
 
     // Return the result
     Ok(data)

@@ -2,6 +2,7 @@
 
 use crate::fuzzer::Fuzzer;
 use crate::FuzzVm;
+use crate::VirtAddr;
 use iced_x86::Register;
 
 /// Implement getter/setters for register accesses in the VM
@@ -274,6 +275,15 @@ impl<FUZZER: Fuzzer> FuzzVm<'_, FUZZER> {
     impl_xmm!(xmm14, xmm14_f32, xmm14_f64, xmm14_i128, set_xmm14, 14);
     impl_xmm!(xmm15, xmm15_f32, xmm15_f64, xmm15_i128, set_xmm15, 15);
 
+    impl_xmm!(st0, st0_f32, st0_f64, st0_i128, set_st0, 0);
+    impl_xmm!(st1, st1_f32, st1_f64, st1_i128, set_st1, 1);
+    impl_xmm!(st2, st2_f32, st2_f64, st2_i128, set_st2, 2);
+    impl_xmm!(st3, st3_f32, st3_f64, st3_i128, set_st3, 3);
+    impl_xmm!(st4, st4_f32, st4_f64, st4_i128, set_st4, 4);
+    impl_xmm!(st5, st5_f32, st5_f64, st5_i128, set_st5, 5);
+    impl_xmm!(st6, st6_f32, st6_f64, st6_i128, set_st6, 6);
+    impl_xmm!(st7, st7_f32, st7_f64, st7_i128, set_st7, 8);
+
     /// Get the guest register for the given [`iced_x86::Register`]
     ///
     /// # Panics
@@ -440,6 +450,15 @@ impl<FUZZER: Fuzzer> FuzzVm<'_, FUZZER> {
                     0x1ead_beef_cafe_babe_aaaa_bbbb_cccc_dddd
                 }
             }
+
+            Register::ST0 => self.st0_i128(),
+            Register::ST1 => self.st1_i128(),
+            Register::ST2 => self.st2_i128(),
+            Register::ST3 => self.st3_i128(),
+            Register::ST4 => self.st4_i128(),
+            Register::ST5 => self.st5_i128(),
+            Register::ST6 => self.st6_i128(),
+            Register::ST7 => self.st7_i128(),
 
             Register::YMM0 => 0xdead_0000,
             Register::YMM1 => 0xdead_0001,

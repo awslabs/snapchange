@@ -33,21 +33,56 @@ impl Fuzzer for Example05Fuzzer {
     }
 
     fn breakpoints(&self) -> Option<&[Breakpoint<Self>]> {
-        Some(&[Breakpoint {
-            lookup: AddressLookup::SymbolOffset("libc.so.6!__GI___getpid", 0x0),
-            bp_type: BreakpointType::Repeated,
-            bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer| {
-                // Set the return value to 0xdeadbeef
-                fuzzvm.set_rax(0xdead_beef);
+        Some(&[
+            Breakpoint {
+                lookup: AddressLookup::SymbolOffset("libc.so.6!__GI___getpid", 0x0),
+                bp_type: BreakpointType::Repeated,
+                bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer| {
+                    // Set the return value to 0xdeadbeef
+                    fuzzvm.set_rax(0xdead_beef);
 
-                // Fake an immediate return from the function by setting RIP to the
-                // value popped from the stack (this assumes the function was entered
-                // via a `call`)
-                fuzzvm.fake_immediate_return()?;
+                    // Fake an immediate return from the function by setting RIP to the
+                    // value popped from the stack (this assumes the function was entered
+                    // via a `call`)
+                    fuzzvm.fake_immediate_return()?;
 
-                // Continue execution
-                Ok(Execution::Continue)
+                    // Continue execution
+                    Ok(Execution::Continue)
+                },
             },
-        }])
+            /*
+            Breakpoint {
+                lookup: AddressLookup::SymbolOffset(
+                    "test_cmpsolves!const_u64_compares_constanttime",
+                    0x0,
+                ),
+                bp_type: BreakpointType::Repeated,
+                bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer| {
+                    // Move the data pointer to the return register
+                    fuzzvm.set_rax(fuzzvm.rdi());
+
+                    fuzzvm.fake_immediate_return()?;
+
+                    // Continue execution
+                    Ok(Execution::Continue)
+                },
+            },
+            Breakpoint {
+                lookup: AddressLookup::SymbolOffset(
+                    "test_cmpsolves!constanttime_compare16_loop",
+                    0x0,
+                ),
+                bp_type: BreakpointType::Repeated,
+                bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer| {
+                    fuzzvm.set_rax(1);
+
+                    fuzzvm.fake_immediate_return()?;
+
+                    // Continue execution
+                    Ok(Execution::Continue)
+                },
+            },
+            */
+        ])
     }
 }

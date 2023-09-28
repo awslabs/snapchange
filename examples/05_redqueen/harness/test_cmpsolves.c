@@ -266,6 +266,7 @@ bool constanttime_compare16_loop(const uint64_t *a, const uint64_t *b) {
 
 #pragma clang loop unroll(disable)
   for (size_t i = 0; i < 16; i++) {
+    printf("0x%lx == 0x%lx\n", a[i], b[i]);
     chain &= (a[i] == b[i]);
   }
 

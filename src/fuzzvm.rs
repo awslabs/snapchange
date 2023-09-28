@@ -40,13 +40,14 @@ use crate::{try_u32, try_u64, try_u8, try_usize};
 
 #[cfg(feature = "redqueen")]
 use crate::{
-    cmp_analysis, cmp_analysis::RedqueenArguments, cmp_analysis::RedqueenRule,
-    fuzz_input::FuzzInput,
+    cmp_analysis,
+    cmp_analysis::{RedqueenArguments, RedqueenCoverage, RedqueenRule},
+    fuzz_input::{CoverageType, FuzzInput},
 };
 
 use std::collections::{BTreeMap, VecDeque};
 use std::convert::TryInto;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -4188,7 +4189,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         input: &FUZZER::Input,
         vm_timeout: Duration,
         coverage: &mut BTreeSet<VirtAddr>,
-    ) -> Result<BTreeSet<(VirtAddr, RFlags)>> {
+    ) -> Result<BTreeSet<RedqueenCoverage>> {
         let mut execution = Execution::Continue;
 
         // Initialize the performance counters for executing a VM
@@ -4196,6 +4197,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
         // Initialize the output coverage
         let mut rq_coverage = BTreeSet::new();
+        let mut rq_hitcounts = BTreeMap::new();
 
         // Top of the run iteration loop for the current fuzz case
         loop {
@@ -4221,9 +4223,23 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                     // flag_mask |= RFlags::SIGN_FLAG;
                     // flag_mask |= RFlags::AUXILIARY_CARRY_FLAG;
 
-                    let rflags = RFlags::from_bits_truncate(self.rflags() & flag_mask.bits());
+                    // let rflags = RFlags::from_bits_truncate(self.rflags() & flag_mask.bits());
+                    let rflags = self.rflags() & flag_mask.bits();
 
-                    rq_coverage.insert((VirtAddr(self.rip()), rflags));
+                    // Increment the hit count for this breakpoint by one
+                    let mut hit_count = rq_hitcounts
+                        .entry((VirtAddr(self.rip()), rflags))
+                        .or_insert(0);
+                    *hit_count += 1;
+
+                    // Add this redqueen coverage
+                    let cov = RedqueenCoverage {
+                        virt_addr: VirtAddr(self.rip()),
+                        rflags,
+                        hit_count: *hit_count,
+                    };
+
+                    rq_coverage.insert(cov);
                 }
             } else {
                 panic!("Unknown redqueen addresses");
@@ -4368,7 +4384,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         fuzzer: &mut FUZZER,
         vm_timeout: Duration,
         coverage: &mut BTreeSet<VirtAddr>,
-    ) -> Result<BTreeSet<(VirtAddr, RFlags)>> {
+    ) -> Result<BTreeSet<RedqueenCoverage>> {
         // Reset the guest state in preparation for redqueen
         let _perf = self.reset_guest_state(fuzzer)?;
 
@@ -4396,7 +4412,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         vm_timeout: Duration,
         corpus: &mut Vec<<FUZZER as Fuzzer>::Input>,
         coverage: &mut BTreeSet<VirtAddr>,
-        redqueen_coverage: &mut BTreeSet<(VirtAddr, RFlags)>,
+        redqueen_coverage: &mut BTreeSet<RedqueenCoverage>,
         time_spent: Duration,
         metadata_dir: &PathBuf,
     ) -> Result<()> {
@@ -4488,7 +4504,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                                     cov
                                 );
 
-                                new_coverage.push(*cov.0);
+                                new_coverage.push(CoverageType::Redqueen(cov));
                             }
                         }
 
@@ -4504,7 +4520,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                             let hash = new_input.fuzz_hash();
 
                             let mutation = format!(
-                                "RQ_{}",
+                                "RQ_ONESHOT_{}",
                                 mutation.unwrap_or_else(|| String::from("rq_unknown"))
                             );
 
