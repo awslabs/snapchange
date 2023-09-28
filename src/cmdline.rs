@@ -116,7 +116,7 @@ pub struct ProjectCoverage {
     pub coverage_left: BTreeSet<VirtAddr>,
 
     /// Previously seen redqueen coverage by the fuzzer
-    pub prev_redqueen_coverage: BTreeSet<(VirtAddr, RFlags)>,
+    pub prev_redqueen_coverage: BTreeSet<(VirtAddr, u64)>,
 }
 
 impl ProjectState {
@@ -162,7 +162,7 @@ impl ProjectState {
                     let rflags = u64::from_str_radix(rflags.trim_start_matches("0x"), 16);
                     if let (Ok(addr), Ok(rflags)) = (addr, rflags) {
                         let rflags = RFlags::from_bits_truncate(rflags);
-                        Some((VirtAddr(addr), rflags))
+                        Some((VirtAddr(addr), rflags.bits()))
                     } else {
                         None
                     }

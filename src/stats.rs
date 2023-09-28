@@ -668,7 +668,7 @@ pub fn worker<FUZZER: Fuzzer>(
     modules: &Modules,
     project_dir: &Path,
     prev_coverage: BTreeSet<VirtAddr>,
-    prev_redqueen_coverage: BTreeSet<(VirtAddr, RFlags)>,
+    prev_redqueen_coverage: BTreeSet<(VirtAddr, u64)>,
     input_corpus: &[FUZZER::Input],
     coverage_breakpoints: Option<BTreeSet<VirtAddr>>,
     symbols: &Option<VecDeque<Symbol>>,
@@ -1438,7 +1438,7 @@ pub fn worker<FUZZER: Fuzzer>(
             {
                 let redqueen_cov = total_redqueen_coverage
                     .iter()
-                    .map(|(addr, rflags)| format!("{:#x} {:#x}", addr.0, rflags.bits()))
+                    .map(|(addr, rflags)| format!("{:#x} {:#x}", addr.0, rflags))
                     .collect::<Vec<_>>()
                     .join("\n");
 

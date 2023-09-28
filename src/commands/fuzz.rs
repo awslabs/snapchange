@@ -905,8 +905,7 @@ fn start_core<FUZZER: Fuzzer>(
                         &mut fuzzer,
                         vm_timeout,
                         &mut corpus,
-                        &mut feedback.code_cov,
-                        &mut feedback.redqueen,
+                        &mut feedback,
                         redqueen_time_spent,
                         &project_dir.join("metadata"),
                     )?;

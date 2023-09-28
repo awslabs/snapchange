@@ -16,7 +16,7 @@ pub type CustomFeedback = FxHashSet<u64>;
 #[cfg(feature = "redqueen")]
 use x86_64::registers::rflags::RFlags;
 #[cfg(feature = "redqueen")]
-pub type RedqueenFeedback = BTreeSet<(VirtAddr, RFlags)>;
+pub type RedqueenFeedback = BTreeSet<(VirtAddr, u64)>;
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FeedbackLog {
@@ -31,10 +31,10 @@ pub enum FeedbackLog {
 
     #[cfg(feature = "redqueen")]
     #[serde(skip)]
-    Redqueen((VirtAddr, RFlags)),
+    Redqueen((VirtAddr, u64)),
 }
 
-#[derive(Default, Clone, Serialize)]
+#[derive(Default, Clone, Serialize, PartialEq, Eq)]
 pub struct FeedbackTracker {
     pub(crate) log: Vec<FeedbackLog>,
     pub(crate) code_cov: ScratchFeedback,
@@ -51,6 +51,10 @@ pub struct FeedbackTracker {
 }
 
 impl FeedbackTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn from_prev(code_cov: BTreeSet<VirtAddr>) -> Self {
         Self {
             code_cov,
@@ -141,9 +145,10 @@ impl FeedbackTracker {
 
     #[cfg(feature = "redqueen")]
     pub fn record_redqueen(&mut self, v: VirtAddr, f: RFlags) -> bool {
-        let r = self.redqueen.insert((v, f));
+        let flags_bits = f.bits();
+        let r = self.redqueen.insert((v, flags_bits));
         if r {
-            self.log.push(FeedbackLog::Redqueen((v, f)));
+            self.log.push(FeedbackLog::Redqueen((v, flags_bits)));
         }
         r
     }
