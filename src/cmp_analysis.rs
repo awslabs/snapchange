@@ -265,6 +265,15 @@ pub enum Operand {
         right: Box<Operand>,
     },
 
+    /// Multiply the two operands
+    Mul {
+        /// Left operand
+        left: Box<Operand>,
+
+        /// Left operand
+        right: Box<Operand>,
+    },
+
     /// Shift the left operand by right bits
     LogicalShiftLeft {
         /// Left operand
@@ -319,6 +328,7 @@ macro_rules! impl_read_for_type {
                 Operand::And { left, right } => Ok(left.$func(fuzzvm)? & right.$func(fuzzvm)?),
                 Operand::Add { left, right } => Ok(left.$func(fuzzvm)? + right.$func(fuzzvm)?),
                 Operand::Sub { left, right } => Ok(left.$func(fuzzvm)? - right.$func(fuzzvm)?),
+                Operand::Mul { left, right } => Ok(left.$func(fuzzvm)? * right.$func(fuzzvm)?),
                 Operand::Or { left, right } => Ok(left.$func(fuzzvm)? | right.$func(fuzzvm)?),
                 Operand::Not { src } => Ok(!src.$func(fuzzvm)?),
                 Operand::Neg { src } => Ok(src.$func(fuzzvm)?.wrapping_neg()),
@@ -378,6 +388,7 @@ impl Operand {
             }
             Operand::Add { left, right } => Ok(left.read_f32(fuzzvm)? + right.read_f32(fuzzvm)?),
             Operand::Sub { left, right } => Ok(left.read_f32(fuzzvm)? - right.read_f32(fuzzvm)?),
+            Operand::Mul { left, right } => Ok(left.read_f32(fuzzvm)? * right.read_f32(fuzzvm)?),
             Operand::Neg { src } => Ok(-src.read_f32(fuzzvm)?),
             Operand::LogicalShiftLeft { left, right } => {
                 unimplemented!("Cannot LSL f32 values")
@@ -438,6 +449,7 @@ impl Operand {
             }
             Operand::Add { left, right } => Ok(left.read_f64(fuzzvm)? + right.read_f64(fuzzvm)?),
             Operand::Sub { left, right } => Ok(left.read_f64(fuzzvm)? - right.read_f64(fuzzvm)?),
+            Operand::Mul { left, right } => Ok(left.read_f64(fuzzvm)? * right.read_f64(fuzzvm)?),
             Operand::Neg { src } => Ok(-src.read_f64(fuzzvm)?),
             Operand::LogicalShiftLeft { left, right } => {
                 unimplemented!("Cannot LSL f64 values")

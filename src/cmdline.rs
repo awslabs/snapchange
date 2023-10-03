@@ -1794,14 +1794,14 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
             }
             (Err(e), _) => {
                 println!(
-                    "[CMP] skipping rule due to failure parsing LHS: {:?}",
+                    "[CMP] skipping rule due to failure parsing LHS: {:?} {e:?}",
                     left_op_str
                 );
                 invalid += 1;
             }
             (Ok(_), Err(e)) => {
                 println!(
-                    "[CMP] skipping rule due to failure parsing RHS: {:?}",
+                    "[CMP] skipping rule due to failure parsing RHS: {:?} {e:?}",
                     right_op_str
                 );
                 invalid += 1;
@@ -1827,7 +1827,13 @@ fn parse_number(num: &str) -> Result<i64> {
     let without_prefix = num.trim_start_matches("0x").trim_start_matches("-0x");
 
     // Return parsed number
-    Ok(i64::from_str_radix(without_prefix, 16).map(|n| if is_negative { -n } else { n })?)
+    Ok(u64::from_str_radix(without_prefix, 16).map(|n| {
+        if is_negative {
+            n as i64
+        } else {
+            n as i64
+        }
+    })?)
 }
 
 /// Parse the cmp line given by the binja plugin and return how to retrieve
@@ -1898,11 +1904,23 @@ fn parse_cmp_operand(input: &str) -> Result<(Operand, &str)> {
             },
             remaining,
         ))
+    } else if let Some(args) = input.strip_prefix("mul ") {
+        // Parses add <operation>
+        let (left, remaining) = parse_cmp_operand(args)?;
+        let (right, remaining) = parse_cmp_operand(remaining)?;
+
+        Ok((
+            Operand::Mul {
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            remaining,
+        ))
     } else if let Some(args) = input
         .strip_prefix("logical_shift_left ")
         .or_else(|| input.strip_prefix("lsl "))
     {
-        // Parses add <operation>
+        // Parses lsl <operation>
         let (left, remaining) = parse_cmp_operand(args)?;
         let (right, remaining) = parse_cmp_operand(remaining)?;
 
@@ -1925,7 +1943,10 @@ fn parse_cmp_operand(input: &str) -> Result<(Operand, &str)> {
             },
             remaining,
         ))
-    } else if let Some(args) = input.strip_prefix("arithmetic_shift_right ") {
+    } else if let Some(args) = input
+        .strip_prefix("arithmetic_shift_right ")
+        .or_else(|| input.strip_prefix("lsr "))
+    {
         // Parses arithmetic_shift_right <operation>
         let (left, remaining) = parse_cmp_operand(args)?;
         let (right, remaining) = parse_cmp_operand(remaining)?;
@@ -1975,7 +1996,17 @@ fn parse_cmp_operand(input: &str) -> Result<(Operand, &str)> {
         Ok((Operand::ConstU64(-value as u64), remaining))
     } else if let Ok(float_num) = input.parse::<f64>() {
         // Parses <f64>
-        Ok((Operand::ConstF64(float_num), "NOTHERE"))
+        Ok((Operand::ConstF64(float_num), "NOTHERE_f64"))
+    } else if let Some([num, remaining]) = input.splitn(2, " ").array_chunks().next() {
+        if let Ok(num_u64) = num.parse::<u64>() {
+            // Parses <u64>
+            Ok((Operand::ConstU64(num_u64), remaining))
+        } else if let Ok(num_f64) = num.parse::<f64>() {
+            // Parses <f64>
+            Ok((Operand::ConstF64(num_f64), remaining))
+        } else {
+            Err(Error::UnimplementedCmpOperand(input.to_string()).into())
+        }
     } else {
         Err(Error::UnimplementedCmpOperand(input.to_string()).into())
     }

@@ -4587,10 +4587,12 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             // log::warn!("No RQ rules generated!");
         }
 
+        /*
         assert!(
             self.redqueen_rules.contains_key(&fuzz_hash),
             "No rules found after redqueen"
         );
+        */
 
         // Reset the guest state to remove redqueen breakpoints
         let _perf = self.reset_guest_state(fuzzer)?;

@@ -914,9 +914,11 @@ fn start_core<FUZZER: Fuzzer>(
                         &project_dir.join("metadata"),
                     )?;
 
+                    /*
                     let Some(rules) = fuzzvm.redqueen_rules.get(&input_hash) else {
                         panic!("No rules generated for hash: {input_hash:#x}");
                     };
+                    */
 
                     // Signal this thread is in not in redqueen
                     core_stats.lock().unwrap().in_redqueen = false;
