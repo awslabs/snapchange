@@ -306,9 +306,6 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     );
 
     #[cfg(feature = "redqueen")]
-    let redqueen_rules = BTreeMap::new();
-
-    #[cfg(feature = "redqueen")]
     let redqueen_breakpoints = None;
 
     // Create a 64-bit VM for fuzzing
@@ -325,8 +322,6 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         symbols,
         config,
         crate::stack_unwinder::StackUnwinders::default(),
-        #[cfg(feature = "redqueen")]
-        redqueen_rules,
         #[cfg(feature = "redqueen")]
         redqueen_breakpoints,
     )?;
@@ -368,7 +363,9 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         let input_case = &paths[curr_index];
 
         // Restore all of the known coverage
-        let Some(cov_bps) = fuzzvm.coverage_breakpoints.take() else { unreachable!() };
+        let Some(cov_bps) = fuzzvm.coverage_breakpoints.take() else {
+            unreachable!()
+        };
         for (addr, _byte) in cov_bps.iter() {
             fuzzvm.write_bytes_dirty(*addr, fuzzvm.cr3(), &[0xcc])?;
         }

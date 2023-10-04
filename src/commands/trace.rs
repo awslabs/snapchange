@@ -74,9 +74,6 @@ fn start_core<FUZZER: Fuzzer>(
     );
 
     #[cfg(feature = "redqueen")]
-    let redqueen_rules = BTreeMap::new();
-
-    #[cfg(feature = "redqueen")]
     let redqueen_breakpoints = None;
 
     // Create a 64-bit VM for fuzzing
@@ -93,8 +90,6 @@ fn start_core<FUZZER: Fuzzer>(
         symbols,
         config.clone(),
         unwinders.clone(),
-        #[cfg(feature = "redqueen")]
-        redqueen_rules,
         #[cfg(feature = "redqueen")]
         redqueen_breakpoints,
     )?;

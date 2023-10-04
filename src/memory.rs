@@ -58,8 +58,8 @@ impl Drop for Memory {
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     /// Attempted to write to an unmapped virtual address
-    #[error("WriteToUnmappedVirtualAddress_{0:x?}_{1:x?}")]
-    WriteToUnmappedVirtualAddress(VirtAddr, Cr3),
+    #[error("WriteToUnmappedVirtualAddress_{0:x?}_{1:x?}_{2:#x}")]
+    WriteToUnmappedVirtualAddress(VirtAddr, Cr3, usize),
 
     /// Attempted to read from an unmapped virtual address
     #[error("ReadFromUnmappedVirtualAddress_{0:x?}_{1:x?}")]
@@ -800,9 +800,12 @@ impl Memory {
             let translation = self.translate(virt_addr, cr3);
 
             // Get the physical address from this translation
-            let phys_addr = translation
-                .phys_addr()
-                .context(Error::WriteToUnmappedVirtualAddress(virt_addr, cr3))?;
+            let phys_addr =
+                translation
+                    .phys_addr()
+                    .context(Error::WriteToUnmappedVirtualAddress(
+                        virt_addr, cr3, 0xdeadbeef,
+                    ))?;
 
             if matches!(dirty, WriteMem::Dirty) {
                 // Dirty the physical page
@@ -926,7 +929,11 @@ impl Memory {
 
             let phys_addr = translation
                 .phys_addr()
-                .ok_or(Error::WriteToUnmappedVirtualAddress(virt_addr, cr3))?;
+                .ok_or(Error::WriteToUnmappedVirtualAddress(
+                    virt_addr,
+                    cr3,
+                    0x1234_0000_0000_0000 + buf.len(),
+                ))?;
 
             // Read the translated physical address into the given buf
             self.write_phys_bytes(phys_addr, buf)?;
@@ -944,7 +951,11 @@ impl Memory {
 
             let phys_addr = translation
                 .phys_addr()
-                .ok_or(Error::WriteToUnmappedVirtualAddress(*virt_addr, cr3))?;
+                .ok_or(Error::WriteToUnmappedVirtualAddress(
+                    *virt_addr,
+                    cr3,
+                    0x2222_0000_0000_0000 + buf.len(),
+                ))?;
 
             let size = usize::try_from(*size).unwrap();
 
@@ -992,7 +1003,11 @@ impl Memory {
 
             let phys_addr = translation
                 .phys_addr()
-                .ok_or(Error::WriteToUnmappedVirtualAddress(virt_addr, cr3))?;
+                .ok_or(Error::WriteToUnmappedVirtualAddress(
+                    virt_addr,
+                    cr3,
+                    0x3333_0000_0000_0000 + buf.len(),
+                ))?;
 
             // Read the translated physical address into the given buf
             self.write_phys_bytes(phys_addr, buf)?;
@@ -1010,7 +1025,11 @@ impl Memory {
 
             let phys_addr = translation
                 .phys_addr()
-                .ok_or(Error::WriteToUnmappedVirtualAddress(*virt_addr, cr3))?;
+                .ok_or(Error::WriteToUnmappedVirtualAddress(
+                    *virt_addr,
+                    cr3,
+                    0x4444_0000_0000_0000 + offset,
+                ))?;
 
             let size = usize::try_from(*size).unwrap();
 

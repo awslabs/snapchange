@@ -68,7 +68,7 @@ pub struct Stats<FUZZER: Fuzzer> {
     pub coverage: BTreeSet<VirtAddr>,
 
     /// Current redqueen coverage seen by this core
-    // pub redqueen_coverage: BTreeSet<(VirtAddr, RFlags)>,
+    pub redqueen_coverage: BTreeSet<RedqueenCoverage>,
 
     /// Current redqueen redqueen rules seen by this core
     // pub redqueen_rules: BTreeMap<u64, BTreeSet<RedqueenRule>>,
@@ -340,6 +340,9 @@ impl_enum!(
 
         /// Time taken to gather redqueen breakpoints
         Redqueen,
+
+        /// Time spent in the VM during redqueen
+        RedqueenInVm,
     }
 );
 
@@ -744,7 +747,7 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut merge_coverage = false;
 
     let mut total_coverage = prev_coverage;
-    let total_redqueen_coverage = prev_redqueen_coverage;
+    let mut total_redqueen_coverage = prev_redqueen_coverage;
     // let mut total_redqueen_rules = redqueen_rules;
 
     let mut last_best_coverage = 0;
@@ -1305,10 +1308,10 @@ pub fn worker<FUZZER: Fuzzer>(
 
                     // Update the redqueen rules and coverage for this core
                     // if core_id as u64 <= REDQUEEN_CORES {
-                    // total_redqueen_coverage.append(&mut curr_stats.redqueen_coverage);
+                    total_redqueen_coverage.append(&mut curr_stats.redqueen_coverage);
                     // total_redqueen_rules.append(&mut curr_stats.redqueen_rules);
 
-                    // curr_stats.redqueen_coverage = total_redqueen_coverage.clone();
+                    curr_stats.redqueen_coverage = total_redqueen_coverage.clone();
                     // curr_stats.redqueen_rules = total_redqueen_rules.clone();
                     // }
 

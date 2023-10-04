@@ -204,6 +204,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
     } = project_state.coverage_left()?;
 
     log::info!("Coverage left: {}", coverage_left.len());
+    log::info!("Redqueen coverage: {}", prev_redqueen_coverage.len());
 
     // Init the coverage breakpoints mapping to byte
     let mut covbp_bytes = BTreeMap::new();
@@ -237,15 +238,6 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
 
     #[cfg(feature = "redqueen")]
     let redqueen_rules: BTreeMap<u64, BTreeSet<RedqueenRule>> = BTreeMap::new();
-
-    /*
-    let redqueen_rules_path = project_state.path.join("redqueen.rules");
-    let redqueen_rules_bytes = std::fs::read(&redqueen_rules_path).unwrap_or_default();
-    if !redqueen_rules_bytes.is_empty() {
-        redqueen_rules = serde_json::from_slice(&redqueen_rules_bytes)?;
-    }
-    log::info!("Redqueen rules: {}", redqueen_rules.len());
-    */
 
     // Due to the time it takes to clone large corpi, symbols, or coverage breakpoints,
     // we bulk clone as many as we need for all the cores at once and then `.take` them
@@ -296,16 +288,6 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
             cores,
             start.elapsed()
         );
-        result
-    };
-
-    #[cfg(feature = "redqueen")]
-    let mut starting_redqueen_rules = {
-        let start = std::time::Instant::now();
-        let result = (0..=cores)
-            .map(|_| redqueen_rules.clone())
-            .collect::<Vec<_>>();
-        log::info!("Cloned {} redqueen rules in {:?}", cores, start.elapsed());
         result
     };
 
@@ -402,9 +384,6 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         let prev_redqueen_coverage = std::mem::take(&mut starting_prev_redqueen_coverage[id]);
 
         #[cfg(feature = "redqueen")]
-        let redqueen_rules = std::mem::take(&mut starting_redqueen_rules[id]);
-
-        #[cfg(feature = "redqueen")]
         let redqueen_breakpoints = std::mem::take(&mut starting_redqueen_breakpoints[id]);
 
         // Get an owned copy of the crash dir for this core
@@ -445,8 +424,6 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
                     unwinders,
                     #[cfg(feature = "redqueen")]
                     prev_redqueen_coverage,
-                    #[cfg(feature = "redqueen")]
-                    redqueen_rules,
                     #[cfg(feature = "redqueen")]
                     redqueen_breakpoints,
                 )
@@ -677,7 +654,6 @@ fn start_core<FUZZER: Fuzzer>(
     stop_after_first_crash: bool,
     unwinders: StackUnwinders,
     #[cfg(feature = "redqueen")] prev_redqueen_coverage: BTreeSet<RedqueenCoverage>,
-    #[cfg(feature = "redqueen")] redqueen_rules: BTreeMap<u64, BTreeSet<RedqueenRule>>,
     #[cfg(feature = "redqueen")] redqueen_breakpoints: Option<Vec<(u64, RedqueenArguments)>>,
 ) -> Result<()> {
     /// Helper macro to time the individual components of resetting the guest state
@@ -741,8 +717,6 @@ fn start_core<FUZZER: Fuzzer>(
         config.clone(),
         unwinders,
         #[cfg(feature = "redqueen")]
-        redqueen_rules,
-        #[cfg(feature = "redqueen")]
         redqueen_breakpoints,
     )?;
 
@@ -803,18 +777,6 @@ fn start_core<FUZZER: Fuzzer>(
                 }
             }
 
-            /*
-            // Sync this core's redqueen rules with the main thread's rules
-            if fuzzvm.core_id <= REDQUEEN_CORES {
-                // Add this core's rules to the total rules from the main thread
-                curr_stats.redqueen_rules.append(&mut fuzzvm.redqueen_rules);
-
-                // Copy the newly updated main thread's stats to this core (effectively
-                // syncing the rules with the core)
-                fuzzvm.redqueen_rules = curr_stats.redqueen_rules.clone();
-            }
-            */
-
             // Reset the last corpus sync counter
             last_corpus_sync = Instant::now();
         }
@@ -826,12 +788,14 @@ fn start_core<FUZZER: Fuzzer>(
                 core_stats.lock().unwrap().iterations += iters;
 
                 // Reset the local coverage to match the global coverage set in stats
-                /*
-                core_stats.lock().unwrap().redqueen_coverage.append(&mut redqueen_coverage);
+                core_stats
+                    .lock()
+                    .unwrap()
+                    .redqueen_coverage
+                    .append(&mut redqueen_coverage);
                 for cov in &core_stats.lock().unwrap().redqueen_coverage {
                     redqueen_coverage.insert(*cov);
                 }
-                */
 
                 // Update the number of remaining number of coverage breakpoints
                 if let Some(ref cov_bps) = fuzzvm.coverage_breakpoints {
@@ -877,60 +841,107 @@ fn start_core<FUZZER: Fuzzer>(
             fuzzer.schedule_next_input(&corpus, &mut rng, dictionary)
         );
 
-        let original_file = input.fuzz_hash();
-
+        let original_file_hash = input.fuzz_hash();
         let orig_corpus_len = corpus.len();
         let orig_coverage_len = coverage.len();
 
         // Gather redqueen for this input if there aren't already replacement rules found
         #[cfg(feature = "redqueen")]
         if fuzzvm.redqueen_breakpoints.is_some() {
-            time!(Redqueen, {
-                let input_hash = input.fuzz_hash();
+            let input_hash = input.fuzz_hash();
+            let new_input = !fuzzvm.redqueen_rules.contains_key(&original_file_hash);
 
-                // If this input has never been through redqueen or hit the small change to go through again,
-                // execute redqueen on this input
-                if fuzzvm.core_id <= config.redqueen.cores
-                    && (!fuzzvm.redqueen_rules.contains_key(&input_hash)
-                        || fuzzvm.rng.next() % 0x1000 == 42)
-                {
-                    let redqueen_time_spent = Duration::from_secs(0);
+            // Gather redqueen rules for this input
+            if new_input {
+                let _coverage = fuzzvm.reset_and_run_with_redqueen(
+                    &input,
+                    &mut fuzzer,
+                    vm_timeout,
+                    &mut coverage,
+                )?;
 
-                    // Signal this thread is in redqueen
-                    core_stats.lock().unwrap().in_redqueen = true;
-                    core_stats.lock().unwrap().iterations = 0;
+                let num_rules = fuzzvm
+                    .redqueen_rules
+                    .get(&original_file_hash)
+                    .map(|x| x.len())
+                    .unwrap_or(0);
 
-                    let orig_corpus_len = corpus.len();
+                log::info!("{core_id:?} {original_file_hash:#x} rules: {num_rules}",);
 
-                    // Execute redqueen for this input
-                    fuzzvm.gather_redqueen(
-                        &input,
-                        &mut fuzzer,
-                        vm_timeout,
-                        &mut corpus,
-                        &mut coverage,
-                        &mut redqueen_coverage,
-                        redqueen_time_spent,
-                        &project_dir.join("metadata"),
-                    )?;
+                fuzzer.reset_fuzzer_state();
 
-                    /*
-                    let Some(rules) = fuzzvm.redqueen_rules.get(&input_hash) else {
-                        panic!("No rules generated for hash: {input_hash:#x}");
-                    };
-                    */
+                // Reset the guest state
+                let _guest_reset_perf = fuzzvm.reset_guest_state(&mut fuzzer)?;
+            }
 
-                    // Signal this thread is in not in redqueen
-                    core_stats.lock().unwrap().in_redqueen = false;
+            // If this input has never been through redqueen or hit the small change to go through again,
+            // execute redqueen on this input
+            if fuzzvm.core_id <= config.redqueen.cores && new_input
+            // && (new_input || fuzzvm.rng.next() % 0x1000 == 42)
+            {
+                let redqueen_time_spent = Duration::from_secs(0);
 
-                    // If redqueen found new inputs, write them to disk
-                    if corpus.len() > orig_corpus_len {
-                        for input in &corpus {
-                            save_input_in_dir(input, &corpus_dir)?;
-                        }
+                // Signal this thread is in redqueen
+                core_stats.lock().unwrap().in_redqueen = true;
+                core_stats.lock().unwrap().iterations = 0;
+
+                let orig_corpus_len = corpus.len();
+
+                // Execute redqueen for this input
+                let start = crate::utils::rdtsc();
+                let (iters, perf) = fuzzvm.gather_redqueen(
+                    &input,
+                    &mut fuzzer,
+                    vm_timeout,
+                    &mut corpus,
+                    &mut coverage,
+                    &mut redqueen_coverage,
+                    redqueen_time_spent,
+                    &project_dir.join("metadata"),
+                )?;
+
+                let mut redqueen_elapsed = crate::utils::rdtsc() - start;
+                redqueen_elapsed -= perf.in_vm;
+                redqueen_elapsed -= perf.pre_run_vm;
+                redqueen_elapsed -= perf.post_run_vm;
+
+                // Update the stats for spending time in redqueen
+                core_stats
+                    .lock()
+                    .unwrap()
+                    .perf_stats
+                    .add(PerfMark::InVm, perf.in_vm);
+                core_stats
+                    .lock()
+                    .unwrap()
+                    .perf_stats
+                    .add(PerfMark::PreRunVm, perf.pre_run_vm);
+                core_stats
+                    .lock()
+                    .unwrap()
+                    .perf_stats
+                    .add(PerfMark::PostRunVm, perf.post_run_vm);
+                core_stats
+                    .lock()
+                    .unwrap()
+                    .perf_stats
+                    .add(PerfMark::Redqueen, redqueen_elapsed);
+
+                // Update the iterations that occurred during redqueen
+                core_stats.lock().unwrap().iterations += iters;
+
+                // Signal this thread is in not in redqueen
+                core_stats.lock().unwrap().in_redqueen = false;
+
+                // If redqueen found new inputs, write them to disk
+                /*
+                if corpus.len() > orig_corpus_len {
+                    for input in &corpus {
+                        save_input_in_dir(input, &corpus_dir)?;
                     }
                 }
-            });
+                */
+            }
 
             /*
             // Sanity check redqueen breakpoints are being overwritten
@@ -1194,7 +1205,7 @@ fn start_core<FUZZER: Fuzzer>(
                 fuzzer.handle_crash(&input, &mut fuzzvm, &crash_file)?;
 
                 let mutation_metadata = InputMetadata {
-                    original_file,
+                    original_file: original_file_hash,
                     mutation: mutation.clone(),
                     new_coverage,
                 };
@@ -1225,7 +1236,7 @@ fn start_core<FUZZER: Fuzzer>(
                 .collect();
 
             let mutation_metadata = InputMetadata {
-                original_file,
+                original_file: original_file_hash,
                 mutation,
                 new_coverage,
             };
@@ -1325,7 +1336,11 @@ fn start_core<FUZZER: Fuzzer>(
 
     // Append the current coverage
     core_stats.lock().unwrap().coverage.append(&mut coverage);
-    // core_stats.lock().unwrap().redqueen_coverage.append(&mut redqueen_coverage);
+    core_stats
+        .lock()
+        .unwrap()
+        .redqueen_coverage
+        .append(&mut redqueen_coverage);
 
     // Write this current corpus to disk
     for input in &corpus {

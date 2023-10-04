@@ -138,8 +138,6 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         contexts.push(tmp);
     }
 
-    let prev_redqueen_rules = BTreeMap::new();
-
     // Create a 64-bit VM for fuzzing
     let mut fuzzvm = FuzzVm::<FUZZER>::create(
         u64::try_from(core_id.id)?,
@@ -154,7 +152,6 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         symbols,
         config,
         StackUnwinders::default(),
-        prev_redqueen_rules,
         redqueen_breakpoints,
     )?;
 
@@ -170,7 +167,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     //  coverage breakpoints for this command).
     let mut covbps = BTreeSet::new();
 
-    let coverage =
+    let (coverage, _perf) =
         fuzzvm.reset_and_run_with_redqueen(&input, &mut fuzzer, vm_timeout, &mut covbps)?;
 
     for RedqueenCoverage {

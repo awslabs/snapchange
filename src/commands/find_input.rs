@@ -62,9 +62,6 @@ fn start_core<FUZZER: Fuzzer>(
     );
 
     #[cfg(feature = "redqueen")]
-    let redqueen_rules = BTreeMap::new();
-
-    #[cfg(feature = "redqueen")]
     let redqueen_breakpoints = None;
 
     // Create a 64-bit VM for fuzzing
@@ -81,8 +78,6 @@ fn start_core<FUZZER: Fuzzer>(
         symbols,
         config,
         StackUnwinders::default(),
-        #[cfg(feature = "redqueen")]
-        redqueen_rules,
         #[cfg(feature = "redqueen")]
         redqueen_breakpoints,
     )?;
@@ -296,7 +291,9 @@ pub(crate) fn run<FUZZER: Fuzzer>(
 
     for t in threads {
         let res = t.join();
-        let Ok(Ok(files)) = res else { continue; };
+        let Ok(Ok(files)) = res else {
+            continue;
+        };
 
         for file in files {
             found.insert(file);
