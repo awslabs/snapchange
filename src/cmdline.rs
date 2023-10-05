@@ -770,13 +770,40 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         std::fs::write(dir.join("config.toml"), &toml::to_string(&config)?)?;
     }
 
+    // Parse the available redqueen cmps files
+    // Also gather the redqueen breakpoint addresses to remove them from the
+    // coverage breakpoints
+    let mut redqueen_breakpoints = None;
+    let mut redqueen_bp_addrs: BTreeSet<u64> = BTreeSet::new();
+    if !cmps_paths.is_empty() {
+        let mut result = Vec::new();
+        for cmps_path in &cmps_paths {
+            let rules = parse_cmps(cmps_path)?;
+            for (addr, _) in &rules {
+                redqueen_bp_addrs.insert(*addr);
+            }
+
+            result.extend(rules);
+        }
+
+        redqueen_breakpoints = Some(result);
+    }
+
     let mut coverage_breakpoints: Option<BTreeSet<VirtAddr>> = None;
     let mut coverage_breakpoints_src = None;
 
     for covbps_path in &covbps_paths {
         let covbps = coverage_breakpoints.get_or_insert(BTreeSet::new());
 
-        let bps = parse_coverage_breakpoints(&covbps_path)?;
+        let mut bps = parse_coverage_breakpoints(&covbps_path)?;
+
+        // Ensure no coverage breakpoints are redqueen breakpoints as the
+        // redqueen breakpoints are not one-shot and will be reapplied
+        // even when they are hit
+        bps = bps
+            .into_iter()
+            .filter(|addr| !redqueen_bp_addrs.contains(&addr.0))
+            .collect();
 
         let module = covbps_path
             .file_prefix()
@@ -805,17 +832,6 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
 
         covbps.extend(bps);
         coverage_breakpoints_src = Some(covbps_path.with_extension("covbps_src"));
-    }
-
-    // Parse the available redqueen cmps files
-    let mut redqueen_breakpoints = None;
-    if !cmps_paths.is_empty() {
-        let mut result = Vec::new();
-        for cmps_path in &cmps_paths {
-            result.extend(parse_cmps(cmps_path)?);
-        }
-
-        redqueen_breakpoints = Some(result);
     }
 
     // Check if the source lines for the coverage breakpoints has already been written
