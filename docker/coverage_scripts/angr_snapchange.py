@@ -143,7 +143,8 @@ logger.info(
 
 # easy mode...
 addrs = set()
-with open(f"{binary_name}.angr.covbps", "w") as f:
+outfile = cliargs.binary.parent / f"{binary_name}.angr.covbps"
+with outfile.open("w") as f:
     # angr/vex splits BBs after call instructions, so we have a couple of unnecessary breakpoints using this.
     # `addrs = sorted([bb.addr for bb in cfg.graph.nodes()])`
     # alternative:

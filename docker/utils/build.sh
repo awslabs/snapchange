@@ -52,6 +52,9 @@ fi
 if [[ -z "$BUSYBOX_STATIC" ]]; then
     BUSYBOX_STATIC=/busybox.static
 fi
+if [[ -z "$SNAPSHOT_ENV" ]]; then
+    SNAPSHOT_ENV=""
+fi
 
 source $SNAPCHANGE_ROOT/utils/log.sh || { echo "Failed to source $SNAPCHANGE_ROOT/utils/log.sh"; exit 1; }
 
@@ -140,11 +143,23 @@ rm "$RC_LOCAL" || true
 cat > "$RC_LOCAL" <<EOF
 #!/bin/sh -ex
 
+if test -e /etc/profile; then
+    . /etc/profile
+fi
+
 export SNAPSHOT=1
+export SNAPCHANGE=1
+export SNAPCHANGE_SNAPSHOT=1
 
 echo "[+] snapshotting program: $SNAPSHOT_ENTRYPOINT $SNAPSHOT_ENTRYPOINT_ARGUMENTS"
 
 EOF
+
+if test -n "$SNAPSHOT_ENV"; then
+    for var in $SNAPSHOT_ENV; do
+        echo "export $var" >> "$RC_LOCAL"
+    done
+fi
 
 DIR_HAS_GDB=0
 GDB_PATH="$(find "$DIR" -name gdb -type f | head -n 1)"
@@ -183,13 +198,33 @@ fi
 
 # If user is not root, run gdb under gdb in order to gain kernel symbols as root
 if [ $USER != 'root' ]; then
-    cat > "$RC_LOCAL" <<EOF
-echo "[+] obtaining kernel symbols by running gdb under gdb"
-\$GDB --command=$GDBCMDS --args \$GDB
+    pushd /tmp/
+    # we build a small program that does nothing but trigger a pre-set
+    # breakpoint. We can use this program to run gdb under root; wait till we
+    # hit the breakpoint. dump all symbols (including kernel symbols) using the
+    # normal gdb commands. Kernel symbols won't change across processes so this
+    # is fine. However, we don't want symbols of the true.bp binary, so we
+    # strip the binary.
+    cat > true.bp.c <<EOF
+int main(void) {
+__asm("int3");
+return 0;
+}
+EOF
+    # we create the true.bp binary with CFLAGS to achieve minimal size
+    make true.bp CFLAGS="-Os -static -s -ffunction-sections -fdata-sections -Wl,-gc-sections"
+    strip true.bp
+    du -H true.bp
+    mv true.bp $DIR/
+    rm true.bp.c
+    popd
+
+    cat >> "$RC_LOCAL" <<EOF
+echo "[+] obtaining kernel symbols by running gdb as root"
+\$GDB --batch --command=$GDBCMDS --args /true.bp
 mv /tmp/gdb.symbols /tmp/gdb.symbols.root
 rm /tmp/gdb.modules
 rm /tmp/gdb.vmmap
-
 EOF
 fi
 
@@ -340,7 +375,12 @@ if [[ ! -e "$DIR/init" ]]; then
   cat > "$DIR/init" <<EOF
 #!/bin/sh
 
+# basic PATH setup... should be almost universal
 export PATH=\$PATH:/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin:/usr/local/sbin
+
+if test -e /etc/profile; then
+    . /etc/profile
+fi
 
 echo "[+] Mounting /dev /proc /sys"
 mount -t devtmpfs dev /dev

@@ -60,18 +60,25 @@ You can also specify this on the docker commandline with `-e SNAPSHOT_ENTRYPOINT
 There are several environment options that control how snapchange creates a snapshot.
 
 * `SNAPSHOT_ENTRYPOINT` - **REQUIRED** full path to the binary that is being fuzzed/snapshotted.
-* `SNAPSHOT_ENTRYPOINT_ARGUMENTS=""` - cli arguments passed to the snapshot entry point
-* `SNAPSHOT_USER="root"` - the user that runs the binary.
-* `SNAPSHOT_EXTRACT=""` - a space separated list of paths to extract along with the snapshotting (e.g., additional binaries etc.)
+* `SNAPSHOT_ENTRYPOINT_ARGUMENTS=""` - cli arguments passed to the snapshot entry point.
+* `SNAPSHOT_ENTRYPOINT_CWD` - working directory of the snapshot entrypoint.
+* `SNAPSHOT_USER="root"` - the user that runs the binary within the image. Make sure the user exists in the harness docker image.
+* `SNAPSHOT_EXTRACT=""` - a space separated list of paths to extract from the image to the snapshot directory (e.g., use libraries, additional binaries, etc.).
   * for example: `SNAPSHOT_EXTRACT="/etc/fstab /usr/lib/libc.so"`
 * `SNAPSHOT_INPUT="/image/"` - the path where the snapshot input is stored. Ususally you don't need to change that.
 * `SNAPSHOT_CHOWN_TO="1000"` - the snapshot is `chown -R`'ed for convenience. Set to `""` to disable.
 * to specify a custom kernel:
   * `SNAPSHOT_KERNEL_IMG` - path to bootable kernel image ("bzimage") passed to qemu's direct kernel boot.
   * `SNAPSHOT_KERNEL_ELF` - path to unstripped kernel ELF file - used to lookup kernel symbols.
-
-There are some more specialized options that you can pass to the snapshoting.
+* `SNAPSHOT_ENV` - a space separate list of `VAR=val` pairs that are exported as environment variables before launching the harness.
+  
+There are some more exotic options that you can pass to the snapshot script.
 
 * `LIBFUZZER=0` - set to 1 to enable special handling of creating snapshots from libfuzzer fuzzing harnesses.
 * `KASAN=0` - set to 1 to use a KASAN-enabled kernel.
 * `TEMPLATE_OUT="/out/"` - if you run the container with `template` as first argument, it will copy a rust fuzzer template into this directory.
+* `GENERATE_COVERAGE_BREAKPOINTS` - set to 0 to disable automatic coverage breakpoint generation with one of the coverage scripts.
+* `COVERAGE_BREAKPOINT_COMMAND` - configure the coverage script used.
+    * set to `ghidra`, `angr`, `binaryninja`, or `rizin` to use one of the scripts we ship. We recommend `ghidra` (the default), but other script might offer 
+      better (or worse) analysis results. For example, currently only `angr` supports automatically generating a fuzzing dictionary from the binary. 
+    * can be set to a custom command to obtain coverage breakpoints.
