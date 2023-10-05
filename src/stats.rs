@@ -55,6 +55,9 @@ pub struct Stats<FUZZER: Fuzzer> {
     /// Number of iterations this core has performed
     pub iterations: u64,
 
+    /// Number of iterations this core has performed in redqueen
+    pub rq_iterations: u64,
+
     /// Signals to a core to force exit
     pub forced_shutdown: bool,
 
@@ -134,11 +137,17 @@ pub struct GlobalStats {
     /// Total coverage seen
     pub coverage: usize,
 
+    /// Total coverage seen in redqueen
+    pub rq_coverage: usize,
+
     /// Seconds since the last coverage
     pub last_coverage: u64,
 
     /// Executions per second (total)
     pub exec_per_sec: u64,
+
+    /// Executions per second (total) in Redqueen
+    pub rq_exec_per_sec: u64,
 
     /// Number of timeouts
     pub timeouts: u32,
@@ -352,10 +361,15 @@ impl_enum!(
     pub enum TuiPerfStats {
         Poll,
         AccumulateStats,
+        ClearTimeline,
         AccumulateTimeline,
+        AccumulateTimelineDifference,
         AccumulateTimelineSource,
         AccumulateAppendCoverage,
         AccumulateCoverageDifference,
+        AccumulateTimelineRedqueen,
+        ClearTimelineRedqueen,
+        AccumulateAppendCoverageRedqueen,
         NewInput,
         WriteGraphs,
         UpdateTotalStats,
@@ -725,6 +739,7 @@ pub fn worker<FUZZER: Fuzzer>(
     // let coverage_src = project_dir.join("coverage.src");
     let coverage_lcov = project_dir.join("coverage.lcov");
     let coverage_in_order = project_dir.join("coverage.in_order");
+    let coverage_redqueen_in_order = project_dir.join("coverage.redqueen.in_order");
     let coverage_redqueen = project_dir.join("coverage.redqueen");
     // let redqueen_rules_path = project_dir.join("redqueen.rules");
     let plot_exec_per_sec = data_dir.join("exec_per_sec.plot");
@@ -737,6 +752,7 @@ pub fn worker<FUZZER: Fuzzer>(
 
     // Average stats used for the stats TUI
     let mut exec_per_sec;
+    let mut rq_exec_per_sec;
     let mut dirty_pages = 0;
     let mut dirty_pages_kvm = 0;
     let mut dirty_pages_custom = 0;
@@ -754,9 +770,11 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut last_coverage = std::time::Instant::now();
 
     let mut total_iters: u64 = 0;
+    let mut total_rq_iters: u64 = 0;
 
     // Rolling window to calculate most recent iterations
     let mut sum_iters = [0_u64; ITERS_WINDOW_SIZE];
+    let mut sum_rq_iters = [0_u64; ITERS_WINDOW_SIZE];
     let mut sum_dirty_pages = [0_u64; ITERS_WINDOW_SIZE];
     let mut sum_dirty_pages_kvm = [0_u64; ITERS_WINDOW_SIZE];
     let mut sum_dirty_pages_custom = [0_u64; ITERS_WINDOW_SIZE];
@@ -855,6 +873,7 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut curr_tui_perf_stats = Vec::new();
     let mut vmexit_stats = Vec::new();
     let mut diffs: Vec<VirtAddr> = Vec::new();
+    let mut redqueen_diffs: Vec<_> = Vec::new();
 
     /// Time the $expr and return the result of $expr
     macro_rules! time {
@@ -884,6 +903,7 @@ pub fn worker<FUZZER: Fuzzer>(
 
         // Reset the time window stats for this iteration window
         sum_iters[iters_index] = 0;
+        sum_rq_iters[iters_index] = 0;
         sum_dirty_pages[iters_index] = 0;
         sum_dirty_pages_custom[iters_index] = 0;
         sum_dirty_pages_kvm[iters_index] = 0;
@@ -924,12 +944,15 @@ pub fn worker<FUZZER: Fuzzer>(
 
                 // Add the core stats to the total stats across all cores
                 total_iters += stats.iterations;
+                total_rq_iters += stats.iterations;
                 sum_iters[iters_index] += stats.iterations;
+                sum_rq_iters[iters_index] += stats.rq_iterations;
                 sum_timeouts += stats.timeouts;
                 coverage_left += stats.cov_left as u64;
 
                 // Reset the iterations for the core
                 stats.iterations = 0;
+                stats.rq_iterations = 0;
                 stats.dirty_pages_kvm = 0;
                 stats.dirty_pages_custom = 0;
 
@@ -947,8 +970,13 @@ pub fn worker<FUZZER: Fuzzer>(
         );
 
         // Clear the differences accumulator
-        time!(AccumulateTimeline, {
+        time!(ClearTimeline, {
             diffs.clear();
+        });
+
+        // Clear the differences accumulator
+        time!(ClearTimelineRedqueen, {
+            redqueen_diffs.clear();
         });
 
         // Calculate the current statistics
@@ -962,15 +990,28 @@ pub fn worker<FUZZER: Fuzzer>(
 
             // Gather the differences while holding the lock, and then process
             // the difference after releasing the lock
-            time!(AccumulateTimeline, {
+            time!(AccumulateTimelineDifference, {
                 for addr in stats.coverage.difference(&total_coverage) {
                     diffs.push(*addr);
+                }
+            });
+
+            // Gather the differences while holding the lock, and then process
+            // the difference after releasing the lock
+            time!(AccumulateTimelineRedqueen, {
+                for cov in stats.redqueen_coverage.difference(&total_redqueen_coverage) {
+                    redqueen_diffs.push(*cov);
                 }
             });
 
             // Collect the coverage for this core to the total coverage
             time!(AccumulateAppendCoverage, {
                 total_coverage.append(&mut stats.coverage);
+            });
+
+            // Collect the redqueen coverage for this core to the total coverage
+            time!(AccumulateAppendCoverage, {
+                total_redqueen_coverage.append(&mut stats.redqueen_coverage);
             });
 
             time!(AccumulateCoverageDifference, {
@@ -1048,9 +1089,16 @@ pub fn worker<FUZZER: Fuzzer>(
             }
         });
 
+        time!(AccumulateTimelineRedqueen, {
+            for rq_diff in &redqueen_diffs {
+                coverage_timeline.push(format!("{rq_diff:x?}"));
+            }
+        });
+
         let time_window = ITERS_WINDOW_SIZE as u64 * PRINT_SLEEP.as_secs();
 
         exec_per_sec = sum_iters.iter().sum::<u64>() / time_window;
+        rq_exec_per_sec = sum_rq_iters.iter().sum::<u64>() / time_window;
         if alive > 0 {
             dirty_pages = sum_dirty_pages.iter().sum::<u64>() / time_window / alive;
             dirty_pages_kvm = sum_dirty_pages_kvm.iter().sum::<u64>() / time_window / alive;
@@ -1307,13 +1355,8 @@ pub fn worker<FUZZER: Fuzzer>(
                     curr_stats.coverage = total_coverage.clone();
 
                     // Update the redqueen rules and coverage for this core
-                    // if core_id as u64 <= REDQUEEN_CORES {
                     total_redqueen_coverage.append(&mut curr_stats.redqueen_coverage);
-                    // total_redqueen_rules.append(&mut curr_stats.redqueen_rules);
-
                     curr_stats.redqueen_coverage = total_redqueen_coverage.clone();
-                    // curr_stats.redqueen_rules = total_redqueen_rules.clone();
-                    // }
 
                     let corpus_len = total_corpus.len();
 
@@ -1350,8 +1393,10 @@ pub fn worker<FUZZER: Fuzzer>(
 
                     // Give the core worker a new corpus if it hasn't picked up the existing
                     // corpus already.
+                    let in_redqueen = curr_stats.in_redqueen;
+
                     if let Some(ref mut new_corpus) = &mut curr_stats.new_corpus {
-                        if !new_corpus.is_empty() {
+                        if !new_corpus.is_empty() && !in_redqueen {
                             log::info!("{core_id} hasn't picked up old corpus");
 
                             // Core hasn't yet picked up the old corpus
@@ -1604,8 +1649,10 @@ pub fn worker<FUZZER: Fuzzer>(
             time: format!("{hours:02}:{minutes:02}:{seconds:02}"),
             iterations: total_iters,
             coverage: total_coverage.len(),
+            rq_coverage: total_redqueen_coverage.len(),
             last_coverage: last_coverage.elapsed().as_secs(),
             exec_per_sec,
+            rq_exec_per_sec,
             timeouts: sum_timeouts,
             coverage_left,
             dirty_pages,

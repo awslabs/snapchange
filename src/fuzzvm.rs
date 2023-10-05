@@ -32,6 +32,7 @@ use crate::msr::Msr;
 use crate::page_table::Translation;
 use crate::rng::Rng;
 use crate::stack_unwinder::{StackUnwinders, UnwindInfo};
+use crate::stats::Stats;
 use crate::symbols::Symbol;
 use crate::utils::rdtsc;
 use crate::vbcpu::VbCpu;
@@ -48,7 +49,7 @@ use crate::{
 use std::collections::{BTreeMap, VecDeque};
 use std::convert::TryInto;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "redqueen")]
@@ -4205,6 +4206,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         // Initialize the output coverage
         let mut rq_coverage = BTreeSet::new();
         let mut rq_hitcounts = BTreeMap::new();
+        let mut added_input = false;
 
         // Top of the run iteration loop for the current fuzz case
         loop {
@@ -4217,7 +4219,13 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             let ret = self.run(&mut perf)?;
 
             if let FuzzVmExit::CoverageBreakpoint(rip) = &ret {
-                log::debug!("{:#x}: New coverage bp: {rip:#x}", input.fuzz_hash());
+                /*
+                log::info!(
+                    "{:#x}: New coverage bp in redqueen: {rip:#x}",
+                    input.fuzz_hash()
+                );
+                */
+
                 coverage.insert(VirtAddr(*rip));
             }
 
@@ -4405,9 +4413,9 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         self.apply_redqueen_breakpoints(fuzzer)?;
 
         // Run the guest until reset, gathering redqueen redqueen rules
-        let coverage = self.run_until_reset_redqueen(fuzzer, input, vm_timeout, coverage)?;
+        let rq_coverage = self.run_until_reset_redqueen(fuzzer, input, vm_timeout, coverage)?;
 
-        Ok(coverage)
+        Ok(rq_coverage)
     }
 
     /// Populate the `redqueen_rules` for the given `input`
@@ -4422,12 +4430,28 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         redqueen_coverage: &mut BTreeSet<RedqueenCoverage>,
         time_spent: Duration,
         metadata_dir: &PathBuf,
-    ) -> Result<(u64, VmRunPerf)> {
+        core_stats: &Arc<Mutex<Stats<FUZZER>>>,
+        recursion: usize,
+    ) -> Result<VmRunPerf> {
+        macro_rules! sync_redqueen_coverage {
+            () => {
+                // Reset the local coverage to match the global coverage set in stats
+                core_stats
+                    .lock()
+                    .unwrap()
+                    .redqueen_coverage
+                    .append(redqueen_coverage);
+
+                for cov in &core_stats.lock().unwrap().redqueen_coverage {
+                    redqueen_coverage.insert(*cov);
+                }
+            };
+        }
+
+        sync_redqueen_coverage!();
+
         // Init an rng for this gathering of redqueen
         let mut rng = Rng::new();
-
-        // Init the number of iterations that occured in redqueen
-        let mut iterations = 0;
 
         // Initialize the performance counters for executing a VM
         let mut perf = crate::fuzzvm::VmRunPerf::default();
@@ -4442,25 +4466,34 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             self.redqueen_rules.remove(&fuzz_hash);
 
             log::info!("Core {:#x} Redqueen TIMEOUT: {time_spent:?}", self.core_id);
-            return Ok((iterations, perf));
+            return Ok(perf);
         }
 
         // Begin the timer for this iteration of redqueen
         let start_time = std::time::Instant::now();
 
+        let mut cov_before = BTreeSet::new();
+
         // Gather then original redqueen rules for this input
         let (orig_coverage, curr_perf) =
-            self.reset_and_run_with_redqueen(input, fuzzer, vm_timeout, coverage)?;
+            self.reset_and_run_with_redqueen(input, fuzzer, vm_timeout, &mut cov_before)?;
+
+        let diff = cov_before.difference(&coverage).collect::<Vec<_>>();
+
+        if !diff.is_empty() {
+            log::warn!("Gained coverage in redqueen 1?! {diff:x?}");
+        }
 
         perf += curr_perf;
-        iterations += 1;
+        core_stats.lock().unwrap().rq_iterations += 1;
 
-        if let Some(orig_rules) = self.redqueen_rules.remove(&fuzz_hash) {
-            // Replace all of the 2+ byte substrings that need to be replaced via the redqueen rules
-            // (Colorization phase from the Redqueen paper)
-            // This is to reduce the number of possible redqueen locations in the input
-            let mut max_entropy_input = input.clone();
+        // if let Some(orig_rules) = self.redqueen_rules.remove(&fuzz_hash) {
+        // Replace all of the 2+ byte substrings that need to be replaced via the redqueen rules
+        // (Colorization phase from the Redqueen paper)
+        // This is to reduce the number of possible redqueen locations in the input
+        // let mut max_entropy_input = input.clone();
 
+        /*
             for rule in &orig_rules {
                 let candidates = max_entropy_input.get_redqueen_rule_candidates(rule);
 
@@ -4482,7 +4515,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                         )?;
 
                         perf += curr_perf;
-                        iterations += 1;
+                        core_stats.lock().unwrap().rq_iterations += 1;
 
                         if entropy_coverage == orig_coverage {
                             // Keep this entropy input since it has the same coverage
@@ -4497,134 +4530,147 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
             // Update the performance metrics
             perf += curr_perf;
-            iterations += 1;
+            core_stats.lock().unwrap().rq_iterations += 1;
+        */
 
-            if let Some(rules) = self.redqueen_rules.remove(&max_entropy_input.fuzz_hash()) {
-                // log::info!("Calling RQ from {fuzz_hash:#x}: {rules:x?}");
-                for rule in &rules {
-                    // Apply this redqueen rule
-                    let candidates = max_entropy_input.get_redqueen_rule_candidates(rule);
-                    // log::info!("{rule:x?} Candidates {}", candidates.len());
+        if let Some(rules) = self.redqueen_rules.remove(&fuzz_hash) {
+            // log::info!("Calling RQ from {fuzz_hash:#x}: {rules:x?}");
+            for rule in &rules {
+                // Apply this redqueen rule
+                let candidates = input.get_redqueen_rule_candidates(rule);
+                // log::info!("{rule:x?} Candidates {}", candidates.len());
 
-                    for candidate in &candidates {
-                        let mut new_input = max_entropy_input.clone();
-                        let original_file = input.fuzz_hash();
+                for candidate in &candidates {
+                    let mut new_input = input.clone();
+                    let original_file = input.fuzz_hash();
 
-                        // Apply the given rule with the candidate
-                        let mutation = new_input.apply_redqueen_rule(rule, candidate);
+                    // Apply the given rule with the candidate
+                    let mutation = new_input.apply_redqueen_rule(rule, candidate);
 
-                        // Get the coverage of this mutated input, only using the specific redqueen
-                        // breakpoint for this targetted rule
-                        let (new_rq_coverage, curr_perf) = self.reset_and_run_with_redqueen(
-                            &new_input, fuzzer, vm_timeout, coverage,
-                        )?;
+                    let mut new_coverage = BTreeSet::new();
 
-                        perf += curr_perf;
-                        iterations += 1;
+                    // Get the coverage of this mutated input, only using the specific redqueen
+                    // breakpoint for this targetted rule
+                    let (new_rq_coverage, curr_perf) = self.reset_and_run_with_redqueen(
+                        &new_input,
+                        fuzzer,
+                        vm_timeout,
+                        &mut new_coverage,
+                    )?;
 
-                        // If we've found new coverage, add the new input to the corpus
-                        let mut new_coverage = Vec::new();
-                        for cov in new_rq_coverage {
-                            if redqueen_coverage.insert(cov) {
-                                log::info!(
-                                    "{:?} | {:#x}: New rq bp: {:x?}",
-                                    self.core_id,
-                                    input.fuzz_hash(),
-                                    cov
-                                );
-
-                                new_coverage.push(CoverageType::Redqueen(cov));
-                            }
-                        }
-
-                        // If this input found new coverage, add it to the corpus
-                        // and execute Redqueen on this new input
-                        if !new_coverage.is_empty() {
-                            // Ensure the metadata directory exists
-                            if !metadata_dir.exists() {
-                                std::fs::create_dir(metadata_dir)?;
-                            }
-
-                            // Get the fuzz hash for this input
-                            let hash = new_input.fuzz_hash();
-
-                            let mutation = format!(
-                                "RQ_ONESHOT_{}",
-                                mutation.unwrap_or_else(|| String::from("rq_unknown"))
-                            );
-
-                            // Write the metadata for this mutation
-                            let mutation_metadata = crate::fuzz_input::InputMetadata {
-                                original_file,
-                                mutation: vec![mutation],
-                                new_coverage,
-                            };
-
-                            let filepath = metadata_dir.join(format!("{hash:x}"));
-                            std::fs::write(filepath, serde_json::to_string(&mutation_metadata)?)?;
-
-                            let mut input_bytes = Vec::new();
-                            new_input.to_bytes(&mut input_bytes)?;
-                            let filepath = metadata_dir
-                                .parent()
-                                .unwrap()
-                                .join("current_corpus")
-                                .join(format!("{hash:x}"));
-                            std::fs::write(filepath, &input_bytes)?;
-
-                            input_bytes.clear();
-                            input.to_bytes(&mut input_bytes)?;
-                            let filepath = metadata_dir
-                                .parent()
-                                .unwrap()
-                                .join("current_corpus")
-                                .join(format!("{original_file:x}"));
-                            std::fs::write(filepath, &input_bytes)?;
-
-                            // Add the new input to the corpus
-                            corpus.push(new_input.clone());
-
-                            // Recursively attempt to call Redqueen for this new input
-                            let (iters, curr_perf) = self.gather_redqueen(
-                                &new_input,
-                                fuzzer,
-                                vm_timeout,
-                                corpus,
-                                coverage,
-                                redqueen_coverage,
-                                time_spent + start_time.elapsed(),
-                                metadata_dir,
-                            )?;
-
-                            iterations += iters;
-                            perf += curr_perf;
-
-                            // Found a path through the redqueen breakpoint, add the input
-                            // to the corpus and go to the next rule
-                            // break;
+                    let mut cov_diff = 0;
+                    for new_cov in new_coverage {
+                        if coverage.insert(new_cov) {
+                            core_stats.lock().unwrap().coverage.insert(new_cov);
+                            cov_diff += 1;
                         }
                     }
-                }
 
-                // Restore the max entropy input redqueen rules
-                self.redqueen_rules
-                    .insert(max_entropy_input.fuzz_hash(), rules);
-            } else {
-                // println!("No rules for {:#x}", max_entropy_input.fuzz_hash());
+                    perf += curr_perf;
+                    core_stats.lock().unwrap().rq_iterations += 1;
+
+                    // If we've found new coverage, add the new input to the corpus
+                    let mut new_coverage = Vec::new();
+                    for cov in new_rq_coverage {
+                        if redqueen_coverage.insert(cov) {
+                            log::info!(
+                                "{:?} | {:#x}: New rq bp: {:x?}",
+                                self.core_id,
+                                input.fuzz_hash(),
+                                cov
+                            );
+
+                            new_coverage.push(CoverageType::Redqueen(cov));
+                        }
+                    }
+
+                    // If this input found new coverage, add it to the corpus
+                    // and execute Redqueen on this new input
+                    if !new_coverage.is_empty() || cov_diff > 0 {
+                        // Ensure the metadata directory exists
+                        if !metadata_dir.exists() {
+                            std::fs::create_dir(metadata_dir)?;
+                        }
+
+                        // Get the fuzz hash for this input
+                        let hash = new_input.fuzz_hash();
+
+                        let mutation = format!(
+                            "RQ_ONESHOT_{recursion}_{}_",
+                            mutation.unwrap_or_else(|| String::from("rq_unknown"))
+                        );
+
+                        // Write the metadata for this mutation
+                        let mutation_metadata = crate::fuzz_input::InputMetadata {
+                            original_file,
+                            mutation: vec![mutation],
+                            new_coverage,
+                        };
+
+                        let filepath = metadata_dir.join(format!("{hash:x}"));
+                        std::fs::write(filepath, serde_json::to_string(&mutation_metadata)?)?;
+
+                        let mut input_bytes = Vec::new();
+                        new_input.to_bytes(&mut input_bytes)?;
+                        let filepath = metadata_dir
+                            .parent()
+                            .unwrap()
+                            .join("current_corpus")
+                            .join(format!("{hash:x}"));
+                        std::fs::write(filepath, &input_bytes)?;
+
+                        input_bytes.clear();
+                        input.to_bytes(&mut input_bytes)?;
+                        let filepath = metadata_dir
+                            .parent()
+                            .unwrap()
+                            .join("current_corpus")
+                            .join(format!("{original_file:x}"));
+                        std::fs::write(filepath, &input_bytes)?;
+
+                        // Add the new input to the corpus
+                        corpus.push(new_input.clone());
+
+                        // Immediately send this input out to be sync'd
+                        if core_stats.lock().unwrap().old_corpus.is_none() {
+                            core_stats.lock().unwrap().old_corpus = Some(Vec::new());
+                        }
+
+                        core_stats
+                            .lock()
+                            .unwrap()
+                            .old_corpus
+                            .as_mut()
+                            .unwrap()
+                            .push(new_input.clone());
+
+                        sync_redqueen_coverage!();
+
+                        // Recursively attempt to call Redqueen for this new input
+                        let curr_perf = self.gather_redqueen(
+                            &new_input,
+                            fuzzer,
+                            vm_timeout,
+                            corpus,
+                            coverage,
+                            redqueen_coverage,
+                            time_spent + start_time.elapsed(),
+                            metadata_dir,
+                            core_stats,
+                            recursion + 1,
+                        )?;
+
+                        core_stats.lock().unwrap().rq_iterations += 1;
+                        perf += curr_perf;
+                    }
+                }
             }
 
             // Restore the original input redqueen rules
-            self.redqueen_rules.insert(fuzz_hash, orig_rules);
-        } else {
-            // log::warn!("No RQ rules generated!");
+            self.redqueen_rules.insert(fuzz_hash, rules);
         }
 
-        /*
-        assert!(
-            self.redqueen_rules.contains_key(&fuzz_hash),
-            "No rules found after redqueen"
-        );
-        */
+        sync_redqueen_coverage!();
 
         // Reset the guest state to remove redqueen breakpoints
         let _perf = self.reset_guest_state(fuzzer)?;
@@ -4632,7 +4678,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         // Reset the fuzzer state
         fuzzer.reset_fuzzer_state();
 
-        Ok((iterations, perf))
+        Ok(perf)
     }
 
     /// Get the list of addresses of the backtrace for the current VM state

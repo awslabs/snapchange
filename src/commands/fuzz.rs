@@ -851,33 +851,42 @@ fn start_core<FUZZER: Fuzzer>(
             let input_hash = input.fuzz_hash();
             let new_input = !fuzzvm.redqueen_rules.contains_key(&original_file_hash);
 
-            // Gather redqueen rules for this input
+            // Check if this redqueen core has a new input it hasn't seen
+            if fuzzvm.core_id <= config.redqueen.cores && !new_input {
+                let mut not_yet_seen = Vec::new();
+                for (index, input) in corpus.iter().enumerate() {
+                    let hash = input.fuzz_hash();
+                    if !fuzzvm.redqueen_rules.contains_key(&hash) {
+                        not_yet_seen.push(index);
+                    }
+                }
+
+                // Since this is a redqueen core, prioritize unseen inputs in the corpus
+                if !not_yet_seen.is_empty() {
+                    let index = not_yet_seen[fuzzvm.rng.next() as usize % not_yet_seen.len()];
+                    input = corpus[index].clone();
+                    assert!(!fuzzvm.redqueen_rules.contains_key(&input.fuzz_hash()));
+                }
+            }
+
+            // Gather redqueen rules for this input regardless of requeen core or not since
+            // we can use redqueen rules as a mutation strategy randomly
             if new_input {
-                let _coverage = fuzzvm.reset_and_run_with_redqueen(
+                let (mut rq_coverage, _perf) = fuzzvm.reset_and_run_with_redqueen(
                     &input,
                     &mut fuzzer,
                     vm_timeout,
                     &mut coverage,
                 )?;
 
-                let num_rules = fuzzvm
-                    .redqueen_rules
-                    .get(&original_file_hash)
-                    .map(|x| x.len())
-                    .unwrap_or(0);
-
-                log::info!("{core_id:?} {original_file_hash:#x} rules: {num_rules}",);
-
+                // reset the guest state after gathering redqueen coverage
                 fuzzer.reset_fuzzer_state();
-
-                // Reset the guest state
                 let _guest_reset_perf = fuzzvm.reset_guest_state(&mut fuzzer)?;
             }
 
             // If this input has never been through redqueen or hit the small change to go through again,
             // execute redqueen on this input
-            if fuzzvm.core_id <= config.redqueen.cores && new_input
-            // && (new_input || fuzzvm.rng.next() % 0x1000 == 42)
+            if fuzzvm.core_id <= config.redqueen.cores && (new_input || fuzzvm.rng.next() % 3 == 1)
             {
                 let redqueen_time_spent = Duration::from_secs(0);
 
@@ -889,7 +898,7 @@ fn start_core<FUZZER: Fuzzer>(
 
                 // Execute redqueen for this input
                 let start = crate::utils::rdtsc();
-                let (iters, perf) = fuzzvm.gather_redqueen(
+                let perf = fuzzvm.gather_redqueen(
                     &input,
                     &mut fuzzer,
                     vm_timeout,
@@ -898,6 +907,8 @@ fn start_core<FUZZER: Fuzzer>(
                     &mut redqueen_coverage,
                     redqueen_time_spent,
                     &project_dir.join("metadata"),
+                    core_stats,
+                    0,
                 )?;
 
                 let mut redqueen_elapsed = crate::utils::rdtsc() - start;
@@ -926,9 +937,6 @@ fn start_core<FUZZER: Fuzzer>(
                     .unwrap()
                     .perf_stats
                     .add(PerfMark::Redqueen, redqueen_elapsed);
-
-                // Update the iterations that occurred during redqueen
-                core_stats.lock().unwrap().iterations += iters;
 
                 // Signal this thread is in not in redqueen
                 core_stats.lock().unwrap().in_redqueen = false;

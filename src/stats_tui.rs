@@ -159,9 +159,9 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
                 [
                     Constraint::Length(6),
                     Constraint::Percentage(30),
-                    Constraint::Percentage(23),
-                    Constraint::Percentage(25),
-                    Constraint::Percentage(10),
+                    Constraint::Percentage(13),
+                    Constraint::Percentage(15),
+                    Constraint::Percentage(30),
                 ]
                 .as_ref(),
             )
@@ -175,8 +175,8 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
                 [
                     Constraint::Length(6),
                     Constraint::Percentage(35),
-                    Constraint::Percentage(30),
                     Constraint::Percentage(20),
+                    Constraint::Percentage(30),
                 ]
                 .as_ref(),
             )
@@ -354,16 +354,22 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
         let last_cov_hours = last_cov_elapsed / (60 * 60);
 
         let line = format!(
-            "{} | {} | {}",
+            "{} | {} | {} | {}",
             format!("{:>10}: {:>10}", "Time", general.time),
             format!(
-                "{:>10}: {:22} ({:8.2} per/core)",
+                "{:>11}: {:10} ({:6.2}/core)",
                 "Exec/sec",
                 general.exec_per_sec,
                 general.exec_per_sec / std::cmp::max(1, try_u64!(general.alive)),
             ),
             format!(
-                "{:>10}: {:10} (last seen {last_cov_hours:02}:{last_cov_minutes:02}:{last_cov_seconds:02})",
+                "{:>11}: {:10} ({:6.2}/core)",
+                "RQ Exec/sec",
+                general.rq_exec_per_sec,
+                general.rq_exec_per_sec / std::cmp::max(1, try_u64!(general.in_redqueen.len())),
+            ),
+            format!(
+                "{:>11}: {:10} (last seen {last_cov_hours:02}:{last_cov_minutes:02}:{last_cov_seconds:02})",
                 "Coverage", general.coverage, 
             )
         );
@@ -371,10 +377,11 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
         stats.push('\n');
 
         let line = format!(
-            "{} | {} | {}",
+            "{} | {} | {} | {}",
             format!("{:>10}: {:10}", "Iters", general.iterations),
-            format!("{:>10}: {:42}", "Corpus", general.corpus),
-            format!("{:>10}: {:10}", "Crashes", general.crashes),
+            format!("{:>11}: {:24}", "Corpus", general.corpus),
+            format!("{:>11}: {:24}", "RQ Coverage", general.rq_coverage),
+            format!("{:>11}: {:10}", "Crashes", general.crashes),
         );
         stats.push_str(&line);
         stats.push('\n');
@@ -382,11 +389,11 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
         let line = format!(
             "{} | {} | {} | {}",
             format!("{:>10}: {:10}", "Timeouts", general.timeouts),
-            format!("{:>10}: {:11}", "Cov. Left", general.coverage_left),
-            format!("{:>17}: {:8}", "Dirty Pages / Iter", general.dirty_pages),
+            format!("{:>11}: {:24}", "Cov. Left", general.coverage_left),
+            format!("{:>18}: {:17}", "Dirty Pages / Iter", general.dirty_pages),
             if cfg!(feature = "redqueen") {
                 format!(
-                    "{:>10}: {} | Dead {} | Redqueen {}",
+                    "{:>11}: {} | Dead {} | Redqueen {}",
                     "Alive",
                     general.alive,
                     general.dead.len(),
@@ -394,7 +401,7 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
                 )
             } else {
                 format!(
-                    "{:>10}: {} | Dead {}",
+                    "{:>11}: {} | Dead {}",
                     "Alive",
                     general.alive,
                     general.dead.len(),
