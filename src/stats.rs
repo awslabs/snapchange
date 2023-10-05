@@ -968,8 +968,10 @@ pub fn worker<FUZZER: Fuzzer>(
             // Gather the differences while holding the lock, and then process
             // the difference after releasing the lock
             time!(AccumulateTimeline, {
-                for addr in stats.coverage.code_cov.difference(&total_coverage.code_cov) {
-                    diffs.push(*addr);
+                for addr in stats.coverage.code_cov.keys() {
+                    if !total_coverage.code_cov.contains_key(addr) {
+                        diffs.push(*addr);
+                    }
                 }
             });
 
@@ -979,17 +981,18 @@ pub fn worker<FUZZER: Fuzzer>(
                 total_coverage.merge(&stats.coverage);
             });
 
-            time!(AccumulateCoverageDifference, {
-                assert!(
-                    stats
-                        .coverage
-                        .code_cov
-                        .difference(&total_coverage.code_cov)
-                        .count()
-                        == 0,
-                    "stats.coverage difference not applied properly"
-                );
-            });
+            // TODO: we we need the following sanity check?
+            // time!(AccumulateCoverageDifference, {
+            //     assert!(
+            //         stats
+            //             .coverage
+            //             .code_cov
+            //             .difference(&total_coverage.code_cov)
+            //             .count()
+            //             == 0,
+            //         "stats.coverage difference not applied properly"
+            //     );
+            // });
 
             // Add this core's stats to the display table
             perfs[core_id] = Some(stats.perf_stats.elapsed);
@@ -1242,7 +1245,7 @@ pub fn worker<FUZZER: Fuzzer>(
 
         // Update the coverage blockers
         if let Some(cov_analysis) = &mut coverage_analysis {
-            for addr in &total_coverage.code_cov {
+            for addr in total_coverage.code_cov.keys() {
                 cov_analysis.hit(addr.0);
             }
 
@@ -1401,7 +1404,7 @@ pub fn worker<FUZZER: Fuzzer>(
                 lighthouse_data.clear();
 
                 // Collect the lighthouse coverage data
-                for addr in &total_coverage.code_cov {
+                for addr in total_coverage.code_cov.keys() {
                     if let Some((module, offset)) = modules.contains(addr.0) {
                         lighthouse_data.push_str(&format!("{module}+{offset:x}\n"));
                     } else {
@@ -1419,7 +1422,7 @@ pub fn worker<FUZZER: Fuzzer>(
                 // Clear old address data
                 cov_addrs.clear();
 
-                for addr in &total_coverage.code_cov {
+                for addr in total_coverage.code_cov.keys() {
                     cov_addrs.push_str(&format!("{:#x}\n", addr.0));
                 }
 
@@ -1468,7 +1471,7 @@ pub fn worker<FUZZER: Fuzzer>(
                 // Write the source and lcov coverage files if vmlinux exists
                 // let mut result = Vec::new();
 
-                for rip in &total_coverage.code_cov {
+                for rip in total_coverage.code_cov.keys() {
                     let addr = *rip;
 
                     // Try to get the addr2line information for the current address

@@ -183,7 +183,7 @@ impl Fuzzer for MazeFuzzer {
                             fuzzvm.read_bytes(VirtAddr(ptr_a), fuzzvm.cr3(), &mut a)?;
                             let mut b = [0u8; 16];
                             fuzzvm.read_bytes(VirtAddr(ptr_b), fuzzvm.cr3(), &mut b)?;
-                            if let Some(new_len) = feedback.record_min_prefix_dist(0u64, &a, &b) {
+                            if let Some(new_len) = feedback.record_prefix_dist(0u64, &a, &b) {
                                 log::info!(
                                     "found new minimal code with len {}: {:?} vs. {:?}",
                                     new_len,
