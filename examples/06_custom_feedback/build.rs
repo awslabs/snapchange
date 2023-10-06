@@ -6,10 +6,9 @@ use std::io::Write;
 fn main() {
     println!("cargo:rerun-if-env-changed=MAZE_TARGET");
     let target = std::env::var("MAZE_TARGET").unwrap_or("maze.small.nobt".to_string());
-    
+
     println!("cargo:rerun-if-changed=snapshot/*/fuzzvm.qemuregs");
     println!("cargo:rerun-if-changed=snapshot/*/vm.log");
-
 
     let qemuregs = fs::read_to_string(format!("./snapshot/{target}/fuzzvm.qemuregs")).unwrap();
     let mut w = File::create("src/constants.rs").unwrap();
@@ -33,7 +32,34 @@ fn main() {
     writeln!(w, "pub const INPUT: u64 = {};", input_addr).unwrap();
 
     writeln!(w, "pub const TARGET: &'static str = {:?};", target).unwrap();
-    writeln!(w, "pub const TARGET_LOG_POS: &'static str = {:?};", format!("{target}!log_pos")).unwrap();
-    writeln!(w, "pub const TARGET_LOOSE: &'static str = {:?};", format!("{target}!loose")).unwrap();
-    writeln!(w, "pub const TARGET_BYE: &'static str = {:?};", format!("{target}!bye")).unwrap();
-    writeln!(w, "pub const TARGET_EQ16: &'static str = {:?};", format!("{target}!eq16")).unwrap(); }
+    writeln!(
+        w,
+        "pub const TARGET_LOG_POS: &'static str = {:?};",
+        format!("{target}!log_pos")
+    )
+    .unwrap();
+    writeln!(
+        w,
+        "pub const TARGET_LOSE: &'static str = {:?};",
+        format!("{target}!lose")
+    )
+    .unwrap();
+    writeln!(
+        w,
+        "pub const TARGET_WIN: &'static str = {:?};",
+        format!("{target}!win")
+    )
+    .unwrap();
+    writeln!(
+        w,
+        "pub const TARGET_BYE: &'static str = {:?};",
+        format!("{target}!bye")
+    )
+    .unwrap();
+    writeln!(
+        w,
+        "pub const TARGET_EQ16: &'static str = {:?};",
+        format!("{target}!eq16")
+    )
+    .unwrap();
+}

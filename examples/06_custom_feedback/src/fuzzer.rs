@@ -17,20 +17,17 @@ use crate::constants;
 
 const CR3: Cr3 = Cr3(constants::CR3);
 
-#[derive(Default)]
-pub struct MazeFuzzer {
-    weights: Vec<u32>,
-}
-
+/// Essentially a more restricted `u8`, that only allows the values that are allowed in the game
+/// input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Wasd {
-    W = 119,
-    A = 97,
-    S = 115,
-    D = 100,
-    X = 120,
-    Y = 121,
+    W = b'w',
+    A = b'a',
+    S = b's',
+    D = b'd',
+    X = b'x',
+    Y = b'y',
     Stop = 0,
 }
 
@@ -45,12 +42,14 @@ impl TryFrom<u8> for Wasd {
             b'd' | b'D' => Ok(Wasd::D),
             b'x' | b'X' => Ok(Wasd::X),
             b'y' | b'Y' => Ok(Wasd::Y),
-            0 => Ok(Wasd::Stop),
+            0 | b'\n' | b' ' | b'\t' => Ok(Wasd::Stop),
             _ => Err(anyhow::anyhow!("Invalid WASD")),
         }
     }
 }
 
+// X | Y don't serve any immediate purpose in the first part of the maze game, so we make it less
+// likely that they are generated.
 impl rand::distributions::Distribution<Wasd> for rand::distributions::Standard {
     fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> Wasd {
         match rng.gen_range(0..=9) {
@@ -65,6 +64,7 @@ impl rand::distributions::Distribution<Wasd> for rand::distributions::Standard {
     }
 }
 
+/// Essentially a `Vec<u8>`, but it uses the more restricted [`Wasd`] enum.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct WasdArray {
     data: Vec<Wasd>,
@@ -78,6 +78,16 @@ impl std::default::Default for WasdArray {
     }
 }
 
+#[derive(Default)]
+pub struct MazeFuzzer {
+    /// this is used for input scheduling - assigning weights to each input. The latest corpus entry
+    /// has the biggest weight, while the first one has the smallest. Essentially this one is a
+    /// Range `0..corpus.len()`, but we cache it as a `Vec<u32>` here so that we don't allocate for
+    /// every call the `schedule_next_input`.
+    dist_len: usize,
+    dist: Option<rand::distributions::WeightedIndex<u32>>
+}
+
 impl Fuzzer for MazeFuzzer {
     type Input = WasdArray;
     const START_ADDRESS: u64 = constants::RIP;
@@ -85,14 +95,19 @@ impl Fuzzer for MazeFuzzer {
     const MAX_MUTATIONS: u64 = 4;
 
     fn set_input(&mut self, input: &Self::Input, fuzzvm: &mut FuzzVm<Self>) -> Result<()> {
+        // although the WasdArray should never be too long, we truncate here again anyway.
         let i = input.data.len().min(Self::MAX_INPUT_LENGTH - 1);
+        // then we write the array data.
         let raw_input = unsafe { std::mem::transmute::<&[Wasd], &[u8]>(&input.data[..i]) };
         fuzzvm.write_bytes_dirty(VirtAddr(constants::INPUT), CR3, &raw_input)?;
+        // and we make sure that we have a zero terminator.
         fuzzvm.write_dirty(VirtAddr(constants::INPUT + i as u64), CR3, 0u64)?;
         Ok(())
     }
 
     fn init_snapshot(&mut self, fuzzvm: &mut FuzzVm<Self>) -> Result<()> {
+        // disable printing code by placing immediate returns at the relevant functions.
+        // this is faster than using breakpoints, since it doesn't require a hypercall.
         for sym in &[
             "ld-musl-x86_64.so.1!puts",
             "ld-musl-x86_64.so.1!fputs",
@@ -116,10 +131,7 @@ impl Fuzzer for MazeFuzzer {
     }
 
     fn reset_breakpoints(&self) -> Option<&[AddressLookup]> {
-        Some(&[
-            AddressLookup::SymbolOffset(constants::TARGET_BYE, 0x0),
-            // AddressLookup::SymbolOffset("exit", 0x0)
-        ])
+        Some(&[AddressLookup::SymbolOffset(constants::TARGET_BYE, 0x0)])
     }
 
     fn breakpoints(&self) -> Option<&[Breakpoint<Self>]> {
@@ -128,15 +140,14 @@ impl Fuzzer for MazeFuzzer {
                 // this breakpoint gathers the last (x, y) position in the maze. this is good enough
                 // for the fuzzer to achieve it's goal of reaching the end of the maze.
                 Breakpoint {
-                    lookup: AddressLookup::SymbolOffset(constants::TARGET_LOOSE, 0x0),
+                    lookup: AddressLookup::SymbolOffset(constants::TARGET_LOSE, 0x0),
                     bp_type: BreakpointType::Repeated,
                     bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer, feedback| {
                         if let Some(feedback) = feedback {
-                            let x = fuzzvm.rsi() & 0xffff;
-                            let y = fuzzvm.rdx() & 0xffff;
-                            let pos = x | (y << 16);
-                            if feedback.record(pos) {
-                                log::info!("found new position: {:?}", (x, y));
+                            let x = (fuzzvm.rsi() & 0xffff) as u32;
+                            let y = (fuzzvm.rdx() & 0xffff) as u32;
+                            if feedback.record_pair(x, y) {
+                                log::debug!("found new position: {:?}", (x, y));
                             }
                         }
                         fuzzvm.fake_immediate_return()?;
@@ -157,15 +168,30 @@ impl Fuzzer for MazeFuzzer {
                     bp_type: BreakpointType::Repeated,
                     bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer, feedback| {
                         if let Some(feedback) = feedback {
-                            let x = fuzzvm.rdi() & 0xffff;
-                            let y = fuzzvm.rsi() & 0xffff;
-                            let pos = x | (y << 16);
-                            if feedback.record(pos) {
-                                log::info!("found new position: {:?}", (x, y));
+                            let x = (fuzzvm.rsi() & 0xffff) as u32;
+                            let y = (fuzzvm.rdx() & 0xffff) as u32;
+                            if feedback.record_pair(x, y) {
+                                log::debug!("found new position: {:?}", (x, y));
                             }
                         }
                         fuzzvm.fake_immediate_return()?;
-                        Ok(Execution::CoverageContinue)
+                        Ok(Execution::Continue)
+                    },
+                },
+                // we also record the winning position as custom feedback, otherwise we only see the
+                // position in the feedback when we lose.
+                Breakpoint {
+                    lookup: AddressLookup::SymbolOffset(constants::TARGET_WIN, 0x0),
+                    bp_type: BreakpointType::Repeated,
+                    bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer, feedback| {
+                        if let Some(feedback) = feedback {
+                            let x = (fuzzvm.rdi() & 0xffff) as u32;
+                            let y = (fuzzvm.rsi() & 0xffff) as u32;
+                            if feedback.record_pair(x, y) {
+                                log::debug!("found new winning position: {:?}", (x, y));
+                            }
+                        }
+                        Ok(Execution::Continue)
                     },
                 },
                 // This breakpoint showcases custom feedback to minimize a string distance between
@@ -184,8 +210,8 @@ impl Fuzzer for MazeFuzzer {
                             let mut b = [0u8; 16];
                             fuzzvm.read_bytes(VirtAddr(ptr_b), fuzzvm.cr3(), &mut b)?;
                             if let Some(new_len) = feedback.record_prefix_dist(0u64, &a, &b) {
-                                log::info!(
-                                    "found new minimal code with len {}: {:?} vs. {:?}",
+                                log::debug!(
+                                    "found new minimal code with distance {} - {:?} vs. {:?}",
                                     new_len,
                                     a,
                                     b
@@ -204,13 +230,14 @@ impl Fuzzer for MazeFuzzer {
     fn schedule_next_input(
         &mut self,
         corpus: &[Self::Input],
-        feedback: &mut snapchange::feedback::FeedbackTracker,
+        _feedback: &mut snapchange::feedback::FeedbackTracker,
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
     ) -> Self::Input {
         // bring trait in scope
         use rand::distributions::Distribution;
 
+        // empty corpus -> generate a new input
         if corpus.len() == 0 {
             return <WasdArray as snapchange::FuzzInput>::generate(
                 corpus,
@@ -220,25 +247,24 @@ impl Fuzzer for MazeFuzzer {
             );
         }
 
-        // this distribution makes it extremely likely that the last corpus entry is selected again
+        // we set up a distribution that makes it extremely likely that the last corpus entry is selected again
         // for fuzzing. This is usually the best strategy, since the last entry will be the one that
-        // got the farthest in the maze.
-        if self.weights.len() != corpus.len() {
-            self.weights = (1u32..((corpus.len() + 1) as u32)).collect();
+        // found the farthest in the maze. However, we will cache the distribution in `self` and
+        // only update the distribution when there is a new corpus entry. The idea is that a new
+        // corpus entry is a rare event, while input scheduling is happening in every fuzz loop
+        // iteration, so we move the allocation out of the fuzz loop and cache it in `self`. This
+        // avoids several allocations to create the WeightedIndex distribution.
+        if self.dist_len != corpus.len() || self.dist.is_none() {
+            // no weight should be zero, otherwise the probability of choosing that input is also
+            // zero.
+            let weights = 1u32..=(corpus.len() as u32);
+            self.dist = Some(rand::distributions::WeightedIndex::new(weights).unwrap());
+            self.dist_len = corpus.len();
         }
-        let dist = rand::distributions::WeightedIndex::new(&self.weights).unwrap();
-        let idx = dist.sample(rng) as usize;
-        if let Some(input) = corpus.get(idx) {
-            input.clone()
-        } else {
-            // Default to generating a new input
-            <WasdArray as snapchange::FuzzInput>::generate(
-                corpus,
-                rng,
-                dictionary,
-                Self::MAX_INPUT_LENGTH,
-            )
-        }
+        let idx = self.dist.as_ref().unwrap().sample(rng) as usize;
+        assert!(idx < corpus.len());
+        // we can safely unwrap here, because corpus.len() > 0 and idx < corpus.len()
+        corpus.get(idx).unwrap().clone()
     }
 }
 
@@ -256,6 +282,7 @@ impl<'a> WasdArray {
 #[repr(u8)]
 pub enum WasdFuzzOperation {
     Append,
+    AppendMany,
     Replace,
     ReplaceLast,
     ReplaceLastMany,
@@ -304,14 +331,9 @@ impl snapchange::FuzzInput for WasdArray {
         _dictionary: &Option<Vec<Vec<u8>>>,
         _max_length: usize,
     ) -> Self {
-        // let len = rng.gen_range(1..=max_length);
-        let len = 1;
-        let mut data = vec![];
-        for _ in 0..len {
-            let d: Wasd = rng.gen();
-            data.push(d);
-        }
-        WasdArray { data }
+        // Start with a random new direction
+        let d: Wasd = rng.gen();
+        WasdArray { data: vec![d] }
     }
 
     fn mutate(
@@ -323,7 +345,11 @@ impl snapchange::FuzzInput for WasdArray {
         max_mutations: u64,
     ) -> Vec<String> {
         // Get the number of changes to make to the input
-        let num_change: u64 = (rng.gen::<u64>() % max_mutations).max(1);
+        let num_change: u64 = if max_mutations == 1 {
+            1
+        } else {
+            rng.gen_range(1..max_mutations)
+        };
 
         // Mutations applied to this input
         let mut mutations: Vec<String> = Vec::new();
@@ -340,10 +366,24 @@ impl snapchange::FuzzInput for WasdArray {
                         input.data.push(d);
                         mutations.push("Append".to_string());
                     }
-                    Replace => {
+                    AppendMany => {
                         let d: Wasd = rng.gen();
+                        input.data.push(d);
+                        let count = rng.gen_range(0..10);
+                        for _i in 0..count {
+                            input.data.push(d);
+                        }
+                        mutations.push("AppendMany".to_string());
+                    }
+                    Replace => {
                         let i = rng.gen_range(0..input.data.len());
-                        input.data[i] = d;
+                        loop {
+                            let d: Wasd = rng.gen();
+                            if input.data[i] != d {
+                                input.data[i] = d;
+                                break;
+                            }
+                        }
                         mutations.push("Replace".to_string());
                     }
                     ReplaceLast => {
@@ -428,5 +468,39 @@ impl snapchange::FuzzInput for WasdArray {
 
         // Return the mutation applied
         mutations
+    }
+
+    /// Minimize a `WasdArray` by truncating it or removing directions.
+    fn minimize(input: &mut Self, rng: &mut Rng) {
+        // Cannot minimize an empty input
+        if input.data.is_empty() {
+            return;
+        }
+
+        enum MinimizeAction {
+            Truncate,
+            Delete,
+        }
+
+        // Randomly pick the type of minimization
+        let state = match rng.gen_range(0..=1) {
+            0 => MinimizeAction::Truncate,
+            1 => MinimizeAction::Delete,
+            _ => unreachable!(),
+        };
+
+        // Perform the minimization strategy for this state
+        match state {
+            MinimizeAction::Truncate => {
+                if input.data.len() > 1 {
+                    input.data.truncate(input.data.len() - 1);
+                }
+            }
+            MinimizeAction::Delete => {
+                let l = input.data.len();
+                let idx = rng.gen_range(0..l);
+                input.data.remove(idx);
+            }
+        }
     }
 }

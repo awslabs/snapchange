@@ -142,11 +142,16 @@ void draw() {
 
 void logmsg(const char *msg) { puts(msg); }
 
-__attribute__((noinline, optnone)) void loose(const char *msg, uint16_t x,
-                                              uint16_t y) {
-  printf("You loose: '%s' @ pos = (%u, %u)\n", msg, x, y);
+__attribute__((noinline, optnone)) void lose(const char *msg, uint16_t x,
+                                             uint16_t y) {
+  printf("You lose: '%s'\n", msg);
   log_pos(x, y);
   bye(1);
+}
+
+__attribute__((noinline, optnone)) void win(uint16_t x, uint16_t y) {
+  puts("You Win!!!!");
+  log_pos(x, y);
 }
 
 void walk_maze(const char *program, const size_t iters) {
@@ -161,7 +166,7 @@ void walk_maze(const char *program, const size_t iters) {
   draw();
   while (i < iters) {
     if (x > W || y > H) {
-      loose("OOB", x, y);
+      lose("OOB", x, y);
     }
 #ifndef MAZE_NO_BT
     maze[y][x] = ' ';
@@ -192,12 +197,12 @@ void walk_maze(const char *program, const size_t iters) {
     case '\0':
       logmsg("final state");
       draw();
-      loose("You give up", ox, oy);
+      lose("You give up", ox, oy);
     default:
-      loose("Wrong command!(only w,s,a,d accepted!)", ox, oy);
+      lose("Wrong command!(only w,s,a,d accepted!)", ox, oy);
     }
     if (maze[y][x] == '#') {
-      logmsg("You win");
+      win(x, y);
 #ifdef CHECK_CODE
       if (check_contra_code(program, i, iters)) {
         logmsg("oh oh..");
@@ -217,7 +222,7 @@ void walk_maze(const char *program, const size_t iters) {
     }
 #ifdef MAZE_NO_BT
     if (ox == x && oy == y) {
-      loose("No movement", ox, oy);
+      lose("No movement", ox, oy);
     }
 #endif
 
@@ -226,7 +231,7 @@ void walk_maze(const char *program, const size_t iters) {
     i++;
   }
 
-  loose("exhausted allowed steps", x, y);
+  lose("exhausted allowed steps", x, y);
 }
 
 // end maze code
