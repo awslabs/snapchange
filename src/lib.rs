@@ -235,14 +235,10 @@ macro_rules! dbg_hex {
 }
 
 /// What to do after handling a [`FuzzVmExit`]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Execution {
     /// Hit coverage event and continue execution of the current VM
     CoverageContinue,
-
-    #[cfg(feature = "custom_feedback")]
-    /// Custom Coverage Info
-    CustomCoverageContinue,
 
     /// Continue execution of the current VM
     Continue,
@@ -260,6 +256,16 @@ pub enum Execution {
 
     /// Reset the VM state and continue execution to the beginning of the snapshot
     Reset,
+}
+
+impl Execution {
+    /// Returns true if the given Execution state is a crash.
+    pub fn is_crash(&self) -> bool {
+        match &self {
+            Self::CrashReset { .. } => true,
+            _ => false
+        }
+    }
 }
 
 /// Maximum number of cores supported

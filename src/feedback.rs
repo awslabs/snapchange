@@ -13,9 +13,9 @@
 //! // ...
 //! ```
 
-use rustc_hash::{FxHashSet, FxHashMap};
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet};
+use std::collections::BTreeSet;
 use std::default::Default;
 use std::hash::Hash;
 
@@ -58,12 +58,18 @@ pub enum FeedbackLog {
 
 /// AFL introduced a [bucketing mechanism](https://lcamtuf.coredump.cx/afl/technical_details.txt) to avoid filling the corpus/queue with too many similar
 /// entries, e.g., one input for every loop iteration.
-/// This functions implements a somewhat similar bucketing mechanism.
-pub fn classify_hitcount_into_bucket(hitcount: u16) -> u16 {
+/// This functions implements a somewhat similar bucketing mechanism, with a bit more fine-granular
+/// buckets.
+///
+/// See also [`classify_hitcount_into_bucket_afl_style`].
+///
+/// Takes hitcount and returns bucketed value.
+pub(crate) fn classify_hitcount_into_bucket(hitcount: u16) -> u16 {
+    // but we have 16-bit hitcounters and also we use
     match hitcount {
         0..4 => hitcount,
         4..6 => 4,
-        6..7 => 6,
+        6..8 => 6,
         8..12 => 8,
         12..16 => 12,
         16..24 => 16,
@@ -78,7 +84,21 @@ pub fn classify_hitcount_into_bucket(hitcount: u16) -> u16 {
         2048..3072 => 2048,
         3072..4096 => 3072,
         4096.. => 4096,
-        _ => unreachable!(),
+    }
+}
+
+/// original AFL-style bucketing + another bucket for hitcounts greater than 255
+///
+/// see also [`classify_hitcount_into_bucket`]
+pub(crate) fn classify_hitcount_into_bucket_afl_style(hitcount: u16) -> u16 {
+    match hitcount {
+        0..4 => hitcount,
+        4..8 => 4,
+        8..16 => 8,
+        16..32 => 16,
+        32..128 => 32,
+        128..256 => 128,
+        256.. => 256,
     }
 }
 
@@ -105,7 +125,7 @@ pub fn classify_hitcount_into_bucket(hitcount: u16) -> u16 {
 /// feedback.ensure_clean();
 /// assert!(!feedback.has_new());
 /// ```
-#[derive(Default, Clone, Serialize, PartialEq, Eq)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub struct FeedbackTracker {
     /// A log of newly observed feedback entries.
     pub(crate) log: Vec<FeedbackLog>,
@@ -158,6 +178,66 @@ impl FeedbackTracker {
         }
 
         r
+    }
+
+    /// Compute a log of entries in `self` that are not in `other`.
+    ///
+    /// ```
+    /// # use snapchange::{feedback::{FeedbackLog, FeedbackTracker}, addrs::VirtAddr};
+    /// let mut a = FeedbackTracker::new();
+    /// a.record_codecov(0xdeadbeef.into());
+    /// a.record_codecov(0xcafecafe.into());
+    /// let mut b = FeedbackTracker::new();
+    /// b.record_codecov(0xcafecafe.into());
+    /// b.record_codecov(0x42424242.into());
+    ///
+    /// let d = a.diff(&b);
+    /// assert_eq!(d, vec![FeedbackLog::VAddr((0xdeadbeef.into(), 1))]);
+    /// let d = b.diff(&a);
+    /// assert_eq!(d, vec![FeedbackLog::VAddr((0x42424242.into(), 1))]);
+    ///
+    /// b.record_codecov(0xdeadbeef.into());
+    /// let d = a.diff(&b);
+    /// assert!(d.is_empty())
+    /// ```
+    pub fn diff(&self, other: &FeedbackTracker) -> Vec<FeedbackLog> {
+        let mut v = vec![];
+        for (addr, count) in self.code_cov.iter() {
+            if let Some(other_count) = other.code_cov.get(addr) {
+                if *count != *other_count {
+                    v.push(FeedbackLog::VAddr((*addr, *count)));
+                }
+            } else {
+                v.push(FeedbackLog::VAddr((*addr, *count)));
+            }
+        }
+
+        #[cfg(feature = "custom_feedback")]
+        for value in self.custom.iter() {
+            if !other.custom.contains(value) {
+                v.push(FeedbackLog::Custom(*value));
+            }
+        }
+
+        #[cfg(feature = "custom_feedback")]
+        for (tag, value) in self.max.iter() {
+            if let Some(other_value) = other.max.get(tag) {
+                if *value != *other_value {
+                    v.push(FeedbackLog::CustomMax((*tag, *value)));
+                }
+            } else {
+                v.push(FeedbackLog::CustomMax((*tag, *value)));
+            }
+        }
+
+        #[cfg(feature = "redqueen")]
+        for rq in self.redqueen.iter() {
+            if !other.redqueen.contains(rq) {
+                v.push(FeedbackLog::Redqueen(*rq));
+            }
+        }
+
+        v
     }
 
     /// Add all feedback entries from another [`FeedbackTracker`]. Returns true if a new entry was
@@ -242,6 +322,7 @@ impl FeedbackTracker {
     /// Returns true if a new value `v` was observed.
     pub fn record_codecov(&mut self, v: VirtAddr) -> bool {
         match self.code_cov.entry(v) {
+            // fast path -> first time code cov is recorded
             std::collections::hash_map::Entry::Vacant(e) => {
                 e.insert(1);
                 self.log.push(FeedbackLog::VAddr((v, 1)));
@@ -250,17 +331,98 @@ impl FeedbackTracker {
             std::collections::hash_map::Entry::Occupied(mut e) => {
                 let hitcount = e.get_mut();
                 let prev = *hitcount;
-                let new = prev.saturating_add(1);
-                // TODO: use classify_hitcount_into_bucket to check for meaningful new code coverage?
-                if prev != new {
-                    *hitcount = new;
-                    self.log.push(FeedbackLog::VAddr((v, new)));
+                *hitcount = prev.saturating_add(1);
+                if classify_hitcount_into_bucket(prev) < classify_hitcount_into_bucket(*hitcount) {
+                    self.log.push(FeedbackLog::VAddr((v, *hitcount)));
                     true
                 } else {
                     false
                 }
             }
         }
+    }
+
+    /// Check for equality of custom feedback only.
+    #[cfg(feature = "custom_feedback")]
+    pub fn eq_custom_feedback(&self, other: &Self) -> bool {
+        self.custom == other.custom && self.max == other.max
+    }
+
+    /// Check for equal code coverage with an exact hitcount comparison
+    pub fn eq_codecov_exact(&self, other: &Self) -> bool {
+        self.eq_codecov_with(other, |x| x)
+    }
+
+    /// Check for equal code coverage with our standard classified hitcount comparison.
+    pub fn eq_codecov(&self, other: &Self) -> bool {
+        self.eq_codecov_with(other, classify_hitcount_into_bucket)
+    }
+
+    /// Check for equal code coverage using the given function to classify coverage hitcounts into
+    /// buckets.
+    ///
+    /// ```
+    /// # use snapchange::{feedback::FeedbackTracker, addrs::VirtAddr};
+    /// let mut feedback = FeedbackTracker::new();
+    /// feedback.record_codecov(0xdeadbeef.into());
+    /// let mut other = FeedbackTracker::new();
+    /// other.record_codecov(0xdeadbeef.into());
+    /// other.record_codecov(0xdeadbeef.into());
+    ///
+    /// // exact comparison fails, because of different hitcounts
+    /// assert!(!feedback.eq_codecov_with(&other, |x| x));
+    /// // turn hitcounts into yes/no and the comparison fails
+    /// assert!(feedback.eq_codecov_with(&other, |x| if x > 0 { 1 } else { 0 }));
+    /// ```
+    pub fn eq_codecov_with<F>(&self, other: &Self, classify: F) -> bool
+    where
+        F: Fn(u16) -> u16,
+    {
+        if self.code_cov.len() != other.code_cov.len() {
+            return false;
+        }
+        // We have the same number of entries, so let's check the hitcounts.
+
+        // I don't think this code would be correct, as iteration order of the coverage maps is not
+        // guaranteed?
+        // ```
+        // self.code_cov.iter().eq(other.code_cov.iter())
+        // ```
+        // TODO: maybe there is a way to ensure same iteration order? Or maybe different
+        // iteration orders already signal different coverage maps? We are using hashmaps so
+        // iteration order is not guaranteed in general, but maybe integer keys are different? (maybe with the
+        // no-hash hasher)?
+        //
+        // so conservatively we need to do this:
+
+        // Since the length is equal, it is not possible for self.code_cov to be a strict subset of
+        // other.code_cov. Therefore, it is sufficient to iterate over `self.code_cov`.
+        for (vaddr, hitcount) in self.code_cov.iter() {
+            if let Some(other_hitcount) = other.code_cov.get(vaddr) {
+                let hitcount = classify(*hitcount);
+                let other_hitcount = classify(*other_hitcount);
+                if hitcount != other_hitcount {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Check equality of custom/max feedback and code coverage, using the given function to
+    /// classify code coverage hitcounts.
+    pub fn eq_with<F>(&self, other: &Self, classify: F) -> bool
+    where
+        F: Fn(u16) -> u16,
+    {
+        let r = self.eq_codecov_with(other, classify);
+        #[cfg(feature = "custom_feedback")]
+        let r = r & self.eq_custom_feedback(other);
+        #[cfg(feature = "redqueen")]
+        let r = r & (self.redqueen == other.redqueen);
+        r
     }
 
     #[cfg(feature = "redqueen")]
@@ -432,5 +594,12 @@ impl FeedbackTracker {
         } else {
             None
         }
+    }
+}
+
+impl std::cmp::PartialEq for FeedbackTracker {
+    /// comparison based on recorded code coverage, and if enabled also custom feedback and redqueen.
+    fn eq(&self, other: &FeedbackTracker) -> bool {
+        self.eq_with(other, |x| x)
     }
 }

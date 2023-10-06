@@ -1,5 +1,6 @@
 //! Executing the `minimize` command
 use anyhow::{anyhow, ensure, Context, Result};
+use rustc_hash::FxHashSet;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::os::unix::io::AsRawFd;
@@ -11,14 +12,15 @@ use core_affinity::CoreId;
 use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
 
+use crate::cmdline::{self, MinimizeCodeCovLevel};
 use crate::config::Config;
 use crate::fuzz_input::FuzzInput;
-use crate::fuzzer::Fuzzer;
+use crate::fuzzer::{BreakpointType, Fuzzer};
 use crate::fuzzvm::FuzzVm;
 use crate::memory::Memory;
 use crate::stack_unwinder::StackUnwinders;
-use crate::{cmdline, fuzzvm, unblock_sigalrm, THREAD_IDS};
-use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
+use crate::{fuzzvm, unblock_sigalrm, THREAD_IDS};
+use crate::{init_environment, KvmEnvironment, ProjectState};
 use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
 
 /// Stages to measure performance during minimization
@@ -28,9 +30,17 @@ use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
 enum Counters {
     InputClone,
     InputMinimize,
-    ResetGuest,
-    Execution,
+    RunInput,
     CheckResult,
+}
+
+pub(crate) struct MinimizerConfig {
+    ignore_reg_state: bool,
+    ignore_feedback: bool,
+    codecov_level: MinimizeCodeCovLevel,
+    ignore_stack: bool,
+    ignore_console: bool,
+    dump_feedback: bool,
 }
 
 /// Thread worker used to minimize the input based on the size of the input
@@ -42,13 +52,13 @@ fn start_core<FUZZER: Fuzzer>(
     snapshot_fd: i32,
     clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<VecDeque<Symbol>>,
-    symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
-    coverage_breakpoints: Option<BTreeMap<VirtAddr, u8>>,
+    symbol_reset_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
+    coverage_breakpoints: Option<FxHashSet<VirtAddr>>,
     input_case: &Path,
     vm_timeout: Duration,
     max_iterations: u32,
     config: Config,
-    rip_only: bool,
+    min_params: MinimizerConfig,
 ) -> Result<()> {
     // Use the current fuzzer
     let mut fuzzer = FUZZER::default();
@@ -74,6 +84,46 @@ fn start_core<FUZZER: Fuzzer>(
     #[cfg(feature = "redqueen")]
     let redqueen_rules = BTreeMap::new();
 
+    if min_params.codecov_level == MinimizeCodeCovLevel::Hitcounts
+        || min_params.codecov_level == MinimizeCodeCovLevel::BasicBlock
+    {
+        if !coverage_breakpoints.is_some() {
+            anyhow::bail!("code coverage level requires breakpoint addresses!");
+        }
+    }
+
+    let bp_type = if min_params.codecov_level == MinimizeCodeCovLevel::Hitcounts {
+        BreakpointType::Repeated
+    } else {
+        BreakpointType::SingleShot
+    };
+    let mut covbps_addrs = vec![];
+    if let Some(covbps) = coverage_breakpoints {
+        if min_params.codecov_level == MinimizeCodeCovLevel::Hitcounts
+            || min_params.codecov_level == MinimizeCodeCovLevel::BasicBlock
+        {
+            covbps_addrs.extend(covbps.iter().cloned());
+        } else if min_params.codecov_level == MinimizeCodeCovLevel::Symbols {
+            let symbols = symbols
+                .as_ref()
+                .context("code coverage level requires symbols")?;
+            for sym in symbols.iter() {
+                if sym.address == 0 {
+                    log::warn!("symbol at null {:?}", sym);
+                } else {
+                    covbps_addrs.push(VirtAddr(sym.address));
+                }
+            }
+        }
+    }
+
+    if !min_params.ignore_feedback {
+        log::info!(
+            "considering {} coverage breakpoints for feedback",
+            covbps_addrs.len()
+        );
+    }
+
     // Create a 64-bit VM for fuzzing
     let mut fuzzvm = FuzzVm::create(
         u64::try_from(core_id.id)?,
@@ -83,8 +133,8 @@ fn start_core<FUZZER: Fuzzer>(
         cpuid,
         snapshot_fd.as_raw_fd(),
         clean_snapshot,
-        coverage_breakpoints,
-        symbol_breakpoints,
+        None, // do not setup regular coverage breakpoints
+        symbol_reset_breakpoints,
         symbols,
         config,
         StackUnwinders::default(),
@@ -94,52 +144,34 @@ fn start_core<FUZZER: Fuzzer>(
 
     log::info!("Minimize timeout: {:?}", vm_timeout);
 
-    let mut execution;
-
     // Get the initial input
     let input_bytes = std::fs::read(input_case)?;
-    let mut input = <FUZZER::Input as FuzzInput>::from_bytes(&input_bytes)?;
+    let starting_input = <FUZZER::Input as FuzzInput>::from_bytes(&input_bytes)?;
+    let mut input = starting_input.clone();
 
     let start_input_size = input_bytes.len();
 
-    // Set the input into the VM as per the fuzzer
-    fuzzer.set_input(&input, &mut fuzzvm)?;
-
     // Initialize the performance counters for executing a VM
-    let mut perf = crate::fuzzvm::VmRunPerf::default();
-
-    // Top of the run iteration loop for the current fuzz case
-    for _ in 0.. {
-        // Execute the VM
-        let ret = fuzzvm.run(&mut perf)?;
-
-        // Handle the FuzzVmExit to determine
-        execution = handle_vmexit(&ret, &mut fuzzvm, &mut fuzzer, None, &input, None)?;
-
-        // During single step, breakpoints aren't triggered. For this reason,
-        // we need to check if the instruction is a breakpoint regardless in order to
-        // apply fuzzer specific breakpoint logic. We can ignore the "unknown breakpoint"
-        // error that is thrown if a breakpoint is not found;
-        if let Ok(new_execution) = fuzzvm.handle_breakpoint(&mut fuzzer, &input, None) {
-            execution = new_execution;
-        } else {
-            // Ignore the unknown breakpoint case since we check every instruction due to
-            // single stepping here.
-        }
-
-        // Check if the VM needs to be timed out
-        if fuzzvm.start_time.elapsed() > vm_timeout {
-            log::info!("Tracing VM Timed out.. exiting");
-            execution = Execution::Reset;
-        }
-
-        // Reset the VM if the vmexit handler says so
-        if matches!(execution, Execution::Reset | Execution::CrashReset { .. }) {
-            break;
-        }
-    }
-
+    let (orig_execution, mut orig_feedback, _) = fuzzvm.gather_feedback(
+        &mut fuzzer,
+        &starting_input,
+        vm_timeout,
+        &covbps_addrs,
+        bp_type,
+    )?;
     fuzzvm.print_context()?;
+    log::info!("Original execution ended with {:?}", orig_execution);
+
+    if !min_params.ignore_feedback {
+        log::info!("Obtained {} feedback entries.", orig_feedback.len());
+    }
+    orig_feedback.ensure_clean(); // remove the feedback log
+    if min_params.dump_feedback {
+        let data = serde_json::to_string(&orig_feedback)?;
+        let mut save_path = std::path::PathBuf::from(input_case);
+        save_path.set_extension("feedback");
+        std::fs::write(save_path, data)?;
+    }
 
     let mut stack_size = 0x100;
     let mut orig_stack = vec![0_u64; stack_size];
@@ -154,7 +186,7 @@ fn start_core<FUZZER: Fuzzer>(
         }
     }
 
-    let orig_reg_state = if rip_only {
+    let orig_reg_state = if min_params.ignore_reg_state {
         kvm_bindings::kvm_regs {
             rip: fuzzvm.rip(),
             ..Default::default()
@@ -167,9 +199,6 @@ fn start_core<FUZZER: Fuzzer>(
 
     // Create a random number generatr
     let mut rng = crate::rng::Rng::new();
-
-    // Initialize the performance counters for executing a VM
-    let mut perf = crate::fuzzvm::VmRunPerf::default();
 
     log::info!("Input len: {}", input_bytes.len());
 
@@ -199,6 +228,8 @@ fn start_core<FUZZER: Fuzzer>(
         }};
     }
 
+    let mut last_feedback = None;
+    let mut last_execution = Execution::Continue;
     for iters in 0..max_iterations {
         if timer.elapsed() > Duration::from_secs(1) {
             log::info!(
@@ -221,9 +252,8 @@ fn start_core<FUZZER: Fuzzer>(
 
             stats!(InputClone);
             stats!(InputMinimize);
-            stats!(Execution);
+            stats!(RunInput);
             stats!(CheckResult);
-            stats!(ResetGuest);
 
             timer = Instant::now();
         }
@@ -236,65 +266,40 @@ fn start_core<FUZZER: Fuzzer>(
             FUZZER::Input::minimize(&mut curr_input, &mut rng);
         });
 
-        // Reset the guest with the minimized input
-        time!(ResetGuest, {
-            // Reset the guest back to the beginning
-            fuzzvm.reset_guest_state(&mut fuzzer)?;
-
-            // Reset the fuzzer state
-            fuzzer.reset_fuzzer_state();
-
-            if !orig_output.is_empty() {
-                assert!(fuzzvm.console_output != orig_output);
-            }
-
-            // Set the input into the VM as per the fuzzer
-            fuzzer.set_input(&curr_input, &mut fuzzvm)?;
-        });
-
-        // Execute the guest until reset, timeout, or crash
-        time!(Execution, {
-            // Execute the new input once
-            loop {
-                // Execute the VM
-                let ret = fuzzvm.run(&mut perf)?;
-
-                // Handle the FuzzVmExit to determine
-                execution = handle_vmexit(&ret, &mut fuzzvm, &mut fuzzer, None, &curr_input, None)?;
-
-                // During single step, breakpoints aren't triggered. For this reason,
-                // we need to check if the instruction is a breakpoint regardless in order to
-                // apply fuzzer specific breakpoint logic. We can ignore the "unknown breakpoint"
-                // error that is thrown if a breakpoint is not found;
-                if let Ok(new_execution) = fuzzvm.handle_breakpoint(&mut fuzzer, &input, None) {
-                    execution = new_execution;
-                } else {
-                    // Ignore the unknown breakpoint case since we check every instruction
-                    // due to single stepping here.
-                }
-
-                // Check if the VM needs to be timed out
-                if fuzzvm.start_time.elapsed() > vm_timeout {
-                    log::info!("VM Timed out.. exiting");
-                    execution = Execution::Reset;
-                }
-
-                // Reset the VM if the vmexit handler says so
-                if matches!(
-                    execution,
-                    Execution::Reset
-                        | Execution::CrashReset { .. }
-                        | Execution::TimeoutReset { .. }
-                ) {
-                    break;
-                }
-            }
-        });
+        let (execution, mut feedback, _) = time!(
+            RunInput,
+            fuzzvm.gather_feedback(&mut fuzzer, &curr_input, vm_timeout, &covbps_addrs, bp_type)?
+        );
 
         // Check if the VM resulted in the same crashing state. If so, keep the minimized input as the
         // current best input
         time!(CheckResult, {
-            let curr_reg_state = if rip_only {
+            let mut success = true;
+
+            // check if the execution stopped because of the same reason!
+            success &= orig_execution == execution;
+
+            // check if the same feedback was returned.
+            if !min_params.ignore_feedback {
+                feedback.ensure_clean();
+                if min_params.codecov_level < MinimizeCodeCovLevel::Hitcounts {
+                    success &= orig_feedback.eq_with(
+                        &feedback,
+                        // crate::feedback::classify_hitcount_into_bucket_afl_style,
+                        |x| if x > 0 { 1 } else { 0 },
+                    );
+                } else {
+                    success &= orig_feedback.eq_with(
+                        &feedback,
+                        crate::feedback::classify_hitcount_into_bucket_afl_style,
+                    );
+                }
+                // if success && !orig_feedback.eq_codecov_exact(&feedback) {
+                //     log::warn!("Hitcount clamping affected minimization!");
+                // }
+            }
+
+            let curr_reg_state = if min_params.ignore_reg_state {
                 kvm_bindings::kvm_regs {
                     rip: fuzzvm.rip(),
                     ..Default::default()
@@ -302,28 +307,32 @@ fn start_core<FUZZER: Fuzzer>(
             } else {
                 *fuzzvm.regs()
             };
-            let mut curr_stack = vec![0u64; stack_size];
-            fuzzvm.read_bytes(VirtAddr(fuzzvm.rsp()), fuzzvm.cr3(), &mut curr_stack)?;
-
             // If the guest exited with the same final state, then keep the minimized input
-            let success = orig_reg_state == curr_reg_state
-                && orig_stack == curr_stack
-                && orig_output == fuzzvm.console_output;
+            success &= orig_reg_state == curr_reg_state;
+
+            if !min_params.ignore_stack {
+                let mut curr_stack = vec![0u64; stack_size];
+                fuzzvm.read_bytes(VirtAddr(fuzzvm.rsp()), fuzzvm.cr3(), &mut curr_stack)?;
+                success &= orig_stack == curr_stack;
+            }
+
+            if !min_params.ignore_console {
+                success &= orig_output == fuzzvm.console_output;
+            }
 
             if success {
                 input = curr_input;
+                feedback.ensure_clean(); // remove the feedback log
+                last_feedback = Some(feedback.clone());
+                last_execution = execution;
             }
         });
     }
 
-    let ext = "min_by_size";
-
-    // Get the new minimized filename
-    let orig_file_name = input_case
-        .file_name()
-        .unwrap_or_else(|| std::ffi::OsStr::new("UNKNOWNFILENAME"));
-    let mut min_file = input_case.to_path_buf();
-    min_file.set_file_name(&format!("{}_{ext}", orig_file_name.to_string_lossy()));
+    if input == starting_input {
+        log::error!("minimizing failed! -> no change");
+        return Ok(());
+    }
 
     let mut result_bytes = Vec::new();
     input.to_bytes(&mut result_bytes)?;
@@ -335,17 +344,38 @@ fn start_core<FUZZER: Fuzzer>(
         result_bytes.len()
     );
 
+    // Get the new minimized filename
+    let orig_file_name = input_case
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("UNKNOWNFILENAME"));
+    let mut min_file = std::path::PathBuf::from(orig_file_name);
+    min_file.as_mut_os_string().push(".min"); // we are not using set_extension, since we do not
+                                              // want to replace an existing extension.
+
     log::info!("Writing minimized file: {:?}", min_file);
     std::fs::write(&min_file, &result_bytes)?;
 
-    // Allow the fuzzer to handle the crashing state
-    // Useful for things like syscall fuzzer to write a C file from the input
-    fuzzer.handle_crash(&input, &mut fuzzvm, &min_file)?;
+    if min_params.dump_feedback {
+        if let Some(feedback) = last_feedback {
+            let data = serde_json::to_string(&feedback)?;
+            let mut save_path = min_file.clone();
+            save_path.as_mut_os_string().push(".feedback");
+            std::fs::write(save_path, data)?;
+        } else {
+            log::warn!("no feedback");
+        }
+    }
+
+    if last_execution.is_crash() {
+        // Allow the fuzzer to handle the crashing state
+        // Useful for things like syscall fuzzer to write a C file from the input
+        fuzzer.handle_crash(&input, &mut fuzzvm, &min_file)?;
+    }
 
     Ok(())
 }
 
-/// Execute the Minimize subcommand to gather a single step trace over an input
+/// Execute the Minimize subcommand
 pub(crate) fn run<FUZZER: Fuzzer>(
     project_state: &ProjectState,
     args: &cmdline::Minimize,
@@ -367,6 +397,37 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         .first()
         .ok_or_else(|| anyhow!("No valid cores"))?;
 
+    let minparams = MinimizerConfig {
+        ignore_stack: args.ignore_stack,
+        ignore_reg_state: args.rip_only,
+        ignore_feedback: args.ignore_feedback,
+        codecov_level: args.consider_coverage,
+        ignore_console: args.ignore_console_output,
+        dump_feedback: args.dump_feedback_to_file,
+    };
+
+    // only use coverage breakpoints if we are supposed to ignore the coverage feedback.
+    let covbps = if !args.ignore_feedback && minparams.codecov_level > MinimizeCodeCovLevel::None {
+        // Init the coverage breakpoints mapping to byte
+        let mut covbp_bytes = FxHashSet::default();
+        // Write the remaining coverage breakpoints into the "clean" snapshot
+        if let Some(covbps) = project_state.coverage_breakpoints.as_ref() {
+            let cr3 = Cr3(project_state.vbcpu.cr3);
+            // Small scope to drop the clean snapshot lock
+            let mut curr_clean_snapshot = clean_snapshot.write().unwrap();
+            for addr in covbps.iter() {
+                if let Ok(_orig_byte) = curr_clean_snapshot.read::<u8>(*addr, cr3) {
+                    // curr_clean_snapshot.write_bytes(*addr, cr3, &[0xcc])?;
+                    // covbp_bytes.insert(*addr, orig_byte);
+                    covbp_bytes.insert(*addr);
+                }
+            }
+        }
+        Some(covbp_bytes)
+    } else {
+        None
+    };
+
     // Start executing on this core
     start_core::<FUZZER>(
         core_id,
@@ -377,12 +438,12 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         clean_snapshot,
         &symbols,
         symbol_breakpoints,
-        None, // No need to apply coverage breakpoints for minimize
+        covbps,
         &args.path,
         args.timeout,
         args.iterations_per_stage,
         project_state.config.clone(),
-        args.rip_only,
+        minparams,
     )?;
 
     // Success

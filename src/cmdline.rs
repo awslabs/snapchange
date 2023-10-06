@@ -446,6 +446,15 @@ pub struct Trace {
     pub(crate) no_single_step: bool,
 }
 
+/// To which extent code coverage is considered when minimizing a testcase.
+#[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Copy, Clone, clap::ValueEnum)]
+pub(crate) enum MinimizeCodeCovLevel {
+    None = 0,
+    Symbols = 1,
+    BasicBlock = 2,
+    Hitcounts = 3,
+}
+
 /// Minimize subcommand
 #[derive(Parser, Debug)]
 pub struct Minimize {
@@ -464,8 +473,33 @@ pub struct Minimize {
 
     /// Only check the RIP register for checking if the register state is the same after
     /// minimizing an input
-    #[clap(long)]
+    #[clap(short, long)]
     pub(crate) rip_only: bool,
+
+    /// Ignore the feedback returned through coverage breakpoints and custom feedback,
+    /// when checking for same state after minimizing an input.
+    #[clap(long)]
+    pub(crate) ignore_feedback: bool,
+
+    /// Specify, which type of code coverage feedback should be considered, when minimizing
+    /// the given input. `none` ignores all code coverage. `basic-blocks` is the regular fuzzing
+    /// coverage. `symbols` is function-level coverage when symbols are available. `hitcounts` 
+    /// is basic-block coverage considering hitcounts.
+    #[clap(long, value_enum, default_value_t = MinimizeCodeCovLevel::None)]
+    pub(crate) consider_coverage: MinimizeCodeCovLevel,
+
+    /// Ignore stack contents when checking for same state after minimizing an input.
+    #[clap(long)]
+    pub(crate) ignore_stack: bool,
+
+    /// Ignore the consoel output when checking for same state after minimizing an input.
+    #[clap(long)]
+    pub(crate) ignore_console_output: bool,
+   
+    /// Dump the observed feedback into a file. Useful when debugging minimization according to
+    /// observed feedback.
+    #[clap(long)]
+    pub(crate) dump_feedback_to_file: bool,
 }
 
 /// CorpusMin subcommand
@@ -1071,7 +1105,10 @@ pub fn parse_coverage_breakpoints(cov_bp_path: &Path) -> Result<BTreeSet<VirtAdd
                 cov_bps.insert(VirtAddr(addr));
             }
             Err(e) => {
-                eprintln!("[COVBPS] failed to parse address from line: {:?} (reason: {})", line, e);
+                eprintln!(
+                    "[COVBPS] failed to parse address from line: {:?} (reason: {})",
+                    line, e
+                );
             }
         }
     });

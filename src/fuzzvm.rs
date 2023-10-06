@@ -2271,6 +2271,11 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             .and_then(|sym_data| crate::symbols::get_symbol(addr, sym_data))
     }
 
+    /// Check if there is a breakpoint registered for a given address/cr3.
+    pub fn has_breakpoint(&mut self, virt_addr: VirtAddr, cr3: Cr3) -> bool {
+        self.breakpoints.contains_key(&(virt_addr, cr3))
+    }
+
     /// Set a breakpoint at the given [`VirtAddr`] using [`Cr3`] as the page table,
     /// returning the breakpoint index for the set breakpoint
     ///
@@ -2343,7 +2348,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
     /// Check for the given `subsymbol` in the current symbol list using the current
     /// `Cr3`. This is mostly used as a helper function for
-    /// `FuzzVm::apply_fuzzer_breakpoints`.
+    /// [`FuzzVm::apply_fuzzer_breakpoints`.]
     ///
     /// # Example
     ///
@@ -4333,6 +4338,107 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         Ok(seen_coverage)
     }
 
+    /// Get the coverage breakpoints hit by the given `input`
+    pub fn gather_feedback(
+        &mut self,
+        fuzzer: &mut FUZZER,
+        input: &FUZZER::Input,
+        vm_timeout: Duration,
+        coverage_breakpoints: &[VirtAddr],
+        coverage_bp_type: BreakpointType,
+    ) -> Result<(Execution, FeedbackTracker, (GuestResetPerf, VmRunPerf))> {
+        let mut feedback = FeedbackTracker::new();
+
+        // Reset the guest state
+        let reset_perf = self.reset_guest_state(fuzzer)?;
+
+        // Reset the fuzzer state
+        fuzzer.reset_fuzzer_state();
+
+        // Set the input into the VM as per the fuzzer
+        fuzzer.set_input(input, self)?;
+
+        let mut hit_breakpoints = BTreeMap::new();
+
+        let cr3 = self.cr3();
+
+        // Reset all of the current breakpoints
+        for hit_bp in coverage_breakpoints {
+            let bp_addr = *hit_bp;
+            if self.has_breakpoint(bp_addr, cr3) {
+                continue;
+            }
+            let curr_byte = self.read::<u8>(bp_addr, cr3)?;
+            if curr_byte != 0xcc {
+                // Store the original byte for this address
+                hit_breakpoints.insert(*hit_bp, curr_byte);
+
+                // Write a breakpoint at this address to look for coverage
+                self.write_bytes_dirty(bp_addr, cr3, &[0xcc])?;
+            }
+        }
+
+        // Initialize the execution for each vmexit
+        let mut execution = Execution::Continue;
+
+        // Initialize the performance counters for executing a VM
+        let mut run_perf = crate::fuzzvm::VmRunPerf::default();
+
+        // Top of the run iteration loop for the current fuzz case
+        loop {
+            // Reset the VM if the vmexit handler says so
+            if matches!(execution, Execution::Reset | Execution::CrashReset { .. }) {
+                break;
+            }
+
+            // Execute the VM
+            let ret = self.run(&mut run_perf)?;
+
+            match ret {
+                FuzzVmExit::Breakpoint(rip) | FuzzVmExit::CoverageBreakpoint(rip) => {
+                    let rip = VirtAddr(rip);
+                    if let Some(orig_byte) = hit_breakpoints.get(&rip) {
+                        feedback.record_codecov(rip);
+
+                        // Restore the original byte for this breakpoint
+                        self.write_bytes_dirty(rip, self.cr3(), &[*orig_byte])?;
+
+                        if coverage_bp_type == BreakpointType::Repeated {
+                            self.restore_breakpoint = Some((rip, self.cr3()));
+                        }
+
+                        // Restored byte, continue execution at the top of the loop
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+
+            // Handle the FuzzVmExit to determine
+            let ret = handle_vmexit(&ret, self, fuzzer, None, input, Some(&mut feedback));
+            execution = match ret {
+                Err(e) => {
+                    return Err(e);
+                }
+                Ok(execution) => execution,
+            };
+
+            // Check if the VM needs to be timed out
+            if self.start_time.elapsed() > vm_timeout {
+                log::warn!("Coverage Timed out.. exiting");
+                execution = Execution::TimeoutReset;
+                break;
+            }
+        }
+
+        // Restore the original bytes that we overwrote with breakpoints
+        for (addr, orig_byte) in hit_breakpoints {
+            self.write_bytes_dirty(addr, self.cr3(), &[orig_byte])?;
+        }
+
+        Ok((execution, feedback, (reset_perf, run_perf)))
+    }
+
     /// Internal function used to reset the guest and run with redqueen breakpoints enabled
     ///
     /// # Returns
@@ -4408,7 +4514,6 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 vm_timeout,
                 &mut original_coverage,
             )?;
-
 
             for rule in &orig_rules {
                 let candidates = max_entropy_input.get_redqueen_rule_candidates(rule);
