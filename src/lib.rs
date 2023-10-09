@@ -882,7 +882,7 @@ struct KvmEnvironment {
     /// Parsed symbols if the project has symbols available
     symbols: Option<VecDeque<Symbol>>,
 
-    /// Parsed symbol breakpoints if any coverage breakpoints are avilable in the project
+    /// Parsed symbol breakpoints if any coverage breakpoints are available in the project
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
 }
 
