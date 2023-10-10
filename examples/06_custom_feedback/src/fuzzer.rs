@@ -171,7 +171,7 @@ impl Fuzzer for MazeFuzzer {
                             let x = (fuzzvm.rsi() & 0xffff) as u32;
                             let y = (fuzzvm.rdx() & 0xffff) as u32;
                             if feedback.record_pair(x, y) {
-                                log::debug!("found new position: {:?}", (x, y));
+                                log::info!("found new position: {:?}", (x, y));
                             }
                         }
                         fuzzvm.fake_immediate_return()?;
@@ -188,7 +188,7 @@ impl Fuzzer for MazeFuzzer {
                             let x = (fuzzvm.rdi() & 0xffff) as u32;
                             let y = (fuzzvm.rsi() & 0xffff) as u32;
                             if feedback.record_pair(x, y) {
-                                log::debug!("found new winning position: {:?}", (x, y));
+                                log::info!("found new winning position: {:?}", (x, y));
                             }
                         }
                         Ok(Execution::Continue)
@@ -210,7 +210,7 @@ impl Fuzzer for MazeFuzzer {
                             let mut b = [0u8; 16];
                             fuzzvm.read_bytes(VirtAddr(ptr_b), fuzzvm.cr3(), &mut b)?;
                             if let Some(new_len) = feedback.record_prefix_dist(0u64, &a, &b) {
-                                log::debug!(
+                                log::info!(
                                     "found new minimal code with distance {} - {:?} vs. {:?}",
                                     new_len,
                                     a,

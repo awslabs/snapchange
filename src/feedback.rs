@@ -87,9 +87,10 @@ pub(crate) fn classify_hitcount_into_bucket(hitcount: u16) -> u16 {
     }
 }
 
-/// original AFL-style bucketing + another bucket for hitcounts greater than 255
+/// original AFL-style bucketing + another bucket for hitcounts greater than 255.
+/// See also [`classify_hitcount_into_bucket`].
 ///
-/// see also [`classify_hitcount_into_bucket`]
+/// Takes hitcount and returns bucketed value.
 pub(crate) fn classify_hitcount_into_bucket_afl_style(hitcount: u16) -> u16 {
     match hitcount {
         0..4 => hitcount,
