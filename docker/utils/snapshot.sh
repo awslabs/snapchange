@@ -28,6 +28,11 @@ if [[ -z "$SNAPSHOT_KERNEL_ELF" ]]; then
 fi
 if [[ -z "$LIBFUZZER" ]]; then 
     LIBFUZZER=0
+else
+    SNAPSHOT_FUNCTION="LLVMFuzzerTestOneInput"
+fi
+if [[ -z "$SNAPSHOT_FUNCTION" ]]; then
+    SNAPSHOT_FUNCTION=""
 fi
 if [[ -z "$QEMU_MEM" ]]; then
     QEMU_MEM="4G"
@@ -204,6 +209,7 @@ while true; do
           log_error "qemu did not produce a dump of the VM's memory/register state. Have you added a snapshot hypercall to your harness?"
           log_msg "Make sure to set the environment variable LIBFUZZER=1 if you are using a libfuzzer binary."
           log_msg "Otherwise, make sure that your program contains \`__asm(\"int3 ; vmcall\");\` to trigger the snapshot."
+          log_msg "Or set the envirionment variable SNAPSHOT_FUNCTION=THISFUNCTION to snapshot at THISFUNCTION"
           exit 1
         fi
 
@@ -244,7 +250,7 @@ cp vm.log "$OUTPUT/"
 
 log_success "extracted snapshot - postprocessing now."
 
-if [[ "$LIBFUZZER" -eq 1 ]]; then 
+if [[ $SNAPSHOT_FUNCTION ]]; then 
     log_msg "patching physmem"
     BYTES="$(cat /tmp/libfuzzer.bytes.bak)"
     R2Z=""
