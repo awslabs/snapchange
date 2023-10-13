@@ -109,12 +109,14 @@
 #![allow(rustdoc::invalid_rust_codeblocks)]
 #![deny(missing_docs)]
 
+use feedback::FeedbackTracker;
 use kvm_bindings::{
     kvm_cpuid2, kvm_userspace_memory_region, CpuId, KVM_MAX_CPUID_ENTRIES, KVM_MEM_LOG_DIRTY_PAGES,
     KVM_SYNC_X86_EVENTS, KVM_SYNC_X86_REGS, KVM_SYNC_X86_SREGS,
 };
 use kvm_ioctls::{Cap, Kvm, VmFd};
 
+pub use anyhow;
 use anyhow::{ensure, Context, Result};
 use clap::Parser;
 
@@ -130,6 +132,8 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+
+pub use rand;
 
 pub mod fuzzvm;
 pub use fuzzvm::{FuzzVm, FuzzVmExit};
@@ -182,6 +186,7 @@ mod commands;
 
 mod coverage_analysis;
 pub mod expensive_mutators;
+pub mod feedback;
 mod filesystem;
 pub mod fuzz_input;
 pub mod mutators;
@@ -230,7 +235,7 @@ macro_rules! dbg_hex {
 }
 
 /// What to do after handling a [`FuzzVmExit`]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Execution {
     /// Hit coverage event and continue execution of the current VM
     CoverageContinue,
@@ -251,6 +256,16 @@ pub enum Execution {
 
     /// Reset the VM state and continue execution to the beginning of the snapshot
     Reset,
+}
+
+impl Execution {
+    /// Returns true if the given Execution state is a crash.
+    pub fn is_crash(&self) -> bool {
+        match &self {
+            Self::CrashReset { .. } => true,
+            _ => false
+        }
+    }
 }
 
 /// Maximum number of cores supported
@@ -356,13 +371,14 @@ fn handle_vmexit<FUZZER: Fuzzer>(
     fuzzer: &mut FUZZER,
     crash_dir: Option<&Path>,
     input: &FUZZER::Input,
+    feedback: Option<&mut FeedbackTracker>,
 ) -> Result<Execution> {
     let execution;
 
     // Determine what to do with the VMExit
     match vmexit {
         FuzzVmExit::Breakpoint(rip) => {
-            match fuzzvm.handle_breakpoint(fuzzer, input) {
+            match fuzzvm.handle_breakpoint(fuzzer, input, feedback) {
                 Err(err) => {
                     // log::warn!("Breakpoint fail.. reset: {err:?}");
 
@@ -872,7 +888,7 @@ struct KvmEnvironment {
     /// Parsed symbols if the project has symbols available
     symbols: Option<VecDeque<Symbol>>,
 
-    /// Parsed symbol breakpoints if any coverage breakpoints are avilable in the project
+    /// Parsed symbol breakpoints if any coverage breakpoints are available in the project
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
 }
 
@@ -1033,4 +1049,26 @@ pub fn snapchange_main<FUZZER: Fuzzer + 'static>() -> Result<()> {
     tui_logger::move_events();
 
     res
+}
+
+/// Import most important snapchange functions, traits, and types.
+/// ```
+/// use snapchange::prelude::*;
+/// ```
+pub mod prelude {
+    pub use super::rand::seq::SliceRandom;
+    pub use super::rand::Rng as _;
+    pub use super::{
+        addrs::{Cr3, VirtAddr},
+        anyhow,
+        anyhow::Result,
+        fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer},
+        fuzzvm::FuzzVm,
+        rand,
+        rng::Rng,
+        snapchange_main, Execution, FuzzInput,
+    };
+
+    #[cfg(feature = "custom_feedback")]
+    pub use super::feedback::FeedbackTracker;
 }

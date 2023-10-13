@@ -9,6 +9,7 @@ use crate::cmp_analysis::RedqueenRule::{SingleF32, SingleU16, SingleU32, SingleU
 use crate::expensive_mutators;
 use crate::mutators;
 use crate::rng::Rng;
+use crate::feedback::FeedbackLog;
 
 use anyhow::Result;
 use rand::{Rng as _, RngCore};
@@ -615,11 +616,7 @@ pub(crate) struct InputMetadata {
     pub(crate) mutation: Vec<String>,
 
     /// New coverage blocks hit by this input
-    #[serde(
-        serialize_with = "serialize_vec_u64_as_hex",
-        deserialize_with = "deserialize_vec_u64_from_hex"
-    )]
-    pub(crate) new_coverage: Vec<u64>,
+    pub(crate) new_coverage: Vec<FeedbackLog>,
 }
 
 /// Custom serialize for Vec<u64>

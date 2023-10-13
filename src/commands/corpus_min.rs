@@ -390,7 +390,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
             }
 
             // Handle the FuzzVmExit to determine
-            let ret = handle_vmexit(&ret, &mut fuzzvm, &mut fuzzer, None, &input);
+            let ret = handle_vmexit(&ret, &mut fuzzvm, &mut fuzzer, None, &input, None);
 
             execution = match ret {
                 Err(e) => {
@@ -404,7 +404,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
             // we need to check if the instruction is a breakpoint regardless in order to
             // apply fuzzer specific breakpoint logic. We can ignore the "unknown breakpoint"
             // error that is thrown if a breakpoint is not found;
-            if let Ok(new_execution) = fuzzvm.handle_breakpoint(&mut fuzzer, &input) {
+            if let Ok(new_execution) = fuzzvm.handle_breakpoint(&mut fuzzer, &input, None) {
                 execution = new_execution;
             } else {
                 // Ignore the unknown breakpoint case since we check every instruction due to

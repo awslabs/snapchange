@@ -6,7 +6,7 @@ use std::convert::TryInto;
 
 /// A physical address
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PhysAddr(pub u64);
 
 impl PhysAddr {
@@ -49,7 +49,7 @@ impl std::ops::Deref for PhysAddr {
 
 /// A virtual address
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Hash)]
 pub struct VirtAddr(pub u64);
 
 impl From<u64> for VirtAddr {
@@ -134,5 +134,17 @@ impl std::ops::Deref for Cr3 {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl std::fmt::Debug for VirtAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "VirtAddr({:#x})", self.0)
+    }
+}
+
+impl std::fmt::Debug for PhysAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PhysAddr({:#x})", self.0)
     }
 }

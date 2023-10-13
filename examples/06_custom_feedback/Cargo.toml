@@ -1,0 +1,28 @@
+[package]
+name = "maze_fuzzer"
+version = "0.1.0"
+edition = "2021"
+exclude = ["qemu_snapshot", "snapshot"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1"
+snapchange = {path = "../../", default-features = false, features = ["custom_feedback"]}
+rand = "0.8"
+log = "0.4"
+
+[build-dependencies]
+regex = "1"
+
+[features]
+default = ["enable_feedback"]
+enable_feedback = []
+feedback_on_every_pos = []
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+opt-level = 3
+debug = true

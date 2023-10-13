@@ -1,5 +1,7 @@
 //! Execute the `redqueen` command to gather Redqueen coverage for a single input
 
+use std::sync::{Arc, RwLock};
+
 #[cfg(feature = "redqueen")]
 use anyhow::{anyhow, ensure, Context, Result};
 
@@ -20,10 +22,14 @@ use std::{
 };
 
 #[cfg(feature = "redqueen")]
+use x86_64::registers::rflags::RFlags;
+
+#[cfg(feature = "redqueen")]
 use crate::{
-    cmdline, config::Config, fuzz_input::FuzzInput, fuzzer::Fuzzer, fuzzvm, fuzzvm::FuzzVm,
-    init_environment, stack_unwinder::StackUnwinders, unblock_sigalrm, Cr3, KvmEnvironment,
-    ProjectState, ResetBreakpointType, Symbol, VbCpu, VirtAddr, THREAD_IDS,
+    cmdline, config::Config, feedback::FeedbackLog, feedback::FeedbackTracker,
+    fuzz_input::FuzzInput, fuzzer::Fuzzer, fuzzvm, fuzzvm::FuzzVm, init_environment,
+    stack_unwinder::StackUnwinders, unblock_sigalrm, Cr3, KvmEnvironment, Memory, ProjectState,
+    ResetBreakpointType, Symbol, VbCpu, VirtAddr, THREAD_IDS,
 };
 
 /// Execute the c subcommand to gather coverage for a particular input
@@ -41,7 +47,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         kvm,
         cpuids,
         physmem_file,
-        clean_snapshot_addr,
+        clean_snapshot,
         symbols,
         symbol_breakpoints,
     } = init_environment(project_state)?;
@@ -65,7 +71,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         &project_state.vbcpu,
         &cpuids,
         physmem_file.as_raw_fd(),
-        clean_snapshot_addr,
+        clean_snapshot,
         &symbols,
         symbol_breakpoints,
         covbp_bytes,
@@ -86,7 +92,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     vbcpu: &VbCpu,
     cpuid: &CpuId,
     snapshot_fd: i32,
-    clean_snapshot: u64,
+    clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<VecDeque<Symbol>>,
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
     coverage_breakpoints: BTreeMap<VirtAddr, u8>,
@@ -124,6 +130,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     }
 
     let prev_redqueen_rules = BTreeMap::new();
+    let mut feedback = FeedbackTracker::default();
 
     // Create a 64-bit VM for fuzzing
     let mut fuzzvm = FuzzVm::<FUZZER>::create(
@@ -152,13 +159,15 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     // (During normal fuzzing, we keep track of the coverage during redqueen
     //  as well. Mimic that here, but it won't be used since we aren't applying
     //  coverage breakpoints for this command).
-    let mut covbps = BTreeSet::new();
+    // let mut covbps = BTreeSet::new();
 
-    let coverage =
-        fuzzvm.reset_and_run_with_redqueen(&input, &mut fuzzer, vm_timeout, &mut covbps)?;
+    fuzzvm.reset_and_run_with_redqueen(&input, &mut fuzzer, vm_timeout, &mut feedback)?;
 
-    for (addr, rflags) in coverage {
-        println!("Address: {addr:#018x?} RFLAGS: {rflags:?}");
+    for log_entry in feedback.take_log() {
+        if let FeedbackLog::Redqueen((addr, rflags)) = log_entry {
+            let rflags = RFlags::from_bits_truncate(rflags);
+            println!("Address: {addr:#018x?} RFLAGS: {rflags:?}");
+        }
     }
 
     for (id, rules) in fuzzvm.redqueen_rules {
