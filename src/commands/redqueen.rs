@@ -1,5 +1,7 @@
 //! Execute the `redqueen` command to gather Redqueen coverage for a single input
 
+use std::sync::{Arc, RwLock};
+
 #[cfg(feature = "redqueen")]
 use anyhow::{anyhow, ensure, Context, Result};
 
@@ -19,7 +21,6 @@ use std::{
     fs::File,
     os::unix::io::AsRawFd,
     path::{Path, PathBuf},
-    sync::{Arc, RwLock},
     time::Duration,
 };
 
@@ -28,14 +29,15 @@ use crate::{
     cmdline,
     cmp_analysis::{RedqueenArguments, RedqueenCoverage},
     config::Config,
+    feedback::FeedbackLog,
+    feedback::FeedbackTracker,
     fuzz_input::FuzzInput,
     fuzzer::Fuzzer,
     fuzzvm,
     fuzzvm::FuzzVm,
     init_environment,
-    memory::Memory,
     stack_unwinder::StackUnwinders,
-    unblock_sigalrm, Cr3, KvmEnvironment, ProjectState, ResetBreakpointType, Symbol, VbCpu,
+    unblock_sigalrm, Cr3, KvmEnvironment, Memory, ProjectState, ResetBreakpointType, Symbol, VbCpu,
     VirtAddr, THREAD_IDS,
 };
 
@@ -138,6 +140,8 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         contexts.push(tmp);
     }
 
+    let mut feedback = FeedbackTracker::default();
+
     // Create a 64-bit VM for fuzzing
     let mut fuzzvm = FuzzVm::<FUZZER>::create(
         u64::try_from(core_id.id)?,
@@ -165,22 +169,20 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     // (During normal fuzzing, we keep track of the coverage during redqueen
     //  as well. Mimic that here, but it won't be used since we aren't applying
     //  coverage breakpoints for this command).
-    let mut covbps = BTreeSet::new();
+    // let mut covbps = BTreeSet::new();
 
-    let (coverage, _perf) =
-        fuzzvm.reset_and_run_with_redqueen(&input, &mut fuzzer, vm_timeout, &mut covbps)?;
+    fuzzvm.reset_and_run_with_redqueen(&input, &mut fuzzer, vm_timeout, &mut feedback)?;
 
-    for RedqueenCoverage {
-        virt_addr,
-        rflags,
-        hit_count,
-    } in coverage
-    {
-        println!(
-            "[{hit_count:5}] Address: {:#018x?} RFLAGS: {:?}",
-            virt_addr.0,
-            RFlags::from_bits_truncate(rflags)
-        );
+    for log_entry in feedback.take_log() {
+        if let FeedbackLog::Redqueen(RedqueenCoverage {
+            virt_addr,
+            rflags,
+            hit_count,
+        }) = log_entry
+        {
+            let rflags = RFlags::from_bits_truncate(rflags);
+            println!("Address: {virt_addr:#018x?} RFLAGS: {rflags:?} Hits: {hit_count}");
+        }
     }
 
     for (id, rules) in fuzzvm.redqueen_rules {

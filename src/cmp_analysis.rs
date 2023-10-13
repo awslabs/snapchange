@@ -15,7 +15,7 @@ use crate::Execution;
 use crate::FuzzVm;
 
 /// Coverage found during redqueen
-#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RedqueenCoverage {
     /// Virtual address for this coverage
     pub virt_addr: VirtAddr,

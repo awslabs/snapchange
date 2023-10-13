@@ -37,7 +37,7 @@ impl Fuzzer for Example05Fuzzer {
             Breakpoint {
                 lookup: AddressLookup::SymbolOffset("libc.so.6!__GI___getpid", 0x0),
                 bp_type: BreakpointType::Repeated,
-                bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer| {
+                bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer, _feedback| {
                     // Set the return value to 0xdeadbeef
                     fuzzvm.set_rax(0xdead_beef);
 

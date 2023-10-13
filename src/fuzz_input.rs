@@ -10,6 +10,7 @@ use crate::cmp_analysis::{
 };
 
 use crate::expensive_mutators;
+use crate::feedback::FeedbackLog;
 use crate::mutators;
 use crate::rng::Rng;
 use crate::VirtAddr;
@@ -678,11 +679,7 @@ pub(crate) struct InputMetadata {
     pub(crate) mutation: Vec<String>,
 
     /// New coverage blocks hit by this input
-    #[serde(
-        serialize_with = "serialize_as_hex",
-        deserialize_with = "deserialize_from_hex"
-    )]
-    pub(crate) new_coverage: Vec<CoverageType>,
+    pub(crate) new_coverage: Vec<FeedbackLog>,
 }
 
 /// Custom serialize for Vec<u64>

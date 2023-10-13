@@ -14,6 +14,7 @@ use rand::Rng as _;
 use crate::addrs::{Cr3, VirtAddr};
 use crate::cmp_analysis::RedqueenRule;
 use crate::expensive_mutators;
+use crate::feedback::FeedbackTracker;
 use crate::filesystem::FileSystem;
 use crate::fuzz_input::FuzzInput;
 use crate::fuzzvm::{FuzzVm, HookFn};
@@ -166,22 +167,29 @@ pub trait Fuzzer: Default + Sized {
     fn schedule_next_input(
         &mut self,
         corpus: &[Self::Input],
+        feedback: &mut FeedbackTracker,
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
     ) -> Self::Input {
-        // Small chance to make a new input
-        if rng.next() % 0xffffff == 42 {
-            Self::Input::generate(corpus, rng, dictionary, Self::MAX_INPUT_LENGTH)
-        } else {
-            // Otherwise attempt to pick one from the corpus
-            if let Some(input) = corpus.choose(rng) {
-                input.clone()
-            } else {
-                log::info!("DEFAULT GENERATE");
+        // very small chance to make a new input
+        if rng.next() % 0xffff == 42 {
+            // P = 2**(-16)
+            return Self::Input::generate(corpus, rng, dictionary, Self::MAX_INPUT_LENGTH);
+        }
 
-                // Default to generating a new input
-                Self::Input::generate(corpus, rng, dictionary, Self::MAX_INPUT_LENGTH)
+        // make it more likely to fuzz the last new (local) finding
+        if rng.gen_bool(0.01) {
+            if let Some(last_added) = corpus.last().cloned() {
+                return last_added;
             }
+        }
+
+        // Otherwise attempt to pick one from the corpus
+        if let Some(input) = corpus.choose(rng) {
+            input.clone()
+        } else {
+            // Default to generating a new input
+            Self::Input::generate(corpus, rng, dictionary, Self::MAX_INPUT_LENGTH)
         }
     }
 

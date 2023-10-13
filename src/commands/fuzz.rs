@@ -36,11 +36,14 @@ use crate::{fuzzvm, unblock_sigalrm, write_crash_input, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
 use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
 
-#[cfg(feature = "redqueen")]
-use x86_64::registers::rflags::RFlags;
+use crate::feedback::{FeedbackLog, FeedbackTracker};
 
 #[cfg(feature = "redqueen")]
 use crate::cmp_analysis::{RedqueenArguments, RedqueenCoverage, RedqueenRule};
+#[cfg(feature = "redqueen")]
+use crate::feedback::RedqueenFeedback;
+#[cfg(feature = "redqueen")]
+use x86_64::registers::rflags::RFlags;
 
 use crate::stack_unwinder::StackUnwinders;
 
@@ -543,7 +546,14 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         // Set the core affinity for this core to always be 0
         core_affinity::set_for_current(first_core);
 
-        // let prev_coverage = prev_coverage.iter().map(|x| x.0).collect();
+        let mut tmp = BTreeSet::new();
+        for x in prev_coverage.iter() {
+            // TODO: handle other previous coverage?
+            // if let FeedbackLog::VAddr(addr) = *x {
+            tmp.insert(*x);
+            // }
+        }
+        let prev_coverage = tmp;
 
         // Start the stats worker
         let res = stats::worker(
@@ -654,7 +664,7 @@ fn start_core<FUZZER: Fuzzer>(
     stop_after_time: Option<Duration>,
     stop_after_first_crash: bool,
     unwinders: StackUnwinders,
-    #[cfg(feature = "redqueen")] prev_redqueen_coverage: BTreeSet<RedqueenCoverage>,
+    #[cfg(feature = "redqueen")] prev_redqueen_coverage: RedqueenFeedback,
     #[cfg(feature = "redqueen")] redqueen_breakpoints: Option<Vec<(u64, RedqueenArguments)>>,
 ) -> Result<()> {
     /// Helper macro to time the individual components of resetting the guest state
@@ -715,14 +725,17 @@ fn start_core<FUZZER: Fuzzer>(
 
     fuzzvm.core_stats = Some(core_stats.clone());
 
-    let mut coverage = prev_coverage;
-    log::info!("Starting with {} coverage", coverage.len());
+    log::info!("Starting with {} coverage", prev_coverage.len());
+
+    let mut feedback: FeedbackTracker = FeedbackTracker::from_prev(prev_coverage);
 
     #[cfg(feature = "redqueen")]
-    let mut redqueen_coverage = prev_redqueen_coverage;
+    {
+        feedback.redqueen = prev_redqueen_coverage;
+    }
 
     // Addresses covered by the current input
-    let mut new_coverage_for_input = BTreeSet::new();
+    // let mut new_coverage_for_input = BTreeSet::new();
 
     // Number of iterations before syncing stats
     let mut coverage_sync = std::time::Instant::now();
@@ -784,21 +797,6 @@ fn start_core<FUZZER: Fuzzer>(
                 // Add the current iterations to the coverage
                 core_stats.lock().unwrap().iterations += iters;
 
-                // Reset the local coverage to match the global coverage set in stats
-                core_stats
-                    .lock()
-                    .unwrap()
-                    .redqueen_coverage
-                    .append(&mut redqueen_coverage);
-                for cov in &core_stats.lock().unwrap().redqueen_coverage {
-                    redqueen_coverage.insert(*cov);
-                }
-
-                // Update the number of remaining number of coverage breakpoints
-                if let Some(ref cov_bps) = fuzzvm.coverage_breakpoints {
-                    core_stats.lock().unwrap().cov_left = u32::try_from(cov_bps.len())?;
-                }
-
                 // Reset the iteration counter
                 iters = 0;
 
@@ -810,14 +808,17 @@ fn start_core<FUZZER: Fuzzer>(
         if coverage_sync.elapsed() >= config.stats.coverage_sync_timer {
             time!(SyncCov1, {
                 // Append the current coverage
-                core_stats.lock().unwrap().coverage.append(&mut coverage);
+                core_stats.lock().unwrap().coverage.merge(&feedback);
             });
 
             time!(SyncCov2, {
                 // Reset the local coverage to match the global coverage set in stats
-                for addr in &core_stats.lock().unwrap().coverage {
-                    coverage.insert(*addr);
-                }
+                // for addr in &core_stats.lock().unwrap().coverage {
+                //     // coverage.insert(*addr);
+                //     feedback.record_codecov(*addr);
+                // }
+                let global = &core_stats.lock().unwrap().coverage;
+                feedback.merge(global);
             });
 
             // Reset the last sync counter
@@ -827,7 +828,7 @@ fn start_core<FUZZER: Fuzzer>(
         iters += 1;
 
         // Reset new coverage marker
-        new_coverage_for_input.clear();
+        // new_coverage_for_input.clear();
 
         // Reset the fuzzer state
         fuzzer.reset_fuzzer_state();
@@ -835,12 +836,12 @@ fn start_core<FUZZER: Fuzzer>(
         // Get a random input from the corpus
         let mut input = time!(
             ScheduleInput,
-            fuzzer.schedule_next_input(&corpus, &mut rng, dictionary)
+            fuzzer.schedule_next_input(&corpus, &mut feedback, &mut rng, dictionary)
         );
 
         let original_file_hash = input.fuzz_hash();
         let orig_corpus_len = corpus.len();
-        let orig_coverage_len = coverage.len();
+        let orig_coverage_len = feedback.len();
 
         // Gather redqueen for this input if there aren't already replacement rules found
         #[cfg(feature = "redqueen")]
@@ -871,11 +872,11 @@ fn start_core<FUZZER: Fuzzer>(
             // Gather redqueen rules for this input regardless of requeen core or not since
             // we can use redqueen rules as a mutation strategy randomly
             if new_input && fuzzvm.rng.next() % 250 == 2 {
-                let (mut rq_coverage, _perf) = fuzzvm.reset_and_run_with_redqueen(
+                fuzzvm.reset_and_run_with_redqueen(
                     &input,
                     &mut fuzzer,
                     vm_timeout,
-                    &mut coverage,
+                    &mut feedback,
                 )?;
 
                 // reset the guest state after gathering redqueen coverage
@@ -897,46 +898,17 @@ fn start_core<FUZZER: Fuzzer>(
                     let orig_corpus_len = corpus.len();
 
                     // Execute redqueen for this input
-                    let start = crate::utils::rdtsc();
-                    let perf = fuzzvm.gather_redqueen(
+                    fuzzvm.gather_redqueen(
                         &input,
                         &mut fuzzer,
                         vm_timeout,
                         &mut corpus,
-                        &mut coverage,
-                        &mut redqueen_coverage,
+                        &mut feedback,
                         redqueen_time_spent,
                         &project_dir.join("metadata"),
                         core_stats,
                         0,
                     )?;
-
-                    let mut redqueen_elapsed = crate::utils::rdtsc() - start;
-                    redqueen_elapsed -= perf.in_vm;
-                    redqueen_elapsed -= perf.pre_run_vm;
-                    redqueen_elapsed -= perf.post_run_vm;
-
-                    // Update the stats for spending time in redqueen
-                    core_stats
-                        .lock()
-                        .unwrap()
-                        .perf_stats
-                        .add(PerfMark::InVm, perf.in_vm);
-                    core_stats
-                        .lock()
-                        .unwrap()
-                        .perf_stats
-                        .add(PerfMark::PreRunVm, perf.pre_run_vm);
-                    core_stats
-                        .lock()
-                        .unwrap()
-                        .perf_stats
-                        .add(PerfMark::PostRunVm, perf.post_run_vm);
-                    core_stats
-                        .lock()
-                        .unwrap()
-                        .perf_stats
-                        .add(PerfMark::Redqueen, redqueen_elapsed);
 
                     // Signal this thread is in not in redqueen
                     core_stats.lock().unwrap().in_redqueen = false;
@@ -967,10 +939,10 @@ fn start_core<FUZZER: Fuzzer>(
             log::info!("Redqueen new corpus! {orig_corpus_len} -> {}", corpus.len());
         }
 
-        if coverage.len() != orig_coverage_len {
+        if feedback.len() != orig_coverage_len {
             log::info!(
                 "Redqueen new coverage! {orig_coverage_len} -> {}",
-                coverage.len()
+                feedback.len()
             );
         }
 
@@ -1075,13 +1047,22 @@ fn start_core<FUZZER: Fuzzer>(
             // Handle the FuzzVmExit to determine if the VM should continue or reset
             execution = time!(
                 HandleVmExit,
-                handle_vmexit(&ret, &mut fuzzvm, &mut fuzzer, Some(&crash_dir), &input)?
+                handle_vmexit(
+                    &ret,
+                    &mut fuzzvm,
+                    &mut fuzzer,
+                    Some(&crash_dir),
+                    &input,
+                    Some(&mut feedback)
+                )?
             );
 
             // If we hit a coverage execution, add the RIP to
-            if matches!(execution, Execution::CoverageContinue) && coverage.insert(rip) {
-                // log::info!("New cov: {rip:x?}");
-                new_coverage_for_input.insert(rip);
+            match execution {
+                Execution::CoverageContinue => {
+                    feedback.record_codecov(rip);
+                }
+                _ => {}
             }
 
             // If we hit a coverage execution, add the RIP to
@@ -1091,10 +1072,8 @@ fn start_core<FUZZER: Fuzzer>(
                     .as_ref()
                     .unwrap()
                     .contains_key(&rip)
-                && coverage.insert(rip)
             {
-                // log::info!("New cov: {rip:#x}");
-                new_coverage_for_input.insert(rip);
+                feedback.record_codecov(rip);
             }
 
             if SINGLE_STEP {
@@ -1102,7 +1081,9 @@ fn start_core<FUZZER: Fuzzer>(
                 // we need to check if the instruction is a breakpoint regardless in order to
                 // apply fuzzer specific breakpoint logic. We can ignore the "unknown breakpoint"
                 // error that is thrown if a breakpoint is not found;
-                if let Ok(new_execution) = fuzzvm.handle_breakpoint(&mut fuzzer, &input) {
+                if let Ok(new_execution) =
+                    fuzzvm.handle_breakpoint(&mut fuzzer, &input, Some(&mut feedback))
+                {
                     execution = new_execution;
                 }
             }
@@ -1111,15 +1092,24 @@ fn start_core<FUZZER: Fuzzer>(
                 execution = Execution::TimeoutReset;
             }
 
-            match execution {
-                Execution::Reset | Execution::CrashReset { .. } | Execution::TimeoutReset => {
-                    // Reset the VM if requested
-                    break;
-                }
-                Execution::Continue | Execution::CoverageContinue => {
-                    // Nothing to do for continuing execution
-                }
+            // Reset the VM if requested
+            if matches!(
+                execution,
+                Execution::Reset | Execution::CrashReset { .. } | Execution::TimeoutReset
+            ) {
+                break;
             }
+            // match execution {
+            //     Execution::Reset | Execution::CrashReset { .. } | Execution::TimeoutReset => {
+            //         // Reset the VM if requested
+            //         break;
+            //     }
+            // Execution::Continue
+            // | Execution::CoverageContinue
+            // | Execution::CustomCoverageContinue(_) => {
+            //     // Nothing to do for continuing execution
+            // }
+            // }
         }
 
         // Exit the fuzz loop if told to
@@ -1187,10 +1177,8 @@ fn start_core<FUZZER: Fuzzer>(
                 }
             }
 
-            let new_coverage = new_coverage_for_input
-                .iter()
-                .map(|x| CoverageType::Address(x.0))
-                .collect();
+            // Get the new coverage for the metadata log
+            let new_coverage = feedback.take_log();
 
             let mut input_bytes = Vec::new();
             input.to_bytes(&mut input_bytes)?;
@@ -1229,15 +1217,11 @@ fn start_core<FUZZER: Fuzzer>(
             if stop_after_first_crash {
                 break;
             }
-        }
+        } else if feedback.has_new() {
+            // If this input generated new coverage, add the input to the corpus
 
-        // If this input generated new coverage, add the input to the corpus
-        if !new_coverage_for_input.is_empty() {
             // Gather the mutation metadata for this iteration
-            let new_coverage: Vec<_> = new_coverage_for_input
-                .iter()
-                .map(|x| CoverageType::Address(x.0))
-                .collect();
+            let new_coverage = feedback.take_log();
 
             let mutation_metadata = InputMetadata {
                 original_file: original_file_hash,
@@ -1262,6 +1246,8 @@ fn start_core<FUZZER: Fuzzer>(
             // Add the input to the corpus
             corpus.push(input);
         }
+
+        feedback.ensure_clean();
 
         if !fuzzvm.console_output.is_empty() {
             log::debug!("Console output!");
@@ -1306,12 +1292,8 @@ fn start_core<FUZZER: Fuzzer>(
     *THREAD_IDS[core_id.id].lock().unwrap() = None;
 
     // Append the current coverage
-    core_stats.lock().unwrap().coverage.append(&mut coverage);
-    core_stats
-        .lock()
-        .unwrap()
-        .redqueen_coverage
-        .append(&mut redqueen_coverage);
+    core_stats.lock().unwrap().coverage.merge(&feedback);
+    // core_stats.lock().unwrap().redqueen_coverage.append(&mut redqueen_coverage);
 
     // Write this current corpus to disk
     for input in &corpus {

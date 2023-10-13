@@ -29,6 +29,7 @@ clap-verbosity-flag = "2.0"
 rand          = "0.8"
 rand_core     = "0.6"
 ahash         = "0.8"
+rustc-hash    = "1.1.0"
 
 # For addr2line implementation 
 addr2line     = "0.17.0"
@@ -51,3 +52,4 @@ incremental = true
 [features]
 default = []
 redqueen = []
+custom_feedback = []

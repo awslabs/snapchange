@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-RZ_VERSION=v0.6.1
+RZ_VERSION=v0.6.2
 RZ_GHIDRA_VERSION=v0.6.0
 
 RZ_GITHUB_STATIC_BUILDS="https://github.com/rizinorg/rizin/releases/download/${RZ_VERSION}/rizin-${RZ_VERSION}-static-x86_64.tar.xz"
