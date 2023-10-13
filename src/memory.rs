@@ -932,7 +932,7 @@ impl Memory {
                 .ok_or(Error::WriteToUnmappedVirtualAddress(
                     virt_addr,
                     cr3,
-                    0x1234_0000_0000_0000 + buf.len(),
+                    buf.len(),
                 ))?;
 
             // Read the translated physical address into the given buf
@@ -954,7 +954,7 @@ impl Memory {
                 .ok_or(Error::WriteToUnmappedVirtualAddress(
                     *virt_addr,
                     cr3,
-                    0x2222_0000_0000_0000 + buf.len(),
+                    buf.len(),
                 ))?;
 
             let size = usize::try_from(*size).unwrap();

@@ -12,6 +12,7 @@ use vmm_sys_util::ioctl::{ioctl_with_ref, ioctl_with_val};
 
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::FuzzVm;
+use crate::stats::PerfMark;
 
 /// Expression that calculates an ioctl number.
 ///
@@ -148,6 +149,8 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     ///
     /// * `KVM_GET_DIRTY_LOG` failed
     pub fn get_dirty_logs(&mut self) -> Result<()> {
+        self.scoped_timer(PerfMark::GetDirtyLogs);
+
         for (slot, bitmap) in self.dirty_bitmaps.iter_mut().enumerate() {
             // Create the structure for this clear
             let dirty_bitmap = bitmap.as_mut_ptr().cast::<libc::c_void>();

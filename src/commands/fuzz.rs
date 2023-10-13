@@ -25,6 +25,7 @@ use crate::fuzz_input::{CoverageType, FuzzInput, InputMetadata};
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::FuzzVm;
 use crate::rng::Rng;
+use crate::stats::PerfStatTimer;
 use crate::stats::{self, PerfMark};
 use crate::try_u64;
 use crate::utils::save_input_in_dir;
@@ -659,22 +660,14 @@ fn start_core<FUZZER: Fuzzer>(
     /// Helper macro to time the individual components of resetting the guest state
     macro_rules! time {
         ($marker:ident, $expr:expr) => {{
-            // Init the timer
-            core_stats
-                .lock()
-                .unwrap()
-                .perf_stats
-                .start(PerfMark::$marker);
+            // Create the scoped timer
+            let _timer = PerfStatTimer::new(core_stats.clone(), PerfMark::$marker);
 
             // Execute the given expression
             let result = $expr;
 
-            // Calculate the time took to execute $expr
-            core_stats
-                .lock()
-                .unwrap()
-                .perf_stats
-                .mark(PerfMark::$marker);
+            // Drop the timer
+            drop(_timer);
 
             // Return the result from the expression
             result
@@ -720,6 +713,8 @@ fn start_core<FUZZER: Fuzzer>(
         redqueen_breakpoints,
     )?;
 
+    fuzzvm.core_stats = Some(core_stats.clone());
+
     let mut coverage = prev_coverage;
     log::info!("Starting with {} coverage", coverage.len());
 
@@ -754,31 +749,33 @@ fn start_core<FUZZER: Fuzzer>(
     let corpus_dir = project_dir.join("current_corpus");
 
     let fuzz_start_time = std::time::Instant::now();
+    core_stats.lock().unwrap().perf_stats.start_time = crate::utils::rdtsc();
 
     'finish: for _iter in 0usize.. {
+        // Create the scoped timer
+        let _total_timer = PerfStatTimer::new(core_stats.clone(), PerfMark::Total);
+
         // Signal that this core is alive
         core_stats.lock().unwrap().alive = true;
 
-        // Mark and reset the performance counter for the total elapsed time
-        core_stats.lock().unwrap().perf_stats.mark(PerfMark::Total);
-        core_stats.lock().unwrap().perf_stats.start(PerfMark::Total);
-
         // Sync the corpus with the main stats
         if last_corpus_sync.elapsed() >= config.stats.merge_coverage_timer {
-            // Replace the fuzzer corpus
-            let mut curr_stats = core_stats.lock().unwrap();
+            time!(MergeCoverageSync, {
+                // Replace the fuzzer corpus
+                let mut curr_stats = core_stats.lock().unwrap();
 
-            if let Some(new_corp) = curr_stats.new_corpus.take() {
-                if !new_corp.is_empty() {
-                    // Send the current corpus to the main corpus collection
-                    curr_stats.old_corpus = Some(corpus);
+                if let Some(new_corp) = curr_stats.new_corpus.take() {
+                    if !new_corp.is_empty() {
+                        // Send the current corpus to the main corpus collection
+                        curr_stats.old_corpus = Some(corpus);
 
-                    corpus = new_corp;
+                        corpus = new_corp;
+                    }
                 }
-            }
 
-            // Reset the last corpus sync counter
-            last_corpus_sync = Instant::now();
+                // Reset the last corpus sync counter
+                last_corpus_sync = Instant::now();
+            });
         }
 
         // Sync the current stats to the main stats
@@ -853,25 +850,27 @@ fn start_core<FUZZER: Fuzzer>(
 
             // Check if this redqueen core has a new input it hasn't seen
             if fuzzvm.core_id <= config.redqueen.cores && !new_input {
-                let mut not_yet_seen = Vec::new();
-                for (index, input) in corpus.iter().enumerate() {
-                    let hash = input.fuzz_hash();
-                    if !fuzzvm.redqueen_rules.contains_key(&hash) {
-                        not_yet_seen.push(index);
+                time!(RedqueenCheckNewInput, {
+                    let mut not_yet_seen = Vec::new();
+                    for (index, input) in corpus.iter().enumerate() {
+                        let hash = input.fuzz_hash();
+                        if !fuzzvm.redqueen_rules.contains_key(&hash) {
+                            not_yet_seen.push(index);
+                        }
                     }
-                }
 
-                // Since this is a redqueen core, prioritize unseen inputs in the corpus
-                if !not_yet_seen.is_empty() {
-                    let index = not_yet_seen[fuzzvm.rng.next() as usize % not_yet_seen.len()];
-                    input = corpus[index].clone();
-                    assert!(!fuzzvm.redqueen_rules.contains_key(&input.fuzz_hash()));
-                }
+                    // Since this is a redqueen core, prioritize unseen inputs in the corpus
+                    if !not_yet_seen.is_empty() {
+                        let index = not_yet_seen[fuzzvm.rng.next() as usize % not_yet_seen.len()];
+                        input = corpus[index].clone();
+                        assert!(!fuzzvm.redqueen_rules.contains_key(&input.fuzz_hash()));
+                    }
+                });
             }
 
             // Gather redqueen rules for this input regardless of requeen core or not since
             // we can use redqueen rules as a mutation strategy randomly
-            if new_input {
+            if new_input && fuzzvm.rng.next() % 250 == 2 {
                 let (mut rq_coverage, _perf) = fuzzvm.reset_and_run_with_redqueen(
                     &input,
                     &mut fuzzer,
@@ -888,67 +887,69 @@ fn start_core<FUZZER: Fuzzer>(
             // execute redqueen on this input
             if fuzzvm.core_id <= config.redqueen.cores && (new_input || fuzzvm.rng.next() % 3 == 1)
             {
-                let redqueen_time_spent = Duration::from_secs(0);
+                time!(Redqueen, {
+                    let redqueen_time_spent = Duration::from_secs(0);
 
-                // Signal this thread is in redqueen
-                core_stats.lock().unwrap().in_redqueen = true;
-                core_stats.lock().unwrap().iterations = 0;
+                    // Signal this thread is in redqueen
+                    core_stats.lock().unwrap().in_redqueen = true;
+                    core_stats.lock().unwrap().iterations = 0;
 
-                let orig_corpus_len = corpus.len();
+                    let orig_corpus_len = corpus.len();
 
-                // Execute redqueen for this input
-                let start = crate::utils::rdtsc();
-                let perf = fuzzvm.gather_redqueen(
-                    &input,
-                    &mut fuzzer,
-                    vm_timeout,
-                    &mut corpus,
-                    &mut coverage,
-                    &mut redqueen_coverage,
-                    redqueen_time_spent,
-                    &project_dir.join("metadata"),
-                    core_stats,
-                    0,
-                )?;
+                    // Execute redqueen for this input
+                    let start = crate::utils::rdtsc();
+                    let perf = fuzzvm.gather_redqueen(
+                        &input,
+                        &mut fuzzer,
+                        vm_timeout,
+                        &mut corpus,
+                        &mut coverage,
+                        &mut redqueen_coverage,
+                        redqueen_time_spent,
+                        &project_dir.join("metadata"),
+                        core_stats,
+                        0,
+                    )?;
 
-                let mut redqueen_elapsed = crate::utils::rdtsc() - start;
-                redqueen_elapsed -= perf.in_vm;
-                redqueen_elapsed -= perf.pre_run_vm;
-                redqueen_elapsed -= perf.post_run_vm;
+                    let mut redqueen_elapsed = crate::utils::rdtsc() - start;
+                    redqueen_elapsed -= perf.in_vm;
+                    redqueen_elapsed -= perf.pre_run_vm;
+                    redqueen_elapsed -= perf.post_run_vm;
 
-                // Update the stats for spending time in redqueen
-                core_stats
-                    .lock()
-                    .unwrap()
-                    .perf_stats
-                    .add(PerfMark::InVm, perf.in_vm);
-                core_stats
-                    .lock()
-                    .unwrap()
-                    .perf_stats
-                    .add(PerfMark::PreRunVm, perf.pre_run_vm);
-                core_stats
-                    .lock()
-                    .unwrap()
-                    .perf_stats
-                    .add(PerfMark::PostRunVm, perf.post_run_vm);
-                core_stats
-                    .lock()
-                    .unwrap()
-                    .perf_stats
-                    .add(PerfMark::Redqueen, redqueen_elapsed);
+                    // Update the stats for spending time in redqueen
+                    core_stats
+                        .lock()
+                        .unwrap()
+                        .perf_stats
+                        .add(PerfMark::InVm, perf.in_vm);
+                    core_stats
+                        .lock()
+                        .unwrap()
+                        .perf_stats
+                        .add(PerfMark::PreRunVm, perf.pre_run_vm);
+                    core_stats
+                        .lock()
+                        .unwrap()
+                        .perf_stats
+                        .add(PerfMark::PostRunVm, perf.post_run_vm);
+                    core_stats
+                        .lock()
+                        .unwrap()
+                        .perf_stats
+                        .add(PerfMark::Redqueen, redqueen_elapsed);
 
-                // Signal this thread is in not in redqueen
-                core_stats.lock().unwrap().in_redqueen = false;
+                    // Signal this thread is in not in redqueen
+                    core_stats.lock().unwrap().in_redqueen = false;
 
-                // If redqueen found new inputs, write them to disk
-                /*
-                if corpus.len() > orig_corpus_len {
-                    for input in &corpus {
-                        save_input_in_dir(input, &corpus_dir)?;
+                    // If redqueen found new inputs, write them to disk
+                    /*
+                    if corpus.len() > orig_corpus_len {
+                        for input in &corpus {
+                            save_input_in_dir(input, &corpus_dir)?;
+                        }
                     }
-                }
-                */
+                    */
+                });
             }
 
             /*
@@ -1139,27 +1140,22 @@ fn start_core<FUZZER: Fuzzer>(
             // Increment the timeouts count
             core_stats.lock().unwrap().timeouts += 1;
 
-            time!(SaveTimeoutInput, {
-                let mut input_bytes = Vec::new();
-                input.to_bytes(&mut input_bytes)?;
+            let mut input_bytes = Vec::new();
+            input.to_bytes(&mut input_bytes)?;
 
-                // Attempt to write the crashing input and pass to fuzzer if it is a new input
-                if let Some(crash_file) =
-                    write_crash_input(&crash_dir, "timeout", &input_bytes, &fuzzvm.console_output)?
-                {
-                    if SINGLE_STEP && SINGLE_STEP_DEBUG.load(Ordering::SeqCst) {
-                        std::fs::write(
-                            crash_file.with_extension("single_step"),
-                            instrs.join("\n"),
-                        )?;
-                    }
-
-                    // Allow the fuzzer to handle the crashing state
-                    // Useful for things like syscall fuzzer to write a C file from the
-                    // input
-                    fuzzer.handle_crash(&input, &mut fuzzvm, &crash_file)?;
+            // Attempt to write the crashing input and pass to fuzzer if it is a new input
+            if let Some(crash_file) =
+                write_crash_input(&crash_dir, "timeout", &input_bytes, &fuzzvm.console_output)?
+            {
+                if SINGLE_STEP && SINGLE_STEP_DEBUG.load(Ordering::SeqCst) {
+                    std::fs::write(crash_file.with_extension("single_step"), instrs.join("\n"))?;
                 }
-            });
+
+                // Allow the fuzzer to handle the crashing state
+                // Useful for things like syscall fuzzer to write a C file from the
+                // input
+                fuzzer.handle_crash(&input, &mut fuzzvm, &crash_file)?;
+            }
         }
 
         // Check if the input hit any kasan_report blocks
@@ -1280,41 +1276,8 @@ fn start_core<FUZZER: Fuzzer>(
         // Reset the guest state
         let guest_reset_perf = fuzzvm.reset_guest_state(&mut fuzzer)?;
 
-        /// Small macro to add the various guest reset performance stats
-        macro_rules! log_fuzzvm_perf_stats {
-            ($mark:ident, $time:ident) => {
-                core_stats
-                    .lock()
-                    .unwrap()
-                    .perf_stats
-                    .add(PerfMark::$mark, guest_reset_perf.$time);
-            };
-            ($mark:ident, init_guest.$time:ident) => {
-                core_stats
-                    .lock()
-                    .unwrap()
-                    .perf_stats
-                    .add(PerfMark::$mark, guest_reset_perf.init_guest.$time);
-            };
-        }
-
-        // Add the guest reset stats
-        log_fuzzvm_perf_stats!(ResetGuestMemory, reset_guest_memory_restore);
-        log_fuzzvm_perf_stats!(ResetCustomGuestMemory, reset_guest_memory_custom);
-        log_fuzzvm_perf_stats!(ClearGuestMemory, reset_guest_memory_clear);
-        log_fuzzvm_perf_stats!(GetDirtyLogs, get_dirty_logs);
-        log_fuzzvm_perf_stats!(InitGuestRegs, init_guest.regs);
-        log_fuzzvm_perf_stats!(InitGuestSregs, init_guest.sregs);
-        log_fuzzvm_perf_stats!(InitGuestFpu, init_guest.fpu);
-        log_fuzzvm_perf_stats!(InitGuestMsrs, init_guest.msrs);
-        log_fuzzvm_perf_stats!(InitGuestDebugRegs, init_guest.msrs);
-        log_fuzzvm_perf_stats!(ApplyFuzzerBreakpoint, apply_fuzzer_breakpoints);
-        log_fuzzvm_perf_stats!(ApplyResetBreakpoint, apply_reset_breakpoints);
-        log_fuzzvm_perf_stats!(ApplyCoverageBreakpoint, apply_coverage_breakpoints);
-        log_fuzzvm_perf_stats!(InitVm, init_vm);
-        core_stats.lock().unwrap().dirty_pages_kvm += try_u64!(guest_reset_perf.restored_kvm_pages);
-        core_stats.lock().unwrap().dirty_pages_custom +=
-            try_u64!(guest_reset_perf.restored_custom_pages);
+        // core_stats.lock().unwrap().dirty_pages_kvm += try_u64!(guest_reset_perf.restored_kvm_pages);
+        // core_stats.lock().unwrap().dirty_pages_custom += try_u64!(guest_reset_perf.restored_custom_pages);
 
         /*
         if guest_reset_perf.restored_pages > 60000 {

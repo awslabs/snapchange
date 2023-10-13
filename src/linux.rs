@@ -798,6 +798,7 @@ linux_args!(read_args, ReadArgs, fd u64, buf VirtAddr, count u64);
 // Libc implementations
 linux_args!(fseek_args, FseekArgs, stream u64, offset u64, whence Whence);
 linux_args!(fread_args, FreadArgs, ptr VirtAddr, size u64, nmemb u64, stream u64);
+linux_args!(pread_args, PreadArgs, fd u64, buf VirtAddr, count usize, offset usize);
 linux_args!(fopen_args, FopenArgs, path VirtAddr, mode VirtAddr);
 linux_args!(fopen64_args, Fopen64Args, path VirtAddr, mode VirtAddr);
 linux_args!(fclose_args, FcloseArgs, stream u64);

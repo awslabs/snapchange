@@ -32,7 +32,7 @@ use crate::msr::Msr;
 use crate::page_table::Translation;
 use crate::rng::Rng;
 use crate::stack_unwinder::{StackUnwinders, UnwindInfo};
-use crate::stats::Stats;
+use crate::stats::{PerfMark, PerfStatTimer, Stats};
 use crate::symbols::Symbol;
 use crate::utils::rdtsc;
 use crate::vbcpu::VbCpu;
@@ -616,6 +616,9 @@ pub struct FuzzVm<'a, FUZZER: Fuzzer> {
     /// Collection of unwinders used to attempt to unwind the stack
     pub unwinders: Option<StackUnwinders>,
 
+    /// The statistics struct for this VM
+    pub core_stats: Option<Arc<Mutex<Stats<FUZZER>>>>,
+
     /// Set of redqueen rules used for cmp analysis (our RedQueen implementation)
     #[cfg(feature = "redqueen")]
     pub redqueen_rules: BTreeMap<u64, BTreeSet<RedqueenRule>>,
@@ -827,6 +830,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             #[cfg(feature = "redqueen")]
             redqueen_breakpoint_addresses,
             unwinders: Some(unwinders),
+            core_stats: None,
         };
 
         // Pre-write all of the coverage breakpoints into the memory for the VM. The
@@ -2662,6 +2666,8 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     /// manually using a function such as [`FuzzVm::write_bytes_dirty`]. Returns the
     /// total number of restored pages.
     fn restore_dirty_pages(&mut self) -> u32 {
+        let _timer = self.scoped_timer(PerfMark::RestoreDirtyPages);
+
         // Reset the scratch reset buffer
         self.scratch_reset_buffer.clear();
 
@@ -3371,47 +3377,27 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     /// # Errors
     ///
     /// * If the snapshot MSRs fail to be set by KVM
-    pub fn reset_guest_state(&mut self, fuzzer: &mut FUZZER) -> Result<GuestResetPerf> {
-        let mut perf = GuestResetPerf::default();
-
-        /// Helper macro to time the individual components of resetting the guest state
-        macro_rules! time {
-            ($marker:ident, $expr:expr) => {{
-                // Init the timer
-                let start = rdtsc();
-
-                // Execute the given expression
-                let res = $expr;
-
-                // Calculate the time took to execute $expr
-                perf.$marker = rdtsc() - start;
-
-                res
-            }};
-        }
-
+    pub fn reset_guest_state(&mut self, fuzzer: &mut FUZZER) -> Result<()> {
         // Get the dirty log for all memory regions
-        time!(get_dirty_logs, self.get_dirty_logs()?);
+        self.get_dirty_logs()?;
 
         // Always just restore the dirty pages
-        perf.restored_kvm_pages = time!(reset_guest_memory_restore, self.restore_dirty_pages());
+        self.restore_dirty_pages();
 
         // Reset the guest memory and get the number of pages restored
-        perf.restored_custom_pages = time!(reset_guest_memory_custom, unsafe {
-            self.reset_custom_guest_memory()?
-        });
+        unsafe {
+            self.reset_custom_guest_memory()?;
+        }
 
-        time!(reset_guest_memory_clear, {
-            // Clear the dirty logs
-            self.clear_dirty_logs()
-                .context("Failed to clear dirty logs")?;
+        // Clear the dirty logs
+        self.clear_dirty_logs()
+            .context("Failed to clear dirty logs")?;
 
-            // Reset the custom dirty list
-            self.memory.dirty_pages.clear();
-        });
+        // Reset the custom dirty list
+        self.memory.dirty_pages.clear();
 
         // Reset the guest back to the original snapshot
-        perf.init_guest = self.init_guest()?;
+        self.init_guest()?;
 
         // Reset the internal breakpoint state
         //
@@ -3424,16 +3410,13 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         self.restore_breakpoint = None;
 
         // Init the VM based on the given fuzzer
-        time!(init_vm, fuzzer.init_vm(self)?);
+        fuzzer.init_vm(self)?;
 
         // Apply the breakpoints for the fuzzer
-        time!(
-            apply_fuzzer_breakpoints,
-            self.apply_fuzzer_breakpoints(fuzzer)?
-        );
+        self.apply_fuzzer_breakpoints(fuzzer)?;
 
         // Apply the coverage breakpoints for the fuzzer
-        time!(apply_reset_breakpoints, self.apply_reset_breakpoints()?);
+        self.apply_reset_breakpoints()?;
 
         // Reset the retired instructions counter
         // self.reset_retired_instructions()?;
@@ -3472,7 +3455,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         self.filesystem = Some(filesystem);
 
         // Return the guest reset perf
-        Ok(perf)
+        Ok(())
     }
 
     /// Reset the guest memory pages and returns the number of dirty pages reset
@@ -3489,6 +3472,8 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     ///
     /// * Unsafe due to the avx512 4KiB memcpy
     pub unsafe fn reset_custom_guest_memory(&mut self) -> Result<u32> {
+        let _timer = self.scoped_timer(PerfMark::RestoreCustomGuestMemory);
+
         // Grab the READ lock for the clean snapshot
         let clean_snapshot = self.clean_snapshot.read().unwrap();
 
@@ -4400,6 +4385,8 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         vm_timeout: Duration,
         coverage: &mut BTreeSet<VirtAddr>,
     ) -> Result<(BTreeSet<RedqueenCoverage>, VmRunPerf)> {
+        let _timer = self.scoped_timer(PerfMark::ResetAndRunWithRedqueen);
+
         // Reset the guest state in preparation for redqueen
         let _perf = self.reset_guest_state(fuzzer)?;
 
@@ -4724,6 +4711,13 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         }
 
         lines
+    }
+
+    /// Get a scoped timer for performance gathering
+    pub(crate) fn scoped_timer(&self, marker: PerfMark) -> Option<PerfStatTimer<FUZZER>> {
+        self.core_stats
+            .as_ref()
+            .and_then(|stats| Some(PerfStatTimer::new(stats.clone(), marker)))
     }
 }
 

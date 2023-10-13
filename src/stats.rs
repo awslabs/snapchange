@@ -180,6 +180,7 @@ pub struct GlobalStats {
     pub in_redqueen: Vec<usize>,
 
     /// Performance metrics for this core indexed by `PerfMark`
+    #[serde(skip)]
     pub perfs: ([u64; PerfMark::Count as usize], u64, u64),
 
     /// Number of vmexits found across all cores
@@ -187,23 +188,115 @@ pub struct GlobalStats {
 }
 
 /// Performance statistics
-#[derive(Default, Clone)]
+#[derive(Clone)]
 #[allow(clippy::module_name_repetitions)]
 pub struct PerfStats {
+    /// The start time of the performance metrics
+    pub start_time: u64,
+
     /// Start times for the performance marks available
     starts: [u64; PerfMark::Count as usize],
 
+    /// Time spent during child timers
+    child_time: [u64; PerfMark::Count as usize],
+
     /// Elapsed times for the performance marks
     elapsed: [u64; PerfMark::Count as usize],
+
+    /// Hit count for this timer
+    hits: [u64; PerfMark::Count as usize],
+
+    /// The current timer
+    current: Option<PerfMark>,
+}
+
+impl std::default::Default for PerfStats {
+    fn default() -> PerfStats {
+        PerfStats {
+            start_time: 0,
+            starts: [0_u64; PerfMark::Count as usize],
+            child_time: [0_u64; PerfMark::Count as usize],
+            elapsed: [0_u64; PerfMark::Count as usize],
+            hits: [0_u64; PerfMark::Count as usize],
+            current: None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct PerfStatTimer<FUZZER: Fuzzer> {
+    timer: PerfMark,
+    start_time: u64,
+    parent: Option<PerfMark>,
+    core_stats: Arc<Mutex<Stats<FUZZER>>>,
+}
+impl<FUZZER: Fuzzer> PerfStatTimer<FUZZER> {
+    pub fn new(core_stats: Arc<Mutex<Stats<FUZZER>>>, timer: PerfMark) -> PerfStatTimer<FUZZER> {
+        let parent = core_stats.lock().unwrap().perf_stats.current;
+        core_stats.lock().unwrap().perf_stats.current = Some(timer);
+
+        PerfStatTimer {
+            timer,
+            start_time: crate::utils::rdtsc(),
+            parent,
+            core_stats,
+        }
+    }
+}
+
+impl<FUZZER: Fuzzer> Drop for PerfStatTimer<FUZZER> {
+    fn drop(&mut self) {
+        // Get the stats to update them
+        let stats = &mut self.core_stats.lock().unwrap().perf_stats;
+
+        // Update the current node
+        stats.current = self.parent;
+
+        let elapsed = crate::utils::rdtsc() - self.start_time;
+
+        // If there is a parent timer, remove the elapsed time from the parent timer
+        if let Some(parent) = self.parent {
+            stats.child_time[parent as usize] =
+                stats.child_time[parent as usize].wrapping_add(elapsed);
+        }
+
+        // Get the time spent in child timers
+        let child_time = stats.child_time[self.timer as usize];
+
+        // Reset the child timer for this timer
+        stats.child_time[self.timer as usize] = 0;
+
+        // Update this timer's elapsed time
+        stats.elapsed[self.timer as usize] = stats.elapsed[self.timer as usize]
+            .wrapping_add(elapsed)
+            .checked_sub(child_time)
+            .expect(&format!(
+                "Failed on drop: {:?} curr elapsed {:#x} elapsed {:#x} child time {:#x}",
+                self.timer, stats.elapsed[self.timer as usize], elapsed, child_time
+            ));
+
+        // Update hit counts
+        stats.hits[self.timer as usize] += 1;
+    }
 }
 
 impl PerfStats {
     #[inline]
     /// Start the timer for the given [`PerfMark`]
     pub fn start(&mut self, mark: PerfMark) {
+        // log::info!("Starting {:20?}", mark);
+        assert!(
+            self.current.is_none(),
+            "Attempted to start {mark:?} but {:?} is already running",
+            self.current
+        );
+
         let start = crate::utils::rdtsc();
-        // log::info!("Starting {:20?}: {:#018x}", mark, start);
         self.starts[mark as usize] = start;
+
+        if mark != PerfMark::Total {
+            self.current = Some(mark);
+        }
     }
 
     #[inline]
@@ -211,7 +304,9 @@ impl PerfStats {
     pub fn mark(&mut self, mark: PerfMark) {
         let time = (crate::utils::rdtsc() - self.starts[mark as usize]).saturating_div(1);
         // log::info!("Marking {:20?}: {:#018x}", mark, time);
+
         self.elapsed[mark as usize] += time;
+        self.current = None;
     }
 
     #[inline]
@@ -296,9 +391,6 @@ impl_enum!(
         /// Amount of time during running `fuzzvm.init_guest` restoring MSRs
         InitGuestMsrs,
 
-        /// Amount of time during running `fuzzvm.init_guest` restoring debug registers
-        InitGuestDebugRegs,
-
         /// Amount of time during running `fuzzer.apply_fuzzer_breakpoint`
         ApplyFuzzerBreakpoint,
 
@@ -329,9 +421,6 @@ impl_enum!(
         /// Time spent setting input
         InputSet,
 
-        /// Time it takes to save a timeout input
-        SaveTimeoutInput,
-
         /// Time it takes to handle the vmexit
         HandleVmExit,
 
@@ -352,6 +441,27 @@ impl_enum!(
 
         /// Time spent in the VM during redqueen
         RedqueenInVm,
+
+        /// Time spent syncing coverage
+        MergeCoverageSync,
+
+        /// Time spent checking if a new input is needed for redqueen
+        RedqueenCheckNewInput,
+
+        /// Time spent gathering coverage in redqueen
+        RedqueenGatherCoverage,
+
+        /// Time in the `fuzzvm::reset_and_run_with_redqueen` function
+        ResetAndRunWithRedqueen,
+
+        /// Time in the `fuzzvm::restore_dirty_pages` function
+        RestoreDirtyPages,
+
+        /// Time in the `fuzzvm::restore_custom_guest_memory` function
+        RestoreCustomGuestMemory,
+
+        /// Time spent elsewhere that is not currently being tracked
+        Remaining,
     }
 );
 
@@ -367,9 +477,9 @@ impl_enum!(
         AccumulateTimelineSource,
         AccumulateAppendCoverage,
         AccumulateCoverageDifference,
-        AccumulateTimelineRedqueen,
-        ClearTimelineRedqueen,
-        AccumulateAppendCoverageRedqueen,
+        RQClearTimeline,
+        RQAccumulateAppendCoverage,
+        RQAccumulateTimeline,
         NewInput,
         WriteGraphs,
         UpdateTotalStats,
@@ -531,7 +641,7 @@ impl GlobalStats {
         // Display each marker as a percentage of total time
         for (i, elem) in PerfMark::elements().iter().enumerate() {
             // No need to print the total time
-            if i == PerfMark::Total as usize || i == PerfMark::InVm as usize {
+            if i == PerfMark::Total as usize {
                 continue;
             }
 
@@ -975,7 +1085,7 @@ pub fn worker<FUZZER: Fuzzer>(
         });
 
         // Clear the differences accumulator
-        time!(ClearTimelineRedqueen, {
+        time!(RQClearTimeline, {
             redqueen_diffs.clear();
         });
 
@@ -998,7 +1108,7 @@ pub fn worker<FUZZER: Fuzzer>(
 
             // Gather the differences while holding the lock, and then process
             // the difference after releasing the lock
-            time!(AccumulateTimelineRedqueen, {
+            time!(RQAccumulateTimeline, {
                 for cov in stats.redqueen_coverage.difference(&total_redqueen_coverage) {
                     redqueen_diffs.push(*cov);
                 }
@@ -1010,7 +1120,7 @@ pub fn worker<FUZZER: Fuzzer>(
             });
 
             // Collect the redqueen coverage for this core to the total coverage
-            time!(AccumulateAppendCoverage, {
+            time!(RQAccumulateAppendCoverage, {
                 total_redqueen_coverage.append(&mut stats.redqueen_coverage);
             });
 
@@ -1022,6 +1132,8 @@ pub fn worker<FUZZER: Fuzzer>(
             });
 
             // Add this core's stats to the display table
+            stats.perf_stats.elapsed[PerfMark::Total as usize] =
+                crate::utils::rdtsc() - stats.perf_stats.start_time;
             perfs[core_id] = Some(stats.perf_stats.elapsed);
 
             // Add the vmexits to the total vmexits seen by the fuzzer
@@ -1089,7 +1201,7 @@ pub fn worker<FUZZER: Fuzzer>(
             }
         });
 
-        time!(AccumulateTimelineRedqueen, {
+        time!(RQAccumulateTimeline, {
             for rq_diff in &redqueen_diffs {
                 coverage_timeline.push(format!("{rq_diff:x?}"));
             }
@@ -1137,7 +1249,7 @@ pub fn worker<FUZZER: Fuzzer>(
                 // Display each marker as a percentage of total time
                 for (i, elem) in PerfMark::elements().iter().enumerate() {
                     // No need to print the total time
-                    if i == PerfMark::Total as usize {
+                    if i == PerfMark::Total as usize || i == PerfMark::Remaining as usize {
                         continue;
                     }
 
@@ -1145,7 +1257,9 @@ pub fn worker<FUZZER: Fuzzer>(
                     let curr_stat = curr_perf_stats[*elem as usize];
 
                     // Add the stat for this core for this element into the totals
-                    totals[*elem as usize] = totals[*elem as usize].checked_add(curr_stat).unwrap();
+                    totals[*elem as usize] = totals[*elem as usize]
+                        .checked_add(curr_stat)
+                        .expect(&format!("FAILED {elem:?}"));
 
                     // Remove this stat from the total to display the percentage of work
                     // that hasn't been accomodated for
@@ -1154,6 +1268,9 @@ pub fn worker<FUZZER: Fuzzer>(
 
                 remaining += curr_remaining;
             }
+
+            // Add the remaining
+            totals[PerfMark::Remaining as usize] = remaining;
         });
 
         // Get the avg coverage left from all cores
