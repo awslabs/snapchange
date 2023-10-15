@@ -884,7 +884,6 @@ fn start_core<FUZZER: Fuzzer>(
                                     // If this file hash hasn't been seen yet by any other core,
                                     // take the input for this core.
                                     if lock.insert(hash) {
-                                        log::info!("{core_id:?} taking {hash:#x} for RQ");
                                         input = temp_input.clone();
                                         new_input = true;
                                         should_redqueen = true;
