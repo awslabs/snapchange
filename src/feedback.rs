@@ -40,7 +40,7 @@ pub type RedqueenFeedback = BTreeSet<RedqueenCoverage>;
 /// The [`FeedbackTracker`] keeps track of a log of never-before seen feedback. This is logged for
 /// each execution and can be obtained with [`FeedbackTracker::take_log`]. This enum is used to
 /// distinguish between different entries within the feedback log.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug, Ord, PartialOrd)]
 pub enum FeedbackLog {
     /// Observed new code coverage
     VAddr((VirtAddr, u16)),
@@ -345,9 +345,9 @@ impl FeedbackTracker {
     }
 
     /// Check for equality of custom feedback only.
-    #[cfg(feature = "custom_feedback")]
-    pub fn eq_custom_feedback(&self, other: &Self) -> bool {
-        self.custom == other.custom && self.max == other.max
+    #[cfg(feature = "redqueen")]
+    pub fn eq_redqueen(&self, other: &Self) -> bool {
+        self.redqueen == other.redqueen
     }
 
     /// Check for equal code coverage with an exact hitcount comparison

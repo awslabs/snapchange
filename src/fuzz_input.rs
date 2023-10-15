@@ -339,13 +339,20 @@ impl FuzzInput for Vec<u8> {
         /// New Input: AQRWbIOacMDad9N
         macro_rules! entropy_rule {
             ($ty:ty, $size:literal, $needle:expr) => {{
+                // Attempt to, at least, increase the entropy by a little rather than all or none.
+                // In that way, replace the rule source by a probability rather than always if it
+                // is found. In some cases, replacing a rule source might cause distruption of the
+                // coverage.
                 for i in 0..self.len() - $size {
-                    if self[i..i + $size] == $needle.to_le_bytes() {
+                    if self[i..i + $size] == $needle.to_le_bytes() && rng.gen_range(0.0..1.0) <= 0.6
+                    {
                         self[i..i + $size].copy_from_slice(&(rng.next() as $ty).to_le_bytes());
                     }
 
                     if $needle.to_le_bytes() != $needle.to_be_bytes() {
-                        if self[i..i + $size] == $needle.to_be_bytes() {
+                        if self[i..i + $size] == $needle.to_be_bytes()
+                            && rng.gen_range(0.0..1.0) <= 0.6
+                        {
                             self[i..i + $size].copy_from_slice(&(rng.next() as $ty).to_le_bytes());
                         }
                     }
@@ -441,9 +448,11 @@ impl FuzzInput for Vec<u8> {
                         find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
                         if *from as u16 <= u16::MAX && *to as u16 <= u16::MAX {
                             find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
+                            /*
                             if *from as u8 <= u8::MAX && *to as u8 <= u8::MAX {
                                 find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
                             }
+                            */
                         }
                     }
                 }

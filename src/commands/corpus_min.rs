@@ -357,7 +357,6 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         // Initialize variables needed for this run
         let mut execution = Execution::Continue;
         let mut coverage = BTreeSet::new();
-        let mut perf = crate::fuzzvm::VmRunPerf::default();
 
         // Get the current input to gather coverage for
         let input_case = &paths[curr_index];
@@ -385,7 +384,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
             }
 
             // Execute the VM
-            let ret = fuzzvm.run(&mut perf)?;
+            let ret = fuzzvm.run()?;
 
             if let FuzzVmExit::CoverageBreakpoint(rip) = ret {
                 coverage.insert(rip);

@@ -263,7 +263,7 @@ impl Execution {
     pub fn is_crash(&self) -> bool {
         match &self {
             Self::CrashReset { .. } => true,
-            _ => false
+            _ => false,
         }
     }
 }

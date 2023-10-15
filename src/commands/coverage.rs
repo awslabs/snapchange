@@ -196,9 +196,6 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
 
     let mut coverage = BTreeSet::new();
 
-    // Initialize the performance counters for executing a VM
-    let mut perf = crate::fuzzvm::VmRunPerf::default();
-
     // Initialize the coverage symbols
     let mut symbol_data = String::new();
 
@@ -210,7 +207,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         }
 
         // Execute the VM
-        let ret = fuzzvm.run(&mut perf)?;
+        let ret = fuzzvm.run()?;
 
         if let FuzzVmExit::CoverageBreakpoint(rip) = ret {
             if coverage.insert(rip) {

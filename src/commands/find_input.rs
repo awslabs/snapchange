@@ -112,9 +112,6 @@ fn start_core<FUZZER: Fuzzer>(
         // Set the input into the VM as per the fuzzer
         fuzzer.set_input(&input, &mut fuzzvm)?;
 
-        // Initialize the performance counters for executing a VM
-        let mut perf = crate::fuzzvm::VmRunPerf::default();
-
         // Top of the run iteration loop for the current fuzz case
         loop {
             // Reset the VM if the vmexit handler says so
@@ -123,7 +120,7 @@ fn start_core<FUZZER: Fuzzer>(
             }
 
             // Execute the VM
-            let ret = fuzzvm.run(&mut perf)?;
+            let ret = fuzzvm.run()?;
 
             // If we caught a breakpoint containing the requested address or symbol, save this file
             // and try the next file

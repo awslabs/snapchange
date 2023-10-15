@@ -444,7 +444,7 @@ fn start_core<FUZZER: Fuzzer>(
             }
 
             // Execute the VM
-            let ret = fuzzvm.run(&mut perf)?;
+            let ret = fuzzvm.run()?;
 
             match ret {
                 FuzzVmExit::KasanRead { ip, size, addr } => {

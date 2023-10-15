@@ -68,16 +68,10 @@ pub struct Stats<FUZZER: Fuzzer> {
     pub in_redqueen: bool,
 
     /// Current coverage feedback
-    pub coverage: FeedbackTracker,
-
-    /// Current address coverage found by this core
-    // pub coverage: BTreeSet<VirtAddr>,
+    pub feedback: FeedbackTracker,
 
     /// Current redqueen coverage seen by this core
     pub redqueen_coverage: BTreeSet<RedqueenCoverage>,
-
-    /// Current redqueen redqueen rules seen by this core
-    // pub redqueen_rules: BTreeMap<u64, BTreeSet<RedqueenRule>>,
 
     /// Number of restored pages
     pub restored_pages: u64,
@@ -117,6 +111,9 @@ pub struct Stats<FUZZER: Fuzzer> {
 
     /// Performance metrics for the stats loop itself
     pub tui_perf_stats: [f64; std::mem::variant_count::<TuiPerfStats>()],
+
+    /// Total input hashes that have been seen by redqueen cores
+    pub redqueen_seen: Arc<Mutex<BTreeSet<u64>>>,
 }
 
 impl<FUZZER: Fuzzer> Stats<FUZZER> {
@@ -129,7 +126,7 @@ impl<FUZZER: Fuzzer> Stats<FUZZER> {
 
 /// Current stats to display to the screen
 #[allow(clippy::module_name_repetitions)]
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct GlobalStats {
     /// Elapsed time
     pub time: String,
@@ -184,11 +181,51 @@ pub struct GlobalStats {
 
     /// Performance metrics for this core indexed by `PerfMark`
     #[serde(skip)]
-    pub perfs: ([u64; PerfMark::Count as usize], u64, u64),
+    pub perfs: (PerfMarks, u64, u64),
 
     /// Number of vmexits found across all cores
     pub vmexits: [u64; std::mem::variant_count::<FuzzVmExit>()],
 }
+
+struct PerfMarks {
+    timers: [u64; PerfMark::Count as usize],
+}
+
+impl std::default::Default for PerfMarks {
+    fn default() -> Self {
+        Self {
+            timers: [0; PerfMark::Count as usize],
+        }
+    }
+}
+
+/*
+impl std::default::Default for GlobalStats {
+    fn default() -> GlobalStats {
+        GlobalStats {
+            time: "".to_string(),
+            iterations: 0,
+            coverage: 0,
+            rq_coverage: 0,
+            last_coverage: 0,
+            exec_per_sec: 0,
+            rq_exec_per_sec: 0,
+            timeouts: 0,
+            coverage_left: 0,
+            dirty_pages: 0,
+            dirty_pages_kvm: 0,
+            dirty_pages_custom: 0,
+            corpus: 0,
+            alive: 0,
+            crashes: 0,
+            dead: Vec::new(),
+            in_redqueen: Vec::new(),
+            perfs: (PerfMarks::defulat(), 0, 0),
+            vmexits: [0; std::mem::variant_count::<FuzzVmExit>()],
+        }
+    }
+}
+*/
 
 /// Performance statistics
 #[derive(Clone)]
@@ -463,7 +500,41 @@ impl_enum!(
         /// Time in the `fuzzvm::restore_custom_guest_memory` function
         RestoreCustomGuestMemory,
 
-        /// Time spent elsewhere that is not currently being tracked
+        ResetGuestState,
+        InitGuest,
+        ApplyRedqueenBreakpoints,
+        RunUntilResetRedqueen,
+        ClearDirtyLogs,
+        ApplyResetBreakpoints,
+        ApplyFuzzerBreakpoints,
+        RQSyncCov,
+        RqInVm,
+        RqRecordCodeCov,
+        RqRecordBreakpoint,
+        RqHandleVmexit,
+        HandleBreakpoint,
+        HandleBp1,
+        HandleBp2,
+        HandleBp3,
+        HandleBp4,
+        HandleBp5,
+        HandleBp6,
+        HandleBp7,
+        GatherComparison,
+        RQReadU8,
+        RQReadU16,
+        RQReadU32,
+        RQReadU64,
+        RQReadU128,
+        RQReadF32,
+        RQReadF64,
+        RQReadX87,
+        RQIncEntropy,
+        SetRQRuleCandidates,
+        GetRQRuleCandidates,
+        AddRQRuleCandidates,
+
+        /// time spent elsewhere that is not currently being tracked
         Remaining,
     }
 );
@@ -562,7 +633,8 @@ impl GlobalStats {
         println!("+{title:-^width$}+", width = width - 2);
 
         // Get the accumulated performance stats
-        let (totals, total, remaining) = self.perfs;
+        let (totals, total, remaining) = &self.perfs;
+        let totals = totals.timers;
 
         let mut line = String::new();
 
@@ -582,7 +654,7 @@ impl GlobalStats {
             let segment = format!(
                 "{:>25}: {:5.2}%",
                 format!("{elem:?}"),
-                curr_stat as f64 / total as f64 * 100.
+                curr_stat as f64 / *total as f64 * 100.
             );
 
             if line.len() + segment.len() > width {
@@ -602,7 +674,7 @@ impl GlobalStats {
         let segment = format!(
             "{:>25}: {:5.2}%",
             "Other",
-            remaining as f64 / total as f64 * 100.
+            *remaining as f64 / *total as f64 * 100.
         );
 
         if line.len() + segment.len() > width {
@@ -625,7 +697,8 @@ impl GlobalStats {
         println!("+{title:-^width$}+", width = width - 2);
 
         // Get the accumulated performance stats
-        let (totals, _, remaining) = self.perfs;
+        let (totals, _, remaining) = &self.perfs;
+        let totals = totals.timers;
 
         let mut line = String::new();
         line.push_str("| ");
@@ -879,7 +952,7 @@ pub fn worker<FUZZER: Fuzzer>(
 
     let mut merge_coverage = false;
 
-    let mut total_coverage = FeedbackTracker::from_prev(prev_coverage);
+    let mut total_feedback = FeedbackTracker::from_prev(prev_coverage);
 
     #[cfg(feature = "redqueen")]
     let mut total_redqueen_coverage = prev_redqueen_coverage;
@@ -1110,8 +1183,8 @@ pub fn worker<FUZZER: Fuzzer>(
             // Gather the differences while holding the lock, and then process
             // the difference after releasing the lock
             time!(AccumulateTimeline, {
-                for addr in stats.coverage.code_cov.keys() {
-                    if !total_coverage.code_cov.contains_key(addr) {
+                for addr in stats.feedback.code_cov.keys() {
+                    if !total_feedback.code_cov.contains_key(addr) {
                         diffs.push(*addr);
                     }
                 }
@@ -1128,7 +1201,7 @@ pub fn worker<FUZZER: Fuzzer>(
             // Collect the coverage for this core to the total coverage
             time!(AccumulateAppendCoverage, {
                 // total_coverage.code_cov.append(&mut stats.coverage.code_cov);
-                total_coverage.merge(&stats.coverage);
+                total_feedback.merge(&stats.feedback);
             });
 
             // Collect the redqueen coverage for this core to the total coverage
@@ -1229,9 +1302,9 @@ pub fn worker<FUZZER: Fuzzer>(
         let hours = elapsed / (60 * 60);
 
         // Update the last coverage seen timer if new coverage has been seen
-        if last_best_coverage < total_coverage.len() {
+        if last_best_coverage < total_feedback.code_cov.len() {
             last_coverage = std::time::Instant::now();
-            last_best_coverage = total_coverage.len();
+            last_best_coverage = total_feedback.code_cov.len();
         }
 
         // Accumulate the performance metrics
@@ -1384,7 +1457,7 @@ pub fn worker<FUZZER: Fuzzer>(
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         {
             graph_exec_per_sec.push(exec_per_sec);
-            graph_coverage.push(total_coverage.len() as u64);
+            graph_coverage.push(total_feedback.code_cov.len() as u64);
             graph_seconds.push(iter);
             graph_iters.push(total_iters);
             graph_crashes.push(crash_paths.len() as u64);
@@ -1399,7 +1472,7 @@ pub fn worker<FUZZER: Fuzzer>(
 
         // Update the coverage blockers
         if let Some(cov_analysis) = &mut coverage_analysis {
-            for addr in total_coverage.code_cov.keys() {
+            for addr in total_feedback.code_cov.keys() {
                 cov_analysis.hit(addr.0);
             }
 
@@ -1474,7 +1547,7 @@ pub fn worker<FUZZER: Fuzzer>(
                     };
 
                     // Update the total coverage for this core
-                    curr_stats.coverage = total_coverage.clone();
+                    curr_stats.feedback = total_feedback.clone();
 
                     // Update the redqueen rules and coverage for this core
                     total_redqueen_coverage.append(&mut curr_stats.redqueen_coverage);
@@ -1555,7 +1628,7 @@ pub fn worker<FUZZER: Fuzzer>(
                 lighthouse_data.clear();
 
                 // Collect the lighthouse coverage data
-                for addr in total_coverage.code_cov.keys() {
+                for addr in total_feedback.code_cov.keys() {
                     if let Some((module, offset)) = modules.contains(addr.0) {
                         lighthouse_data.push_str(&format!("{module}+{offset:x}\n"));
                     } else {
@@ -1573,7 +1646,7 @@ pub fn worker<FUZZER: Fuzzer>(
                 // Clear old address data
                 cov_addrs.clear();
 
-                for addr in total_coverage.code_cov.keys() {
+                for addr in total_feedback.code_cov.keys() {
                     cov_addrs.push_str(&format!("{:#x}\n", addr.0));
                 }
 
@@ -1614,7 +1687,7 @@ pub fn worker<FUZZER: Fuzzer>(
             {
                 // dump custom coverage as json
                 let w = File::create(&coverage_custom).unwrap();
-                serde_json::to_writer(w, &total_coverage).unwrap();
+                serde_json::to_writer(w, &total_feedback).unwrap();
             }
         }
 
@@ -1630,7 +1703,7 @@ pub fn worker<FUZZER: Fuzzer>(
                 // Write the source and lcov coverage files if vmlinux exists
                 // let mut result = Vec::new();
 
-                for rip in total_coverage.code_cov.keys() {
+                for rip in total_feedback.code_cov.keys() {
                     let addr = *rip;
 
                     // Try to get the addr2line information for the current address
@@ -1777,7 +1850,7 @@ pub fn worker<FUZZER: Fuzzer>(
         let table = GlobalStats {
             time: format!("{hours:02}:{minutes:02}:{seconds:02}"),
             iterations: total_iters,
-            coverage: total_coverage.len(),
+            coverage: total_feedback.code_cov.len(),
             rq_coverage: total_redqueen_coverage.len(),
             last_coverage: last_coverage.elapsed().as_secs(),
             exec_per_sec,
@@ -1792,7 +1865,7 @@ pub fn worker<FUZZER: Fuzzer>(
             crashes: num_crashes,
             dead: dead.clone(),
             in_redqueen: in_redqueen.clone(),
-            perfs: (totals, total, remaining),
+            perfs: (PerfMarks { timers: totals }, total, remaining),
             vmexits,
         };
 

@@ -152,7 +152,7 @@ fn start_core<FUZZER: Fuzzer>(
     let start_input_size = input_bytes.len();
 
     // Initialize the performance counters for executing a VM
-    let (orig_execution, mut orig_feedback, _) = fuzzvm.gather_feedback(
+    let (orig_execution, mut orig_feedback) = fuzzvm.gather_feedback(
         &mut fuzzer,
         &starting_input,
         vm_timeout,
@@ -266,7 +266,7 @@ fn start_core<FUZZER: Fuzzer>(
             FUZZER::Input::minimize(&mut curr_input, &mut rng);
         });
 
-        let (execution, mut feedback, _) = time!(
+        let (execution, mut feedback) = time!(
             RunInput,
             fuzzvm.gather_feedback(&mut fuzzer, &curr_input, vm_timeout, &covbps_addrs, bp_type)?
         );

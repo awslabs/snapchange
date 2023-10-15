@@ -11,6 +11,7 @@ use crate::addrs::VirtAddr;
 use crate::fuzz_input::FuzzInput;
 use crate::fuzzer::Fuzzer;
 use crate::regs::x86;
+use crate::stats::PerfMark;
 use crate::Execution;
 use crate::FuzzVm;
 
@@ -285,9 +286,11 @@ pub enum Operand {
 }
 
 macro_rules! impl_read_for_type {
-    ($func:ident, $ty:ty) => {
+    ($func:ident, $ty:ty, $mark:ident) => {
         /// Retrieve this operand from the current state of the FuzzVm
         pub fn $func<FUZZER: Fuzzer>(&self, fuzzvm: &mut FuzzVm<FUZZER>) -> Result<$ty> {
+            let _timer = fuzzvm.scoped_timer(crate::stats::PerfMark::$mark);
+
             match self {
                 Operand::Register(IcedRegister::XMM0) => Ok(fuzzvm.xmm0_f64() as $ty),
                 Operand::Register(IcedRegister::XMM1) => Ok(fuzzvm.xmm1_f64() as $ty),
@@ -345,14 +348,16 @@ macro_rules! impl_read_for_type {
 }
 
 impl Operand {
-    impl_read_for_type!(read_u8, u8);
-    impl_read_for_type!(read_u16, u16);
-    impl_read_for_type!(read_u32, u32);
-    impl_read_for_type!(read_u64, u64);
-    impl_read_for_type!(read_u128, u128);
+    impl_read_for_type!(read_u8, u8, RQReadU8);
+    impl_read_for_type!(read_u16, u16, RQReadU16);
+    impl_read_for_type!(read_u32, u32, RQReadU32);
+    impl_read_for_type!(read_u64, u64, RQReadU64);
+    impl_read_for_type!(read_u128, u128, RQReadU128);
 
     /// Retrieve the f32 from the current state of the FuzzVm
     pub fn read_f32<FUZZER: Fuzzer>(&self, fuzzvm: &mut FuzzVm<FUZZER>) -> Result<f32> {
+        let _timer = fuzzvm.scoped_timer(crate::stats::PerfMark::RQReadF32);
+
         match self {
             Operand::Register(IcedRegister::XMM0) => Ok(fuzzvm.xmm0_f32()),
             Operand::Register(IcedRegister::XMM1) => Ok(fuzzvm.xmm1_f32()),
@@ -413,6 +418,8 @@ impl Operand {
 
     /// Retrieve an f64 from the current state of the FuzzVm
     pub fn read_f64<FUZZER: Fuzzer>(&self, fuzzvm: &mut FuzzVm<FUZZER>) -> Result<f64> {
+        let _timer = fuzzvm.scoped_timer(crate::stats::PerfMark::RQReadF64);
+
         match self {
             Operand::Register(IcedRegister::XMM0) => Ok(fuzzvm.xmm0_f64()),
             Operand::Register(IcedRegister::XMM1) => Ok(fuzzvm.xmm1_f64()),
@@ -474,6 +481,8 @@ impl Operand {
 
     /// Read the given x87 register
     pub fn read_x87<FUZZER: Fuzzer>(&self, fuzzvm: &mut FuzzVm<FUZZER>) -> Result<Vec<u8>> {
+        let _timer = fuzzvm.scoped_timer(crate::stats::PerfMark::RQReadX87);
+
         match self {
             Operand::Register(IcedRegister::ST0) => Ok(fuzzvm.fpu()?.fpr[0][..10].to_vec()),
             Operand::Register(IcedRegister::ST1) => Ok(fuzzvm.fpu()?.fpr[1][..10].to_vec()),
@@ -497,6 +506,8 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
     input: &<FUZZER as Fuzzer>::Input,
     args: &RedqueenArguments,
 ) -> Result<Execution> {
+    let _timer = fuzzvm.scoped_timer(PerfMark::GatherComparison);
+
     // Get the arguments for this redqueen breakpoints
     let RedqueenArguments {
         size,
@@ -548,9 +559,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
+                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
                                 } else {
                                     // OP - ax == bx (false)
                                     // AX - 3
@@ -564,18 +578,24 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
+                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
 
                                     // Generate the rule to satisfy this comparison
                                     let rule = RedqueenRule::$rule(right_val, left_val);
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
+                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
                                 }
                             }
                             Conditional::SignedLessThan
@@ -606,9 +626,13 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                         // Only add this rule to the redqueen rules if the left operand
                                         // is actually in the input
+                                        fuzzvm.set_redqueen_rule_candidates(&input, rule);
+
+                                        /*
                                         if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                             fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                         }
+                                        */
                                     }
 
                                     if let Some(new_val) = left_val.checked_sub(1) {
@@ -617,9 +641,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                         // Only add this rule to the redqueen rules if the left operand
                                         // is actually in the input
+                                        fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                        /*
                                         if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                             fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                         }
+                                        */
                                     }
                                 } else {
                                     // OP - ax < bx (false)
@@ -635,9 +662,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                         // Only add this rule to the redqueen rules if the left operand
                                         // is actually in the input
+                                        fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                        /*
                                         if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                             fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                         }
+                                        */
                                     }
 
                                     // Generate the rule to satisfy this comparison
@@ -646,9 +676,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                         // Only add this rule to the redqueen rules if the left operand
                                         // is actually in the input
+                                        fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                        /*
                                         if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                             fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                         }
+                                        */
                                     }
                                 }
                             }
@@ -680,9 +713,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                         // Only add this rule to the redqueen rules if the left operand
                                         // is actually in the input
+                                        fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                        /*
                                         if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                             fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                         }
+                                        */
                                     }
 
                                     if let Some(new_val) = left_val.checked_sub(1) {
@@ -691,9 +727,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                         // Only add this rule to the redqueen rules if the left operand
                                         // is actually in the input
+                                        fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                        /*
                                         if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                             fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                         }
+                                        */
                                     }
                                 } else {
                                     // OP - ax <= bx (false)
@@ -709,9 +748,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                         // Only add this rule to the redqueen rules if the left operand
                                         // is actually in the input
+                                        fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                        /*
                                         if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                             fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                         }
+                                        */
                                     }
 
                                     if let Some(new_val) = left_val.checked_add(1) {
@@ -720,9 +762,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                         // Only add this rule to the redqueen rules if the left operand
                                         // is actually in the input
+                                        fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                        /*
                                         if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                             fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                         }
+                                        */
                                     }
                                 }
                             }
@@ -742,8 +787,8 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                         match operation {
                             Conditional::Strcmp => {
-                                let mut left_bytes = fuzzvm.read_bytes_until(VirtAddr(left_val as u64), fuzzvm.cr3(), 0, 16 * 1024);
-                                let mut right_bytes = fuzzvm.read_bytes_until(VirtAddr(right_val as u64), fuzzvm.cr3(), 0, 16 * 1024);
+                                let mut left_bytes = fuzzvm.read_bytes_until(VirtAddr(left_val as u64), fuzzvm.cr3(), 0, 4 * 1024);
+                                let mut right_bytes = fuzzvm.read_bytes_until(VirtAddr(right_val as u64), fuzzvm.cr3(), 0, 4 * 1024);
 
                                 let mut left_bytes = left_bytes?;
                                 let mut right_bytes = right_bytes?;
@@ -754,16 +799,22 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
+                                        fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
+                                        fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
 
                                     // Also add a rule specifically changing just the bytes for the smaller string
                                     let min_size = left_bytes.len().min(right_bytes.len());
@@ -773,16 +824,22 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
+                                        fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
                                     let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
+                                        fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
                                 } else {
                                     // Strings are equal. Force them to not be equal.
 
@@ -791,9 +848,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     left_bytes[0] = left_bytes[0].wrapping_add(1);
                                     let rule =  RedqueenRule::Bytes(left_bytes, right_bytes);
 
+                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
                                 }
 
                             }
@@ -807,14 +867,20 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // bytes are not equal, force them to be equal
                                     let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
 
+                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
 
                                     let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
+                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
 
                                 } else {
                                     // bytes are equal. Force them to not be equal.
@@ -824,9 +890,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     left_bytes[0] = left_bytes[0].wrapping_add(1);
                                     let rule =  RedqueenRule::Bytes(left_bytes, right_bytes);
 
+                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
                                 }
                             }
                             _ => panic!("Unknown BYTES operation: {operation:?}")
@@ -840,14 +909,20 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                             // bytes are not equal, force them to be equal
                             let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
 
+                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                            /*
                             if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                 fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                             }
+                            */
 
                             let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
+                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                            /*
                             if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                 fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                             }
+                            */
 
                         } else {
                             // bytes are equal. Force them to not be equal.
@@ -857,9 +932,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                             left_bytes[0] = left_bytes[0].wrapping_add(1);
                             let rule =  RedqueenRule::Bytes(left_bytes, right_bytes);
 
+                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                            /*
                             if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                 fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                             }
+                            */
                         }
 
                     }
@@ -900,9 +978,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
+                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
                                 } else {
                                     // OP - ax == bx (false)
                                     // AX - 3
@@ -916,18 +997,24 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
+                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
 
                                     // Generate the rule to satisfy this comparison
                                     let rule = RedqueenRule::$rule(right_val.to_le_bytes().to_vec(), left_val.to_le_bytes().to_vec());
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
+                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
                                 }
                             }
                             Conditional::FloatingPointLessThan | Conditional::FloatingPointGreaterThanEqual => {
@@ -955,9 +1042,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
+                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
 
                                     // Generate the rule to satisfy this comparison
                                     let new_val = left_val.sub(1.0);
@@ -965,9 +1055,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
+                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
                                 } else {
                                     // OP - ax < bx (false)
                                     // AX - 4
@@ -982,9 +1075,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
+                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
 
                                     // Generate the rule to satisfy this comparison
                                     let new_val = left_val.add(1.0);
@@ -992,9 +1088,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
+                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
                                 }
                             }
                             Conditional::FloatingPointLessThanEqual | Conditional::FloatingPointGreaterThan => {
@@ -1023,9 +1122,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
+                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
 
                                     let new_val = left_val.sub(1.0);
 
@@ -1034,9 +1136,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
+                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
                                 } else {
                                     // OP - ax <= bx (false)
                                     // AX - 4
@@ -1052,9 +1157,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
+                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
 
                                     let new_val = left_val.add(1.0);
 
@@ -1063,9 +1171,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Only add this rule to the redqueen rules if the left operand
                                     // is actually in the input
+                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
                                     }
+                                    */
                                 }
                             }
                             _ => panic!("Unknown operation for primatives: {operation:?} {size:?} {args:x?}"),

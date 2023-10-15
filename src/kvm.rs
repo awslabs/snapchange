@@ -149,7 +149,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     ///
     /// * `KVM_GET_DIRTY_LOG` failed
     pub fn get_dirty_logs(&mut self) -> Result<()> {
-        self.scoped_timer(PerfMark::GetDirtyLogs);
+        let _timer = self.scoped_timer(PerfMark::GetDirtyLogs);
 
         for (slot, bitmap) in self.dirty_bitmaps.iter_mut().enumerate() {
             // Create the structure for this clear
@@ -185,6 +185,8 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     ///
     /// * Somehow the `core_id` doesn't fit in a usize
     pub fn clear_dirty_logs(&mut self) -> Result<()> {
+        let _timer = self.scoped_timer(PerfMark::ClearDirtyLogs);
+
         for (slot, bitmap) in self.dirty_bitmaps.iter_mut().enumerate() {
             // for (slot, bitmap) in DIRTY_BITMAPS[usize::try_from(self.core_id).unwrap()].iter().enumerate() {
 
