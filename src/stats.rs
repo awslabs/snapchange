@@ -1979,6 +1979,8 @@ pub fn worker<FUZZER: Fuzzer>(
         }
 
         if tui {
+            let perf_stats: Vec<_> = perf_stats.iter().take(8).copied().collect();
+
             let app = StatsApp::new(
                 perf_stats.as_slice(),
                 coverage.as_slice(),
