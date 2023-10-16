@@ -457,11 +457,9 @@ impl FuzzInput for Vec<u8> {
                         find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
                         if *from <= u16::MAX as u128 && *to <= u16::MAX as u128 {
                             find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
-                            /*
-                            if *from as u8 <= u8::MAX && *to as u8 <= u8::MAX {
+                            if *from <= u8::MAX as u128 && *to <= u8::MAX as u128 {
                                 find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
                             }
-                            */
                         }
                     }
                 }
@@ -472,11 +470,9 @@ impl FuzzInput for Vec<u8> {
                     find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
                     if *from <= u16::MAX as u64 && *to <= u16::MAX as u64 {
                         find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
-                        /*
                         if *from as u8 <= u8::MAX && *to as u8 <= u8::MAX {
                             find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
                         }
-                        */
                     }
                 }
             }
@@ -484,20 +480,16 @@ impl FuzzInput for Vec<u8> {
                 find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
                 if *from <= u16::MAX as u32 && *to <= u16::MAX as u32 {
                     find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
-                    /*
-                    if *from as u8 <= u8::MAX && *to as u8 <= u8::MAX {
+                    if *from <= u8::MAX as u32 && *to <= u8::MAX as u32 {
                         find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
                     }
-                    */
                 }
             }
             RedqueenRule::SingleU16(from, to) => {
                 find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
-                /*
-                if *from as u8 <= u8::MAX && *to as u8 <= u8::MAX {
+                if *from <= u8::MAX as u16 && *to <= u8::MAX as u16 {
                     find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
                 }
-                */
             }
             RedqueenRule::SingleU8(from, to) => {
                 find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
