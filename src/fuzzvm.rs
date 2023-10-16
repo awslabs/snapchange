@@ -15,6 +15,7 @@ use kvm_bindings::{
     KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP, KVM_GUESTDBG_USE_SW_BP, KVM_MAX_CPUID_ENTRIES,
 };
 use kvm_ioctls::{SyncReg, VcpuExit, VcpuFd, VmFd};
+use rand::Rng as _;
 use thiserror::Error;
 use x86_64::registers::control::{Cr0Flags, Cr4Flags, EferFlags};
 use x86_64::registers::rflags::RFlags;
@@ -4533,7 +4534,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     #[cfg(feature = "redqueen")]
     pub fn gather_redqueen(
         &mut self,
-        input: &FUZZER::Input,
+        orig_input: &FUZZER::Input,
         fuzzer: &mut FUZZER,
         vm_timeout: Duration,
         corpus: &mut Vec<<FUZZER as Fuzzer>::Input>,
@@ -4568,7 +4569,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         let mut rng = Rng::new();
 
         // Get the found redqueen rules for this input
-        let fuzz_hash = input.fuzz_hash();
+        let fuzz_hash = orig_input.fuzz_hash();
 
         // If we've spent too much time during the recursive redqueen calls, return and
         // come back to redqueen on a different iteration
@@ -4589,7 +4590,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         let mut temp_feedback = FeedbackTracker::default();
 
         // Gather then original redqueen rules for this input
-        self.reset_and_run_with_redqueen(input, fuzzer, vm_timeout, &mut temp_feedback)?;
+        self.reset_and_run_with_redqueen(orig_input, fuzzer, vm_timeout, &mut temp_feedback)?;
 
         // Gather the total coverage for the original input
         let original_coverage = temp_feedback.take_log();
@@ -4601,25 +4602,37 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
         core_stats.lock().unwrap().rq_iterations += 1;
 
-        if let Some(rules) = self.redqueen_rules.remove(&fuzz_hash) {
-            let mut input = input.clone();
+        let mut bad_rules = Vec::new();
 
-            // log::info!("Calling RQ from {fuzz_hash:#x}: {rules:x?}");
+        if let Some(mut rules) = self.redqueen_rules.remove(&fuzz_hash) {
             for rule in &rules {
-                // Apply this redqueen rule
+                let mut input = orig_input.clone();
+                let orig_hash = input.fuzz_hash();
+
                 let mut candidates = input.get_redqueen_rule_candidates(rule);
+                let mut orig_candidates = input.get_redqueen_rule_candidates(rule);
+                let num_orig_candidates = candidates.len();
 
                 // Check if there should be increased entropy in the input due to
                 // too many possible rule locations
-                {
+                if num_orig_candidates > self.config.redqueen.entropy_threshold {
                     let _timer = self.scoped_timer(PerfMark::RQIncEntropy);
 
-                    if candidates.len() > self.config.redqueen.entropy_threshold {
+                    for probability in [1.0] {
                         let mut max_entropy_input = input.clone();
 
-                        // attempt to increase the entropy of the input if this input
-                        // has more rule candidates than the entropy threshold
-                        max_entropy_input.increase_redqueen_entropy(rule, &mut rng);
+                        for candidate in &candidates {
+                            // attempt to increase the entropy of the input if this input
+                            // has more rule candidates than the entropy threshold
+                            if rng.gen_bool(probability) {
+                                max_entropy_input.increase_redqueen_entropy(candidate, &mut rng);
+                            }
+                        }
+
+                        assert!(
+                            max_entropy_input.fuzz_hash() != fuzz_hash,
+                            "Couldn't replace {rule:x?} for {fuzz_hash:#x}"
+                        );
 
                         let mut temp_feedback = FeedbackTracker::default();
 
@@ -4632,32 +4645,99 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                         )?;
 
                         let after_coverage = temp_feedback.take_log();
-
                         let after_coverage: BTreeSet<_> = after_coverage
                             .iter()
                             .filter(|x| matches!(x, FeedbackLog::Redqueen(_)))
                             .collect();
 
                         if after_coverage == original_rq_coverage {
-                            let candidates_after =
-                                max_entropy_input.get_redqueen_rule_candidates(rule);
+                            let new_rules = self
+                                .redqueen_rules
+                                .get(&max_entropy_input.fuzz_hash())
+                                .unwrap();
 
-                            if !candidates_after.is_empty()
-                                && candidates.len() > candidates_after.len()
-                            {
-                                log::debug!(
-                                    "WINNING! {rule:x?} Candidates before: {} after: {} == {:?}",
-                                    candidates.len(),
-                                    candidates_after.len(),
-                                    candidates_after.len() as f64 / candidates.len() as f64
-                                );
+                            // ASSUMPTION: Increased entropy should generate new rules for the replacements.
+                            // The only rules that matter, are those that would target the same replacement bytes.
+                            //
+                            // Example:
+                            // Original rule: Single(0, 0x41414141)
+                            //
+                            // After entropy, these new rules are seen that were not originally seen
+                            let diff_rules = new_rules.difference(&rules).collect::<Vec<_>>();
 
-                                // keep this entropy input since it has the same coverage
-                                input = max_entropy_input;
-                                candidates = candidates_after;
+                            // Clear the candidates and set the input to use as the new entropy input
+                            candidates.clear();
+                            log::info!("Clearing old rule {rule:x?}.. new rules {diff_rules:x?}");
+
+                            // For each new rule not previously seen, only add rules whose target is the same
+                            for new_rule in diff_rules {
+                                let same = match (rule, new_rule) {
+                                    (
+                                        RedqueenRule::SingleU128(_, t1),
+                                        RedqueenRule::SingleU128(_, t2),
+                                    ) => t1 == t2,
+                                    (
+                                        RedqueenRule::SingleU64(_, t1),
+                                        RedqueenRule::SingleU64(_, t2),
+                                    ) => t1 == t2,
+                                    (
+                                        RedqueenRule::SingleU32(_, t1),
+                                        RedqueenRule::SingleU32(_, t2),
+                                    ) => t1 == t2,
+                                    (
+                                        RedqueenRule::SingleU16(_, t1),
+                                        RedqueenRule::SingleU16(_, t2),
+                                    ) => t1 == t2,
+                                    (
+                                        RedqueenRule::SingleU8(_, t1),
+                                        RedqueenRule::SingleU8(_, t2),
+                                    ) => t1 == t2,
+                                    (
+                                        RedqueenRule::SingleF32(_, t1),
+                                        RedqueenRule::SingleF32(_, t2),
+                                    ) => t1 == t2,
+                                    (
+                                        RedqueenRule::SingleF64(_, t1),
+                                        RedqueenRule::SingleF64(_, t2),
+                                    ) => t1 == t2,
+                                    (RedqueenRule::Bytes(_, t1), RedqueenRule::Bytes(_, t2)) => {
+                                        t1 == t2
+                                    }
+                                    _ => false,
+                                };
+
+                                // If this rule matches the original rule's target, add these candidates.
+                                if same {
+                                    let mut new_candidates =
+                                        max_entropy_input.get_redqueen_rule_candidates(new_rule);
+                                    candidates.extend(new_candidates);
+                                }
                             }
+
+                            // Set the input to the max entropy input since it matches the original
+                            // redqueen coverage
+                            input = max_entropy_input;
                         }
                     }
+                }
+
+                if candidates.len() < num_orig_candidates {
+                    log::info!(
+                        "FOUND {rule:x?} | {} -> {}",
+                        orig_candidates.len(),
+                        candidates.len()
+                    );
+                    log::info!("ORIG {orig_candidates:x?}");
+                    log::info!("NEW {candidates:x?}");
+                    assert!(
+                        orig_hash != input.fuzz_hash(),
+                        "Candidates changed without the input changing"
+                    );
+                }
+
+                if candidates.is_empty() {
+                    log::info!("Bad rule found: {rule:x?}");
+                    bad_rules.push(rule.clone());
                 }
 
                 for candidate in &candidates {
@@ -4750,6 +4830,11 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 }
             }
 
+            // Remove rules that generated nothing useful when attempted to increase entropy
+            for rule in bad_rules {
+                rules.remove(&rule);
+            }
+
             // Restore the original input redqueen rules
             self.redqueen_rules.insert(fuzz_hash, rules);
         }
@@ -4833,6 +4918,14 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         // If there are rule candidates, add them to the total rules for this input
         if candidates.len() > 0 {
             let _timer = self.scoped_timer(PerfMark::AddRQRuleCandidates);
+
+            /*
+            log::info!(
+                "{:#x} inserting {rule:x?} from {:#x}",
+                input.fuzz_hash(),
+                self.rip()
+            );
+            */
 
             self.redqueen_rules
                 .entry(input.fuzz_hash())

@@ -117,7 +117,7 @@ pub trait FuzzInput:
 
     /// Replace all instances of the `left` side of the given rule with random bytes
     #[cfg(feature = "redqueen")]
-    fn increase_redqueen_entropy(&mut self, _rule: &RedqueenRule, _rng: &mut Rng) {
+    fn increase_redqueen_entropy(&mut self, _rule: &Self::RuleCandidate, _rng: &mut Rng) {
         panic!("Redqueen not implemented for this type. Please impl `increase_redqueen_entropy`");
     }
 
@@ -328,7 +328,10 @@ impl FuzzInput for Vec<u8> {
     /// Replace all instances of the `left` side of the given rule with random bytes
     #[allow(clippy::cast_possible_truncation, clippy::doc_markdown)]
     #[cfg(feature = "redqueen")]
-    fn increase_redqueen_entropy(&mut self, rule: &RedqueenRule, rng: &mut Rng) {
+    fn increase_redqueen_entropy(&mut self, candidate: &Self::RuleCandidate, rng: &mut Rng) {
+        let (offset, endian, rule) = candidate;
+        let offset = *offset;
+
         /// If `needle` is found in the current bytes, replace that needle with random bytes
         /// in order to attempt to uniquely identify this particular location and reduce the
         /// number of candidates to apply when using redqueen
@@ -339,24 +342,30 @@ impl FuzzInput for Vec<u8> {
         /// New Input: AQRWbIOacMDad9N
         macro_rules! entropy_rule {
             ($ty:ty, $size:literal, $needle:expr) => {{
+                let new_val = rng.next() as $ty;
+                // log::info!("Replacing offset {offset:#x} with {new_val:#x}");
+                self[offset..(offset + $size as usize)].copy_from_slice(&new_val.to_le_bytes());
+
+                /*
                 // Attempt to, at least, increase the entropy by a little rather than all or none.
                 // In that way, replace the rule source by a probability rather than always if it
                 // is found. In some cases, replacing a rule source might cause distruption of the
                 // coverage.
                 for i in 0..self.len() - $size {
-                    if self[i..i + $size] == $needle.to_le_bytes() && rng.gen_range(0.0..1.0) <= 0.6
-                    {
-                        self[i..i + $size].copy_from_slice(&(rng.next() as $ty).to_le_bytes());
+                    if self[i..i + $size] == $needle.to_le_bytes() && rng.gen_bool(probability) {
+                        let new_val = rng.next() as $ty;
+                        log::info!("Replacing offset {i:#x} with {new_val:#x}");
+                        self[i..i + $size].copy_from_slice(&new_val.to_le_bytes());
+                        continue;
                     }
 
-                    if $needle.to_le_bytes() != $needle.to_be_bytes() {
-                        if self[i..i + $size] == $needle.to_be_bytes()
-                            && rng.gen_range(0.0..1.0) <= 0.6
-                        {
-                            self[i..i + $size].copy_from_slice(&(rng.next() as $ty).to_le_bytes());
-                        }
+                    if self[i..i + $size] == $needle.to_be_bytes() && rng.gen_bool(probability) {
+                        let new_val = rng.next() as $ty;
+                        log::info!("Replacing offset {i:#x} with {new_val:#x}");
+                        self[i..i + $size].copy_from_slice(&new_val.to_be_bytes());
                     }
                 }
+                */
             }};
         }
 
@@ -442,11 +451,11 @@ impl FuzzInput for Vec<u8> {
         match rule {
             RedqueenRule::SingleU128(from, to) => {
                 find_needle!(u128, *from, *to, rule.clone());
-                if *from as u64 <= u64::MAX && *to as u64 <= u64::MAX {
+                if *from <= u64::MAX as u128 && *to <= u64::MAX as u128 {
                     find_needle!(u64, *from, *to, SingleU64(*from as u64, *to as u64));
-                    if *from as u32 <= u32::MAX && *to as u32 <= u32::MAX {
+                    if *from <= u32::MAX as u128 && *to <= u32::MAX as u128 {
                         find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
-                        if *from as u16 <= u16::MAX && *to as u16 <= u16::MAX {
+                        if *from <= u16::MAX as u128 && *to <= u16::MAX as u128 {
                             find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
                             /*
                             if *from as u8 <= u8::MAX && *to as u8 <= u8::MAX {
@@ -459,9 +468,9 @@ impl FuzzInput for Vec<u8> {
             }
             RedqueenRule::SingleU64(from, to) => {
                 find_needle!(u64, *from, *to, rule.clone());
-                if *from as u32 <= u32::MAX && *to as u32 <= u32::MAX {
+                if *from <= u32::MAX as u64 && *to <= u32::MAX as u64 {
                     find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
-                    if *from as u16 <= u16::MAX && *to as u16 <= u16::MAX {
+                    if *from <= u16::MAX as u64 && *to <= u16::MAX as u64 {
                         find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
                         /*
                         if *from as u8 <= u8::MAX && *to as u8 <= u8::MAX {
@@ -473,7 +482,7 @@ impl FuzzInput for Vec<u8> {
             }
             RedqueenRule::SingleU32(from, to) => {
                 find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
-                if *from as u16 <= u16::MAX && *to as u16 <= u16::MAX {
+                if *from <= u16::MAX as u32 && *to <= u16::MAX as u32 {
                     find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
                     /*
                     if *from as u8 <= u8::MAX && *to as u8 <= u8::MAX {
