@@ -4667,7 +4667,6 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
                             // Clear the candidates and set the input to use as the new entropy input
                             candidates.clear();
-                            log::info!("Clearing old rule {rule:x?}.. new rules {diff_rules:x?}");
 
                             // For each new rule not previously seen, only add rules whose target is the same
                             for new_rule in diff_rules {
@@ -4727,8 +4726,8 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                         orig_candidates.len(),
                         candidates.len()
                     );
-                    log::info!("ORIG {orig_candidates:x?}");
-                    log::info!("NEW {candidates:x?}");
+                    log::debug!("ORIG {orig_candidates:x?}");
+                    log::debug!("NEW {candidates:x?}");
                     assert!(
                         orig_hash != input.fuzz_hash(),
                         "Candidates changed without the input changing"
@@ -4736,7 +4735,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 }
 
                 if candidates.is_empty() {
-                    log::info!("Bad rule found: {rule:x?}");
+                    log::debug!("Bad rule found: {rule:x?}");
                     bad_rules.push(rule.clone());
                 }
 
