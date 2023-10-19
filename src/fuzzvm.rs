@@ -3412,11 +3412,18 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         self.get_dirty_logs()?;
 
         // Always just restore the dirty pages
-        self.restore_dirty_pages();
+        let kvm_dirty_pages = self.restore_dirty_pages();
 
         // Reset the guest memory and get the number of pages restored
-        unsafe {
-            self.reset_custom_guest_memory()?;
+        let custom_dirty_pages = unsafe { self.reset_custom_guest_memory()? };
+
+        // If we have stats, increase the dirty page count
+        {
+            let _timer = self.scoped_timer(PerfMark::AddDirtyPages);
+            if let Some(stats) = self.core_stats.as_mut() {
+                stats.lock().unwrap().dirty_pages_kvm += kvm_dirty_pages as u64;
+                stats.lock().unwrap().dirty_pages_custom += custom_dirty_pages as u64;
+            }
         }
 
         // Clear the dirty logs
@@ -3440,7 +3447,10 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         self.restore_breakpoint = None;
 
         // Init the VM based on the given fuzzer
-        fuzzer.init_vm(self)?;
+        {
+            let _timer = self.scoped_timer(PerfMark::FuzzerInitVm);
+            fuzzer.init_vm(self)?;
+        }
 
         // Apply the breakpoints for the fuzzer
         self.apply_fuzzer_breakpoints(fuzzer)?;
@@ -3450,6 +3460,8 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
         // Reset the retired instructions counter
         // self.reset_retired_instructions()?;
+
+        let _timer = self.scoped_timer(PerfMark::RemainingResetGuest);
 
         // Reset the start time for the next fuzz case used for determining timeout
         self.start_time = Instant::now();
@@ -4071,6 +4083,12 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                                     Some(FuzzVmExit::LogStore)
                                 }
                                 ResetBreakpointType::ImmediateReturn => {
+                                    // Patch the immediate return locations
+                                    self.patch_bytes_permanent(
+                                        AddressLookup::Virtual(VirtAddr(self.rip()), self.cr3()),
+                                        &[0xc3],
+                                    )?;
+
                                     // Immediately return from the function
                                     self.fake_immediate_return()?;
 
@@ -4592,6 +4610,8 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         // Gather then original redqueen rules for this input
         self.reset_and_run_with_redqueen(orig_input, fuzzer, vm_timeout, &mut temp_feedback)?;
 
+        core_stats.lock().unwrap().rq_iterations += 1;
+
         // Gather the total coverage for the original input
         let original_coverage = temp_feedback.take_log();
 
@@ -4599,8 +4619,6 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             .iter()
             .filter(|x| matches!(x, FeedbackLog::Redqueen(_)))
             .collect();
-
-        core_stats.lock().unwrap().rq_iterations += 1;
 
         let mut bad_rules = Vec::new();
 
@@ -4643,6 +4661,8 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                             vm_timeout,
                             &mut temp_feedback,
                         )?;
+
+                        core_stats.lock().unwrap().rq_iterations += 1;
 
                         let after_coverage = temp_feedback.take_log();
                         let after_coverage: BTreeSet<_> = after_coverage
@@ -4718,25 +4738,25 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                             input = max_entropy_input;
                         }
                     }
-                }
 
-                if candidates.len() < num_orig_candidates {
-                    log::info!(
-                        "FOUND {rule:x?} | {} -> {}",
-                        orig_candidates.len(),
-                        candidates.len()
-                    );
-                    log::debug!("ORIG {orig_candidates:x?}");
-                    log::debug!("NEW {candidates:x?}");
-                    assert!(
-                        orig_hash != input.fuzz_hash(),
-                        "Candidates changed without the input changing"
-                    );
-                }
+                    if candidates.len() < num_orig_candidates {
+                        log::info!(
+                            "FOUND {rule:x?} | {} -> {}",
+                            orig_candidates.len(),
+                            candidates.len()
+                        );
+                        log::debug!("ORIG {orig_candidates:x?}");
+                        log::debug!("NEW {candidates:x?}");
+                        assert!(
+                            orig_hash != input.fuzz_hash(),
+                            "Candidates changed without the input changing"
+                        );
+                    }
 
-                if candidates.is_empty() {
-                    log::debug!("Bad rule found: {rule:x?}");
-                    bad_rules.push(rule.clone());
+                    if candidates.is_empty() {
+                        log::debug!("Bad rule found: {rule:x?}");
+                        bad_rules.push(rule.clone());
+                    }
                 }
 
                 for candidate in &candidates {
@@ -4811,8 +4831,8 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
                         sync_redqueen_coverage!();
 
-                        // Recursively attempt to call Redqueen for this new input
                         /*
+                        // Recursively attempt to call Redqueen for this new input
                         self.gather_redqueen(
                             &new_input,
                             fuzzer,

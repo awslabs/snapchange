@@ -69,6 +69,10 @@ pub struct Redqueen {
 
     /// Number of cores that can trigger redqueen
     pub cores: u64,
+
+    /// Use redqueen rules during random mutations
+    #[serde(default = "default_mutate_by_redqueen_rules")]
+    pub mutate_by_redqueen_rules: bool,
 }
 
 const fn default_maximum_total_corpus_percentage_sync() -> u8 {
@@ -99,6 +103,10 @@ const fn default_guest_memory_size() -> u64 {
     5 * 1024 * 1024 * 1024
 }
 
+const fn default_mutate_by_redqueen_rules() -> bool {
+    false
+}
+
 impl std::default::Default for Config {
     fn default() -> Self {
         Self {
@@ -127,9 +135,10 @@ impl std::default::Default for Stats {
 impl std::default::Default for Redqueen {
     fn default() -> Self {
         Self {
-            entropy_threshold: 100,
+            entropy_threshold: 10,
             timeout: Duration::from_secs(60),
-            cores: 8,
+            cores: 4,
+            mutate_by_redqueen_rules: false,
         }
     }
 }

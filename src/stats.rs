@@ -109,6 +109,9 @@ pub struct Stats<FUZZER: Fuzzer> {
     /// Number of [`FuzzVmExit`] seen
     pub vmexits: [u64; std::mem::variant_count::<FuzzVmExit>()],
 
+    /// Toal number of [`FuzzVmExit`] seen
+    pub total_vmexits: u64,
+
     /// Performance metrics for the stats loop itself
     pub tui_perf_stats: [f64; std::mem::variant_count::<TuiPerfStats>()],
 
@@ -120,6 +123,7 @@ impl<FUZZER: Fuzzer> Stats<FUZZER> {
     /// Increment the hit count for the given [`FuzzVmExit`]
     pub fn inc_vmexit(&mut self, vmexit: &FuzzVmExit) {
         let index = vmexit.id();
+        self.total_vmexits += 1;
         self.vmexits[index] += 1;
     }
 }
@@ -185,6 +189,9 @@ pub struct GlobalStats {
 
     /// Number of vmexits found across all cores
     pub vmexits: [u64; std::mem::variant_count::<FuzzVmExit>()],
+
+    /// Number of vmexits per iteration on average
+    pub vmexits_per_iter: u64,
 }
 
 struct PerfMarks {
@@ -533,6 +540,9 @@ impl_enum!(
         SetRQRuleCandidates,
         GetRQRuleCandidates,
         AddRQRuleCandidates,
+        AddDirtyPages,
+        FuzzerInitVm,
+        RemainingResetGuest,
 
         /// time spent elsewhere that is not currently being tracked
         Remaining,
@@ -946,6 +956,7 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut dirty_pages = 0;
     let mut dirty_pages_kvm = 0;
     let mut dirty_pages_custom = 0;
+    let mut vmexits_per_iter = 0;
 
     // Init the coverage time to sync coverage between the cores
     let mut coverage_timer = std::time::Instant::now();
@@ -970,6 +981,7 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut sum_dirty_pages = [0_u64; ITERS_WINDOW_SIZE];
     let mut sum_dirty_pages_kvm = [0_u64; ITERS_WINDOW_SIZE];
     let mut sum_dirty_pages_custom = [0_u64; ITERS_WINDOW_SIZE];
+    let mut sum_vmexits = [0_u64; ITERS_WINDOW_SIZE];
     let mut iters_index = 0;
     let mut lighthouse_data = String::new();
     let mut cov_addrs = String::new();
@@ -1099,6 +1111,7 @@ pub fn worker<FUZZER: Fuzzer>(
         sum_dirty_pages[iters_index] = 0;
         sum_dirty_pages_custom[iters_index] = 0;
         sum_dirty_pages_kvm[iters_index] = 0;
+        sum_vmexits[iters_index] = 0;
 
         let mut sum_timeouts = 0;
         let mut coverage_left = 0_u64;
@@ -1132,11 +1145,12 @@ pub fn worker<FUZZER: Fuzzer>(
                     sum_dirty_pages_kvm[iters_index] += stats.dirty_pages_kvm / stats.iterations;
                     sum_dirty_pages_custom[iters_index] +=
                         stats.dirty_pages_custom / stats.iterations;
+                    sum_vmexits[iters_index] += stats.total_vmexits / stats.iterations;
                 }
 
                 // Add the core stats to the total stats across all cores
                 total_iters += stats.iterations;
-                total_rq_iters += stats.iterations;
+                total_rq_iters += stats.rq_iterations;
                 sum_iters[iters_index] += stats.iterations;
                 sum_rq_iters[iters_index] += stats.rq_iterations;
                 sum_timeouts += stats.timeouts;
@@ -1147,6 +1161,7 @@ pub fn worker<FUZZER: Fuzzer>(
                 stats.rq_iterations = 0;
                 stats.dirty_pages_kvm = 0;
                 stats.dirty_pages_custom = 0;
+                stats.total_vmexits = 0;
 
                 if stats.in_redqueen {
                     in_redqueen.push(core_id);
@@ -1293,6 +1308,7 @@ pub fn worker<FUZZER: Fuzzer>(
             dirty_pages = sum_dirty_pages.iter().sum::<u64>() / time_window / alive;
             dirty_pages_kvm = sum_dirty_pages_kvm.iter().sum::<u64>() / time_window / alive;
             dirty_pages_custom = sum_dirty_pages_custom.iter().sum::<u64>() / time_window / alive;
+            vmexits_per_iter = sum_vmexits.iter().sum::<u64>() / time_window / alive;
         }
 
         // Get the elapsed time in hours:minutes:seconds
@@ -1396,7 +1412,7 @@ pub fn worker<FUZZER: Fuzzer>(
             // Calculate the percentage for this value
             let res = (val as f64 / total as f64 * 100.).round();
 
-            if res == 0.0 {
+            if res < 2.0 {
                 continue;
             }
 
@@ -1867,6 +1883,7 @@ pub fn worker<FUZZER: Fuzzer>(
             in_redqueen: in_redqueen.clone(),
             perfs: (PerfMarks { timers: totals }, total, remaining),
             vmexits,
+            vmexits_per_iter,
         };
 
         time!(WriteStatsData, {
@@ -1979,8 +1996,6 @@ pub fn worker<FUZZER: Fuzzer>(
         }
 
         if tui {
-            let perf_stats: Vec<_> = perf_stats.iter().take(8).copied().collect();
-
             let app = StatsApp::new(
                 perf_stats.as_slice(),
                 coverage.as_slice(),

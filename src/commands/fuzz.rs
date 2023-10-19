@@ -910,21 +910,24 @@ fn start_core<FUZZER: Fuzzer>(
             }
 
             // Gather redqueen rules for this input regardless of requeen core or not since
-            // we can use redqueen rules as a mutation strategy randomly
-            if new_input || fuzzvm.rng.next() % 250 == 2 {
+            // we can use redqueen rules as a mutation strategy randomly (if selected in the config)
+            if (new_input && fuzzvm.core_id <= config.redqueen.cores)
+                || (fuzzvm.core_id > config.redqueen.cores
+                    && config.redqueen.mutate_by_redqueen_rules)
+            {
                 fuzzvm.reset_and_run_with_redqueen(
                     &input,
                     &mut fuzzer,
                     vm_timeout,
                     &mut feedback,
                 )?;
+
+                core_stats.lock().unwrap().rq_iterations += 1;
             }
 
             // If this input has never been through redqueen or hit the small change to go through again,
             // execute redqueen on this input
-            if fuzzvm.core_id <= config.redqueen.cores
-                && (should_redqueen || fuzzvm.rng.next() % 100 == 1)
-            {
+            if fuzzvm.core_id <= config.redqueen.cores && should_redqueen {
                 time!(Redqueen, {
                     let redqueen_time_spent = Duration::from_secs(0);
 

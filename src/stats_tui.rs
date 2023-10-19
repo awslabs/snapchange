@@ -389,7 +389,7 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
         let line = format!(
             "{} | {} | {} | {}",
             format!("{:>10}: {:10}", "Timeouts", general.timeouts),
-            format!("{:>11}: {:24}", "Cov. Left", general.coverage_left),
+            format!("{:>11}: {:20}", "VM Exits / iter", general.vmexits_per_iter),
             format!("{:>18}: {:17}", "Dirty Pages / Iter", general.dirty_pages),
             if cfg!(feature = "redqueen") {
                 format!(
