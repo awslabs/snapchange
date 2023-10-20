@@ -35,6 +35,7 @@ from binaryninja import (
     MediumLevelILInstruction,
     MediumLevelILOperation,
 )
+import binaryninja._binaryninjacore as core
 
 # from binaryninja.log import log_debug, log_error, log_info, log_warn
 from binaryninja.lowlevelil import LowLevelILFlag
@@ -75,6 +76,7 @@ class FunctionAlias(enum.Enum):
     STRNCMP = 3
     STRCASECMP = 4
     STRNCASECMP = 5
+    RETURN_STATUS_FUNCTION = 100
 
 
 FUNCTION_ALIASES = {
@@ -588,11 +590,16 @@ def add_memory_to_dict(dictionary,
                        both_cases=False):
     if addr is None or memlen is None:
         return
+    if isinstance(memlen, str):
+        return False
     if memlen <= 2:
         return False
     if isinstance(addr, int):
         pass  # all good
     elif isinstance(addr, str):
+        if 'reg' in addr:
+            return False
+
         try:
             addr = int(addr, 0)
         except ValueError:
@@ -707,16 +714,15 @@ def run_cmp_analysis(bv, ignore=None):
         # that are a part of the IF instructions
         expr_indexes = []
 
-        # Keep track of the instr_indexes of MLIL_NOT conditions
-        negations = []
-
-        if func.medium_level_il is None:
+        if func.low_level_il is None:
             continue
 
-        for instr in func.mlil_instructions:
-            # Failed to find an instruction here. Found the end of the instructions.
-            if instr.operation == MediumLevelILOperation.MLIL_NOP:
-                break
+        # Get the number of LLIL expressions (not instructions) for this function
+        num_exprs = core.BNGetLowLevelILExprCount(func.llil.handle)
+
+        # Iterate over the expressions specifically
+        for expr_index in range(num_exprs):
+            instr = LowLevelILInstruction.create(func.llil, expr_index, None)
 
             # If this instruction uses the result of a memcmp/strcmp, ignore the
             # condition as a rule has already been added from the strcmp/memcmp call site
@@ -726,76 +732,22 @@ def run_cmp_analysis(bv, ignore=None):
                 )
                 continue
 
-            if instr.operation == MediumLevelILOperation.MLIL_IF:
-                address = instr.address
-                # instr = instr.condition
-
-                # If the instruction is if(true) or if(false), there is nothing our input
-                # can do to affect the comparison, so continue
-                if instr.condition.operation == MediumLevelILOperation.MLIL_CONST:
-                    continue
-
-                inverted = False
-                if instr.condition.operation == MediumLevelILOperation.MLIL_NOT:
-                    # log_warn(f'SKIPPING IF_NOT {address:#x}')
-                    negations.append(address)
-                    continue
-
-                if instr.condition.operation in [
-                        MediumLevelILOperation.MLIL_OR,
-                        MediumLevelILOperation.MLIL_AND,
-                ]:
-                    if (instr.condition.left.operation
-                            == MediumLevelILOperation.MLIL_NOT
-                            and instr.condition.right.operation
-                            == MediumLevelILOperation.MLIL_NOT):
-                        negations.append(address)
-
-                    log_warn(f"SKIPPING IF_[AND|OR] {address:#x}")
-                    continue
-
-                # Get the comparison rule for this instruction
-                res = get_cmp_analysis_from_instr_mlil(instr.condition,
-                                                       address,
-                                                       expr_indexes,
-                                                       cmp_size=None,
-                                                       iters=0)
-
-                # If we found a comparison rule write it to the log
-                if res is not None:
-                    assert isinstance(res, str)
-                    if "flag" not in res:
-                        cmps.append(f"{address:#x},{res}\n")
-                        try:
-                            size, left, _op, right = res.split(",")
-                            add_const_to_dict(bv, dictionary, left, size)
-                            add_const_to_dict(bv, dictionary, right, size)
-                        except ValueError as e:
-                            log_error(f"cannot handle cmp op: {res!r} {e!r}")
-                    else:
-                        log_warn(f"Flag found! {res}")
-
-            if instr.operation == MediumLevelILOperation.MLIL_CALL:
+            if instr.operation == LowLevelILOperation.LLIL_CALL:
                 # Only interested in const pointer function calls
-                if instr.dest.operation != MediumLevelILOperation.MLIL_CONST_PTR:
+                if instr.dest.operation != LowLevelILOperation.LLIL_CONST_PTR:
                     continue
+
                 s = bv.get_symbol_at(instr.dest.constant)
                 if not s:  # check that there is a symbol
                     continue
                 func_name = s.name
                 func_alias = FUNCTION_ALIASES.get(func_name)
                 if func_alias is not None:
-                    params = []
-                    for param in instr.params:
-                        # Get the comparison rule for this instruction
-                        res = get_cmp_analysis_from_instr_mlil(param,
-                                                               address,
-                                                               expr_indexes,
-                                                               cmp_size=None,
-                                                               iters=0)
+                    # Get the registers used for the calling convention
+                    param_regs = instr.function.source_function.calling_convention.int_arg_regs
 
-                        # If we found a comparison rule write it to the log
-                        params.append(res)
+                    # Create the register parameters
+                    params = [f'reg {param_reg}' for param_reg in param_regs]
 
                     log_debug(
                         f"cmp function {instr.address:#x} {func_name} -> {func_alias!r} params: {params!r}"
@@ -806,13 +758,9 @@ def run_cmp_analysis(bv, ignore=None):
                         FunctionAlias.STRNCMP,
                         FunctionAlias.STRNCASECMP,
                     )
-                    if func_alias in strcmps and len(params) >= 2 and all(
-                            params[:2]):
-                        res = f"{instr.address:#x},0x8,{params[0]},strcmp,{params[1]}\n"
-                        if "flag" not in res:
-                            cmps.append(res)
-                        else:
-                            log_warn(f"Flag found! {res}")
+                    if func_alias in strcmps and len(params) >= 2 and all(params[:2]):
+                        res = f"{instr.address:#x},0x0,{params[0]},strcmp,{params[1]}\n"
+                        cmps.append(res)
 
                         memlen = STR_LEN_THRESHOLD
                         if (len(params) >= 3 and params[2]
@@ -824,9 +772,7 @@ def run_cmp_analysis(bv, ignore=None):
                                 try:
                                     memlen = int(params[2], 0)
                                 except ValueError:
-                                    log_warn(
-                                        f"ignoring non-constant len: {params[2]!r}"
-                                    )
+                                    memlen = params[2]
                         both_cases = func_alias in (
                             FunctionAlias.STRNCASECMP,
                             FunctionAlias.STRCASECMP,
@@ -849,10 +795,7 @@ def run_cmp_analysis(bv, ignore=None):
                             try:
                                 cmp_len = int(params[2], 0)
                             except ValueError:
-                                log_warn(
-                                    f"Found memcmp with dynamic size: {params[2]!r} @ {instr.address:#x}. Look into this!"
-                                )
-                                cmp_len = None
+                                cmp_len = params[2]
                         if cmp_len is not None:
                             res = f"{instr.address:#x},{cmp_len},{params[0]},memcmp,{params[1]}\n"
                             if "flag" not in res:
@@ -869,187 +812,62 @@ def run_cmp_analysis(bv, ignore=None):
                                         if cmp_len else STR_LEN_THRESHOLD),
                             )
 
-                    # For these functions, we are adding the rules at the call site and not the
-                    # condition site. Ignore where the result of these functions is being used
-                    # in a future condition.
-                    #
-                    # Example:
-                    #   # Rule added here (at the call site)
-                    #   rax_6 = strcmp(rdi_1, "password1234567")
-                    #   # Condition ignored here (at the cmp site)
-                    #   if (rax_6.eax == 0) then 35 @ 0x1395 else 36 @ 0x12cd
-                    ssa_func = instr.ssa_form.function
-                    output = instr.ssa_form.output
-                    if len(output) > 0:
-                        output = output[0]
-                        for use in ssa_func.get_ssa_var_uses(output):
-                            if use.operation == MediumLevelILOperation.MLIL_IF:
-                                ignored_addresses.append(use.address)
-
-        # Look for specific CMP instructions that are not in an IF explicitly
-        for expr_index in range(0, 0x10000):
-            if expr_index in expr_indexes:
-                continue
-
-            instr = MediumLevelILInstruction.create(func.medium_level_il,
-                                                    expr_index)
-
-            # Failed to find an instruction here. Found the end of the instructions.
-            if instr.operation == MediumLevelILOperation.MLIL_NOP:
-                break
-
             if instr.operation in [
-                    MediumLevelILOperation.MLIL_CMP_E,
-                    MediumLevelILOperation.MLIL_CMP_NE,
-                    MediumLevelILOperation.MLIL_CMP_SLT,
-                    MediumLevelILOperation.MLIL_CMP_ULT,
-                    MediumLevelILOperation.MLIL_CMP_SLE,
-                    MediumLevelILOperation.MLIL_CMP_ULE,
-                    MediumLevelILOperation.MLIL_CMP_SGE,
-                    MediumLevelILOperation.MLIL_CMP_UGE,
-                    MediumLevelILOperation.MLIL_CMP_SGT,
-                    MediumLevelILOperation.MLIL_CMP_UGT,
+                    LowLevelILOperation.LLIL_CMP_E,
+                    LowLevelILOperation.LLIL_CMP_NE,
+                    LowLevelILOperation.LLIL_CMP_SLT,
+                    LowLevelILOperation.LLIL_CMP_ULT,
+                    LowLevelILOperation.LLIL_CMP_SLE,
+                    LowLevelILOperation.LLIL_CMP_ULE,
+                    LowLevelILOperation.LLIL_CMP_SGE,
+                    LowLevelILOperation.LLIL_CMP_UGE,
+                    LowLevelILOperation.LLIL_CMP_SGT,
+                    LowLevelILOperation.LLIL_CMP_UGT,
+                    LowLevelILOperation.LLIL_FCMP_E,
+                    LowLevelILOperation.LLIL_FCMP_NE,
+                    LowLevelILOperation.LLIL_FCMP_LT,
+                    LowLevelILOperation.LLIL_FCMP_LE,
+                    LowLevelILOperation.LLIL_FCMP_GE,
+                    LowLevelILOperation.LLIL_FCMP_GT,
+                    LowLevelILOperation.LLIL_INTRINSIC
             ]:
-
-                # Assumption:
-                # If a CMP instruction is found via expr_index, then it is the actual
-                # instruction. We want to query the result of the compare and not before the
-                # compare. The instruction we want to add to the cmp list is the instruction
-                # after this compare.
-
-                ## Example:
-                ## 55555555528a  cmp     eax, ecx <- Found by expr_index
-                ## 55555555528c  sete    al       <- Instruction we want to actually break on
-                ##
-                ## MLIL
-                ## 6 @ 55555555528c  rax_2.al = rax_2 == 0xf7ce60a9
-                full_instr = instr.function[instr.instr_index]
-
-                # Get the instruction following the CMP instruction.
-                # Since there could be multiple instructions for the same address, we walk the
-                # basic block looking for a different address than the current instruction
-                basic_block = [
-                    bb for bb in instr.function
-                    if bb.start <= instr.instr_index < bb.end
-                ]
-
-                # Blocks might be split such that a `cmp` is the last instruction in a basic
-                # block. Grab the next basic block in case we need it to find the instruction
-                # after the cmp instruction.
-                if len(basic_block[0].outgoing_edges) > 0:
-                    edge = basic_block[0].outgoing_edges[0]
-                    if edge.type == BranchType.UnconditionalBranch:
-                        basic_block.append(edge.target)
-
-                check_address = full_instr.address
-
-                # If the instruction address is the comparison address, we need to go to the
-                # next instruction for the correct address to check the comparison result
-                if instr.address == check_address:
-                    for bb in basic_block:
-                        for temp_instr in bb:
-                            if temp_instr.instr_index <= instr.instr_index:
-                                continue
-
-                            if temp_instr.address != check_address:
-                                check_address = temp_instr.address
-                                break
-
-                        # If we found the correct next instruction, break out of trying future
-                        # block
-                        if instr.address != check_address:
-                            break
-
-                # log_warn(f'here: {instr.address:#x} {expr_index} {instr} instr index: {instr.instr_index} -> {full_instr.address:#x} {full_instr}')
-
-                # Sanity check the larger instruction is not the same as the cmp instruction
-                if instr.address == check_address:
-                    log_warn(f"Error: {instr.address:#x}")
-                    log_warn(full_instr)
-                    assert instr.address != check_address
-                else:
-                    # Get the comparison rule for this instruction, using the address of the
-                    # full instruction
-                    res = get_cmp_analysis_from_instr_mlil(instr,
-                                                           check_address,
-                                                           expr_indexes,
-                                                           cmp_size=None,
-                                                           iters=0)
-
-                    # If we found a comparison rule write it to the log
-                    if res != None:
-                        if "flag" not in res:
-                            cmps.append(f"{check_address:#x},{res}\n")
-                        else:
-                            log_warn(f"Flag found! {res}")
-
-            if instr.operation in [
-                    MediumLevelILOperation.MLIL_FCMP_E,
-                    MediumLevelILOperation.MLIL_FCMP_NE,
-                    MediumLevelILOperation.MLIL_FCMP_LT,
-                    MediumLevelILOperation.MLIL_FCMP_LE,
-                    MediumLevelILOperation.MLIL_FCMP_GE,
-                    MediumLevelILOperation.MLIL_FCMP_GT,
-            ]:
-                # MediumLevelILOperation.MLIL_FCMP_O, \
-                # MediumLevelILOperation.MLIL_FCMP_UO]:
-
-                full_instr = instr.function[instr.instr_index]
-
-                # Get the instruction following the FCMP instruction.
-                # Since there could be multiple instructions for the same address, we walk the
-                # basic block looking for a different address than the current instruction
-                basic_block = [
-                    bb for bb in instr.function
-                    if bb.start <= instr.instr_index < bb.end
-                ][0]
-                check_address = full_instr.address
-
-                # If the instruction address is the comparison address, we need to go to the next instruction
-                # for the correct address to check the comparison result
-                if instr.address == check_address:
-                    for temp_instr in basic_block:
-                        if temp_instr.instr_index <= instr.instr_index:
-                            continue
-
-                        if temp_instr.address != check_address:
-                            check_address = temp_instr.address
-                            break
-
-                assert instr.address != check_address
-
                 # Get the comparison rule for this instruction, using the address of the
                 # full instruction
-                res = get_cmp_analysis_from_instr_mlil(instr,
-                                                       check_address,
-                                                       expr_indexes,
-                                                       cmp_size=None,
-                                                       iters=0)
+                res = get_collapsed_rule(instr)
 
-                # Found a negated operation. Negate the operation before writing it
-                if check_address in negations:
-                    if "FCMP_E" in res:
-                        res = res.replace("FCMP_E", "FCMP_NE")
-                    elif "FCMP_NE" in res:
-                        res = res.replace("FCMP_NE", "FCMP_E")
-                    elif "FCMP_LE" in res:
-                        res = res.replace("FCMP_LE", "FCMP_GT")
-                    elif "FCMP_LT" in res:
-                        res = res.replace("FCMP_LT", "FCMP_GE")
-                    elif "FCMP_GE" in res:
-                        res = res.replace("FCMP_GE", "FCMP_LT")
-                    elif "FCMP_GT" in res:
-                        res = res.replace("FCMP_GT", "FCMP_LE")
-                    else:
-                        log_error(f"Unknown condition to negate! {res}")
-                        assert 1 == 2
+                if res != None:
+                    # Continue if the collapsed rule was ignored (like the return value comparison case)
+                    if len(res) == 0:
+                        continue
+
+                    cmps.append(f"{res}\n")
+                    continue
+                
+                # Get the comparison rule for this instruction, using the address of the
+                # full instruction
+                res = get_cmp_analysis_from_instr_llil(instr)
 
                 # If we found a comparison rule write it to the log
                 if res != None:
-                    if "flag" not in res:
-                        cmps.append(f"{check_address:#x},{res}\n")
-                    else:
-                        log_warn(f"Flag found! {res}")
+                    cmps.append(f"{res}\n")
+
+            # Special case unimplemented instructions
+            if instr.operation == LowLevelILOperation.LLIL_UNIMPL:
+                disasm = bv.get_disassembly(instr.address).replace(",", "").split()
+                if disasm[0] == 'sbb':
+                    instr_length = bv.get_instruction_length(instr.address, bv.arch)
+                    next_addr = instr.address + instr_length
+                    next_instr = bv.get_disassembly(next_addr)
+                    print(next_instr)
+                    comparison = "CMP_SLT"
+                    if "jb" in next_instr:
+                        comparison = "CMP_SLT"
+                    if "jae" in next_instr:
+                        comparison = "CMP_SGE"
+                    
+                    reg_size = bv.arch.regs[disasm[1]].size
+                    cmps.append(f"{instr.address:#x},{reg_size:#x},reg {disasm[1]},{comparison},reg {disasm[2]}\n")
+
 
     return (cmps, dictionary)
 
@@ -1261,7 +1079,7 @@ def get_cmp_analysis_from_instr(instr):
             break
 
 
-def get_cmp_analysis_from_instr_llil(curr_instr, address, iters):
+def get_cmp_analysis_from_instr_llil(curr_instr):
     if not hasattr(curr_instr, "operation"):
         return curr_instr
 
@@ -1271,10 +1089,8 @@ def get_cmp_analysis_from_instr_llil(curr_instr, address, iters):
     result = None
     flags = []
 
-    pad = f"i {iters} | "
     if curr_instr.operation == LowLevelILOperation.LLIL_IF:
-        return get_cmp_analysis_from_instr_llil(curr_instr.condition, address,
-                                                iters + 1)
+        return get_cmp_analysis_from_instr_llil(curr_instr.condition)
     elif curr_instr.operation in [
             LowLevelILOperation.LLIL_CMP_E,
             LowLevelILOperation.LLIL_CMP_NE,
@@ -1296,19 +1112,16 @@ def get_cmp_analysis_from_instr_llil(curr_instr, address, iters):
             LowLevelILOperation.LLIL_FCMP_UO,
     ]:
         # log_warn(f'{pad}TRACE {str(curr_instr.left):20} {str(curr_instr.right):20}')
-        left = get_cmp_analysis_from_instr_llil(curr_instr.left, address,
-                                                iters + 1)
-        right = get_cmp_analysis_from_instr_llil(curr_instr.right, address,
-                                                 iters + 1)
+        left = get_cmp_analysis_from_instr_llil(curr_instr.left)
+        right = get_cmp_analysis_from_instr_llil(curr_instr.right)
         result = {"left": left, "right": right}
         op = "_".join(str(curr_instr.operation).split("_")[1:])
 
         data = ""
-        if is_instr_const(curr_instr.left) and is_instr_const(
-                curr_instr.right):
+        if is_instr_const(curr_instr.left) and is_instr_const(curr_instr.right):
             data = "CONST_INSTR"
 
-        output = f"{address:#x} {left} {op} {curr_instr.size} {right}\n"
+        output = f"{curr_instr.address:#x},{curr_instr.size:#x},{left},{op},{right}\n"
         return output
     elif curr_instr.operation == LowLevelILOperation.LLIL_FLAG:
         if isinstance(curr_instr, LowLevelILFlag):
@@ -1319,77 +1132,104 @@ def get_cmp_analysis_from_instr_llil(curr_instr, address, iters):
             cond = curr_instr.function.get_ssa_flag_definition(cond_ssa)
             assert cond.operation == LowLevelILOperation.LLIL_SET_FLAG
             # log_warn(f'{pad}TRACE FLAG {cond}')
-            res = get_cmp_analysis_from_instr_llil(cond.src, address,
-                                                   iters + 1)
-            return ["flag", res, ""]
+            res = get_cmp_analysis_from_instr_llil(cond.src)
+            return f"flag {res}"
             # else:
             # log_warn(f"{address:#x} UNKNOWN FLAG: {curr_instr.src}")
             # return ['unknown']
     elif curr_instr.operation == LowLevelILOperation.LLIL_LOAD:
         # log_warn(f'{pad}TRACE {curr_instr} {str(curr_instr.operation)}')
-        res = get_cmp_analysis_from_instr_llil(curr_instr.src, address,
-                                               iters + 1)
+        res = get_cmp_analysis_from_instr_llil(curr_instr.src)
         if isinstance(res, list) and len(res) == 3:
             res = " ".join(res)
 
-        return " ".join([f"load_from", res])
+        return f"load_from {res}"
     elif curr_instr.operation == LowLevelILOperation.LLIL_REG:
+        result = f"reg {curr_instr.src.name}"
+
+        # If temp if in this register, attempt to find it's definition
+        if 'temp' in result:
+            ssa_reg = curr_instr.ssa_form.src
+            definition = curr_instr.function.ssa_form.get_ssa_reg_definition(ssa_reg)
+            curr_instr = get_cmp_analysis_from_instr_llil(definition.src.non_ssa_form)
+            return curr_instr
+
         # print(f'{pad}TRACE {curr_instr} {str(curr_instr.operation)}')
         # res = get_cmp_analysis_from_instr_llil(curr_instr.src, address, iters + 1)
-        return f'reg {curr_instr.src.name}'
+        return result
     elif curr_instr.operation == LowLevelILOperation.LLIL_NOT:
-        src = get_cmp_analysis_from_instr_llil(curr_instr.src, address,
-                                               iters + 1)
-        return ["not", src, ""]
+        src = get_cmp_analysis_from_instr_llil(curr_instr.src)
+        return f"not {src}"
     elif curr_instr.operation == LowLevelILOperation.LLIL_OR:
-        left = get_cmp_analysis_from_instr_llil(curr_instr.left, address,
-                                                iters + 1)
-        right = get_cmp_analysis_from_instr_llil(curr_instr.right, address,
-                                                 iters + 1)
+        left = get_cmp_analysis_from_instr_llil(curr_instr.left)
+        right = get_cmp_analysis_from_instr_llil(curr_instr.right)
 
         # Force constants to be the right to help the type checker
         if left.startswith("0x"):
             (left, right) = (right, left)
 
-        return ["or", left, right]
+        return f"or {left} {right}"
     elif curr_instr.operation == LowLevelILOperation.LLIL_ADD:
-        left = get_cmp_analysis_from_instr_llil(curr_instr.left, address,
-                                                iters + 1)
-        right = get_cmp_analysis_from_instr_llil(curr_instr.right, address,
-                                                 iters + 1)
+        left = get_cmp_analysis_from_instr_llil(curr_instr.left)
+        right = get_cmp_analysis_from_instr_llil(curr_instr.right)
 
         # Force constants to be the right to help the type checker
         if left.startswith("0x"):
             (left, right) = (right, left)
 
-        return ["add", left, right]
+        return f"add {left} {right}"
     elif curr_instr.operation == LowLevelILOperation.LLIL_SUB:
-        left = get_cmp_analysis_from_instr_llil(curr_instr.left, address,
-                                                iters + 1)
-        right = get_cmp_analysis_from_instr_llil(curr_instr.right, address,
-                                                 iters + 1)
+        left = get_cmp_analysis_from_instr_llil(curr_instr.left)
+        right = get_cmp_analysis_from_instr_llil(curr_instr.right)
 
-        return ["sub", left, right]
+        return f"sub {left} {right}"
     elif curr_instr.operation == LowLevelILOperation.LLIL_AND:
-        left = get_cmp_analysis_from_instr_llil(curr_instr.left, address,
-                                                iters + 1)
-        right = get_cmp_analysis_from_instr_llil(curr_instr.right, address,
-                                                 iters + 1)
+        left = get_cmp_analysis_from_instr_llil(curr_instr.left)
+        right = get_cmp_analysis_from_instr_llil(curr_instr.right)
 
         # Force constants to be the right to help the type checker
         if left.startswith("0x"):
             (left, right) = (right, left)
 
-        return ["and", left, right]
+        return f"and {left} {right}"
+    elif curr_instr.operation == LowLevelILOperation.LLIL_LSL:
+        left = get_cmp_analysis_from_instr_llil(curr_instr.left)
+        right = get_cmp_analysis_from_instr_llil(curr_instr.right)
+
+        # Force constants to be the right to help the type checker
+        if left.startswith("0x"):
+            (left, right) = (right, left)
+
+        return f"lsl {left} {right}"
     elif curr_instr.operation == LowLevelILOperation.LLIL_CONST:
         # log_warn(f'{pad}TRACE CONST {curr_instr.constant:x}')
         return hex(curr_instr.constant)
     elif curr_instr.operation == LowLevelILOperation.LLIL_CONST_PTR:
         # log_warn(f'{pad}TRACE CONST_PTR {curr_instr.constant:x}')
-        return ["const_ptr", hex(curr_instr.constant)]
+        return f"{hex(curr_instr.constant)}"
+    elif curr_instr.operation == LowLevelILOperation.LLIL_INTRINSIC:
+        if 'cmp' in str(curr_instr):
+            # TODO: Need a decent way of grouping all of the cmp mmx/sse/avx operations
+            # for this check
+            print(f"INTRINSIC {curr_instr}")
+            assert(len(curr_instr.params) == 2)
+            left = get_cmp_analysis_from_instr_llil(curr_instr.params[0])
+            right = get_cmp_analysis_from_instr_llil(curr_instr.params[1])
+            op = "CMP_E"
+            if 'neq' in str(curr_instr.intrinsic):
+                op = "CMP_NE"
+            size = 16
+            if 'ymm' in str(curr_instr):
+                size = 32
+            elif 'zmm' in str(curr_instr):
+                size = 64
+
+            output = f"{curr_instr.address:#x},{size:#x},{left},{op},{right}\n"
+            return output
+
     else:
         log_warn(
-            f"{address:#x} UNKNOWN: {str(curr_instr.operation)} | {type(curr_instr)}"
+            f"{curr_instr.address:#x} UNKNOWN: {str(curr_instr.operation)} | {type(curr_instr)}"
         )
         return
 
@@ -1410,295 +1250,90 @@ def is_instr_const(instr):
     return instr.operation in STATIC_INSTRS
 
 
-def get_cmp_analysis_from_instr_mlil(curr_instr,
-                                     address,
-                                     expr_indexes,
-                                     cmp_size=None,
-                                     iters=0):
+def get_collapsed_rule(instr):
     """
-    Walk the MLIL graph looking for the memory or register values to read in preparation for
-    CMP analysis
+    This common pattern compares the result of an operation. We
+    want to create a rule that would actually produce the result,
+    and not a rule that compares the result itself
+
+    Example:
+    eax = eax & ecx
+    al = eax != 0
+
+    Would produce the rule: reg eax,CMP_NE,0x0
+    Want to produce:        reg eax,CMP_E,reg ecx
+
+    TODO: This only goes back one step for now. Look into how to solve the following:
+    rsi = rsi - rdi
+    rax = rsi
+    rsi = rsi u>> 0x3f
+    rax = rax s>> 3
+    rsi = rsi + rax
+    rsi = rsi s>> 1
+    if (rsi == 0) then 10 @ 0x5555555551d8 else 11 @ 0x5555555551c4
     """
-    # if iters == 0:
-    # log_warn(f'START {address:#x} {iters} -- MLIL CMP Analysis {str(curr_instr)}')
+    if not hasattr(instr, 'left') or not hasattr(instr, 'right'):
+        return None
 
-    expr_indexes.append(curr_instr.expr_index)
+    left = instr.left
+    right = instr.right
 
-    if not hasattr(curr_instr, "operation"):
-        return curr_instr
+    if left.operation == LowLevelILOperation.LLIL_REG and right.operation == LowLevelILOperation.LLIL_CONST:
+        constant = right.constant
 
-    size = 0
-    operation = None
-    not_condition = False
-    result = None
-    flags = []
+        ssa_reg = left.ssa_form
+        if hasattr(ssa_reg, 'full_reg'):
+            ssa_reg = ssa_reg.full_reg
+        elif hasattr(ssa_reg, 'src'):
+            ssa_reg = ssa_reg.src
 
-    pad = f"i {iters} | "
-    if curr_instr.operation == MediumLevelILOperation.MLIL_IF:
-        log_debug(f"{pad}TRACE {curr_instr} {str(curr_instr.operation)}")
-        res = get_cmp_analysis_from_instr_mlil(curr_instr.condition, address,
-                                               expr_indexes, cmp_size,
-                                               iters + 1)
-        log_debug(f"{pad}TRACE {res}")
-        return res
-    elif curr_instr.operation in [
-            MediumLevelILOperation.MLIL_CMP_E,
-            MediumLevelILOperation.MLIL_CMP_NE,
-            MediumLevelILOperation.MLIL_CMP_SLT,
-            MediumLevelILOperation.MLIL_CMP_ULT,
-            MediumLevelILOperation.MLIL_CMP_SLE,
-            MediumLevelILOperation.MLIL_CMP_ULE,
-            MediumLevelILOperation.MLIL_CMP_SGE,
-            MediumLevelILOperation.MLIL_CMP_UGE,
-            MediumLevelILOperation.MLIL_CMP_SGT,
-            MediumLevelILOperation.MLIL_CMP_UGT,
-            MediumLevelILOperation.MLIL_FCMP_E,
-            MediumLevelILOperation.MLIL_FCMP_NE,
-            MediumLevelILOperation.MLIL_FCMP_LT,
-            MediumLevelILOperation.MLIL_FCMP_LE,
-            MediumLevelILOperation.MLIL_FCMP_GE,
-            MediumLevelILOperation.MLIL_FCMP_GT,
-            MediumLevelILOperation.MLIL_FCMP_O,
-            MediumLevelILOperation.MLIL_FCMP_UO,
-    ]:
 
-        log_debug(
-            f"{pad}TRACE {str(curr_instr.left):20} {str(curr_instr.right):20}")
-        cmp_size = curr_instr.size
-        left = get_cmp_analysis_from_instr_mlil(curr_instr.left, address,
-                                                expr_indexes, cmp_size,
-                                                iters + 1)
-        right = get_cmp_analysis_from_instr_mlil(curr_instr.right, address,
-                                                 expr_indexes, cmp_size,
-                                                 iters + 1)
-        result = {"left": left, "right": right}
-        op = "_".join(str(curr_instr.operation).split("_")[1:])
+        # Get the definition of the variable being used in the comparison
+        definition = instr.function.get_ssa_reg_definition(ssa_reg)
 
-        data = ""
-        if is_instr_const(curr_instr.left) and is_instr_const(
-                curr_instr.right):
-            data = "CONST_INSTR"
+        # Ignore the following pattern. We don't want to add a redqueen rule that
+        # compares against a known status code function
+        # 
+        # rax = strcmp(..)
+        # rax = rax == 0
+        if definition.operation == LowLevelILOperation.LLIL_CALL:
+            func_name = bv.get_symbol_at(definition.dest.constant)
+            func_alias = FUNCTION_ALIASES.get(func_name)
+            if func_alias in (
+                    FunctionAlias.MEMCMP, 
+                    FunctionAlias.STRCMP, 
+                    FunctionAlias.STRNCMP, 
+                    FunctionAlias.STRCASECMP, 
+                    FunctionAlias.STRNCASECMP):
+                return ''
+            else:   
+                # If this function return isn't known to be a status code,
+                # we should check the result. For example:
+                # result = checksum(..)
+                # if (result == 0x1234) { .. }
+                return None
 
-        # Only write a rule for dynamic comparisions
-        if data != "CONST_INSTR":
-            if isinstance(left, list):
-                left = " ".join(left)
-            if isinstance(right, list):
-                right = " ".join(right)
-
-            # Manually change cmp size if using xmm
-            isfloat = ""
-            if "xmm" in str(left) or "xmm" in str(right):
-                isfloat = "f"
-
-            return f"{isfloat}{cmp_size:#x},{left},{op},{right}"
-            # output = f"{address:#x},{cmp_size:#x},{left},{op},{right}"
-            # return output
-        else:
+        # Found a valid definition, get the src of the definition
+        definition = definition.src
+        if definition == None:
             return None
 
-        # return [op, left, right]
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_LOAD:
-        # Reset the compare size when going into a load instruction to keep the original
-        # register and not alias based on the compare size
-        res = get_cmp_analysis_from_instr_mlil(curr_instr.src, address,
-                                               expr_indexes, 8, iters + 1)
-
-        if isinstance(res, list) and len(res) == 3:
-            res = " ".join(res)
-
-        return " ".join([f"load_from", res])
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_NOT:
-        src = get_cmp_analysis_from_instr_mlil(curr_instr.src, address,
-                                               expr_indexes, cmp_size,
-                                               iters + 1)
-        return ' '.join(['not', src])
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_NEG:
-        src = get_cmp_analysis_from_instr_mlil(curr_instr.src, address,
-                                               expr_indexes, cmp_size,
-                                               iters + 1)
-        return ' '.join(['neg', src])
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_OR:
-        left = get_cmp_analysis_from_instr_mlil(curr_instr.left, address,
-                                                expr_indexes, cmp_size,
-                                                iters + 1)
-        right = get_cmp_analysis_from_instr_mlil(curr_instr.right, address,
-                                                 expr_indexes, cmp_size,
-                                                 iters + 1)
-        # Force constants to be the right to help the type checker
-        if left.startswith("0x"):
-            (left, right) = (right, left)
-
-        return " ".join(["or", left, right])
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_ADD:
-        left = get_cmp_analysis_from_instr_mlil(curr_instr.left, address,
-                                                expr_indexes, cmp_size,
-                                                iters + 1)
-        right = get_cmp_analysis_from_instr_mlil(curr_instr.right, address,
-                                                 expr_indexes, cmp_size,
-                                                 iters + 1)
-        # Force constants to be the right to help the type checker
-        if left.startswith("0x"):
-            (left, right) = (right, left)
-
-        # No need to generate a rule for this since x+0 is x
-        if left == "0x0":
-            return right
-        if right == "0x0":
-            return left
-
-        return " ".join(["add", left, right])
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_SUB:
-        left = get_cmp_analysis_from_instr_mlil(curr_instr.left, address,
-                                                expr_indexes, cmp_size,
-                                                iters + 1)
-        right = get_cmp_analysis_from_instr_mlil(curr_instr.right, address,
-                                                 expr_indexes, cmp_size,
-                                                 iters + 1)
-        return " ".join(["sub", left, right])
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_AND:
-        left = get_cmp_analysis_from_instr_mlil(curr_instr.left, address,
-                                                expr_indexes, cmp_size,
-                                                iters + 1)
-        right = get_cmp_analysis_from_instr_mlil(curr_instr.right, address,
-                                                 expr_indexes, cmp_size,
-                                                 iters + 1)
-        # Force constants to be the right to help the type checker
-        if left.startswith("0x"):
-            (left, right) = (right, left)
-
-        return " ".join(["and", left, right])
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_LSL:
-        left = get_cmp_analysis_from_instr_mlil(curr_instr.left, address,
-                                                expr_indexes, cmp_size,
-                                                iters + 1)
-        right = get_cmp_analysis_from_instr_mlil(curr_instr.right, address,
-                                                 expr_indexes, cmp_size,
-                                                 iters + 1)
-        return ' '.join(['logical_shift_left', left, right])
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_CONST:
-        return hex(curr_instr.constant)
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_FLOAT_CONST:
-        return curr_instr.constant
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_CONST_PTR:
-        return hex(curr_instr.constant)
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_IMPORT:
-        return hex(curr_instr.constant)
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_SET_VAR:
-        return get_cmp_analysis_from_instr_mlil(curr_instr.src, address,
-                                                expr_indexes, cmp_size,
-                                                iters + 1)
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_ZX:
-        return get_cmp_analysis_from_instr_mlil(curr_instr.src, address,
-                                                expr_indexes, cmp_size,
-                                                iters + 1)
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_SX:
-        return get_cmp_analysis_from_instr_mlil(curr_instr.src, address,
-                                                expr_indexes, cmp_size,
-                                                iters + 1)
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_FLOAT_CONV:
-        return get_cmp_analysis_from_instr_mlil(curr_instr.src, address,
-                                                expr_indexes, cmp_size,
-                                                iters + 1)
-        return get_cmp_analysis_from_instr_mlil(curr_instr.src, address,
-                                                expr_indexes, cmp_size,
-                                                iters + 1)
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_ADDRESS_OF:
-        return ' '.join(
-            ['add', 'reg', 'rbp', f'{curr_instr.value.value + 8:#x}'])
-    elif curr_instr.operation == MediumLevelILOperation.MLIL_ADDRESS_OF_FIELD:
-        return ' '.join(['add', 'add', 'reg', 'rbp', f'{curr_instr.src.storage + 8:#x}', \
-                f'{curr_instr.offset:#x}'])
-    elif curr_instr.operation in [
-            MediumLevelILOperation.MLIL_VAR,
-            MediumLevelILOperation.MLIL_VAR_FIELD,
-    ]:
-        # If we see an MLIL variable, use the LLIL version to get the stack address
-        # MLIL version - 82 @ 0043013a  if (var_38 == 0)
-        # >> var_38 used, not quite useful.. Let's check the LLIL
-        # LLIL version - 105 @ 0043013a  if ([rbp - 0x30 {var_38}].q == 0)
-        # [rbp - 0x30] is must easier to use
-        if "var_" in str(curr_instr.src):
-            # mlil_func = curr_instr.function
-            # ssa_var = mlil_func.get_ssa_var_definition(curr_instr.ssa_form.src)
-            # var = get_cmp_analysis_from_instr_mlil(ssa_var, address, iters + 1)
-            # return ['unknown_mlil_var', var]
-            if curr_instr.llil:
-                # Grab the LLIL version of this variable since it's a bit easier to work with
-                this_llil = get_cmp_analysis_from_instr_llil(
-                    curr_instr.llil.non_ssa_form, address, 0)
-                # return ['llil_var', this_llil]
-                return this_llil
-            log_warn(f"no llil for curr_instr {curr_instr!r}")
+        # Ignore any operation that doesn't have 'left' and 'right' operands
+        if not hasattr(definition, 'left') or not hasattr(definition, 'right'):
             return None
-        if "temp" in str(curr_instr.src) or "cond" in str(
-                curr_instr.src):  # or str(curr_instr.src.type) == 'bool':
-            try:
-                mlil_func = curr_instr.function
-                ssa_var = mlil_func.get_ssa_var_definition(
-                    curr_instr.ssa_form.src)
-                var = get_cmp_analysis_from_instr_mlil(ssa_var, address,
-                                                       expr_indexes, cmp_size,
-                                                       iters + 1)
-                return var
-            except Exception as e:
-                print(str(e))
-                return "recurs"
-        else:
-            # Replace the arg values with the registers
-            name = str(curr_instr.src)
-            if "arg" in name:
-                if curr_instr.llil:
-                    name = get_cmp_analysis_from_instr_llil(
-                        curr_instr.llil.non_ssa_form, address, 0)
-            else:
-                # Remove the versioning index of this register
-                # rcx_1 -> rcx
-                # rsi_9 -> rsi
-                name = name.split("_")[0]
-                if name in ["z", "p", "c", "s", "o", "a"]:
-                    return f"flag here | {curr_instr.address:#x} {curr_instr}"
 
-                # ssa_var = curr_instr.ssa_form
-                # ssa_func = curr_instr.function.ssa_form
-                # var_def = ssa_func.get_ssa_var_definition(ssa_var.src).non_ssa_form
-                # orig_name = name
-                # log_warn(hex(address), var_def)
-                # name = get_cmp_analysis_from_instr_mlil(var_def, address, 0)
-                # log_warn(hex(address), f'{orig_name} -> {name}')
+        # Finally, convert the left and right operands into the correct format for the rules
+        left = get_cmp_analysis_from_instr_llil(definition.left)
+        right = get_cmp_analysis_from_instr_llil(definition.right)
+        op = "_".join(str(instr.operation).split("_")[1:])
+        # def_op = "_".join(str(definition.operation).split("_")[1:]).lower()
+        return f'{definition.address:#x},{instr.size:#x},{left},{op},{right}'
 
-            new_name = get_register_alias(name, cmp_size)
-            # log_warn(hex(address), new_name)
 
-            if "zmm" in new_name or "ymm" in new_name:
-                new_name = new_name.replace("zmm", "xmm").replace("ymm", "xmm")
-            elif "256" in str(curr_instr.src.type) or "512" in str(
-                    curr_instr.src.type):
-                log_warn(
-                    f"{curr_instr.address:#x} Discovered ymm or zmm register in use. Cannot handle those at this point. Ignoring"
-                )
+    return None
 
-            # return f'{name} ({cmp_size}) -> {new_name}'
-            if new_name.startswith("reg "):
-                old_name = new_name
-                new_name = new_name.replace("reg ", "")
-                log_warn(
-                    f"{curr_instr.address:#x} Replacing {old_name} to {new_name}"
-                )
 
-            if "load_from" in new_name:
-                return f"{new_name}"
-            else:
-                return f"reg {new_name}"
-    else:
-        # log_warn(dir(curr_instr))
-        log_warn(
-            f"{address:#x} UNKNOWN: {str(curr_instr.operation)} | {type(curr_instr)}"
-        )
-        return "unknown_" + str(curr_instr.operation)
-
-    return "realbad_" + result
-
+    
 
 def get_register_alias(register, size):
     """
@@ -1898,7 +1533,7 @@ else:
         log_warn(f"{e}")
 
     if not args.binary.exists():
-        log_error("non-existing file passed to script", LOG_ID)
+        log_error(f"non-existing file passed to script {args.binary}", LOG_ID)
         sys.exit(1)
 
     if not args.bps and not args.analysis and not args.cmp:
@@ -1912,6 +1547,7 @@ else:
     options = {
         "analysis.limits.maxFunctionSize": args.bn_max_function_size,
         "analysis.limits.maxFunctionAnalysisTime": args.bn_max_analysis_time,
+        "analysis.mode": "basic"
     }
 
     with bn.open_view(str(args.binary), options=options,
