@@ -4741,7 +4741,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
                     if candidates.len() < num_orig_candidates {
                         log::info!(
-                            "FOUND {rule:x?} | {} -> {}",
+                            "Successful entropy increase {rule:x?} | prior candidates {} -> new candidates {}",
                             orig_candidates.len(),
                             candidates.len()
                         );
