@@ -6,7 +6,7 @@ use crate::cmp_analysis::RedqueenRule;
 #[cfg(feature = "redqueen")]
 use crate::cmp_analysis::{
     RedqueenCoverage,
-    RedqueenRule::{SingleF32, SingleU16, SingleU32, SingleU64, SingleU8},
+    RedqueenRule::{Bytes, SingleF32, SingleU128, SingleU16, SingleU32, SingleU64, SingleU8},
 };
 
 use crate::expensive_mutators;
@@ -416,19 +416,49 @@ impl FuzzInput for Vec<u8> {
         /// Search for the `orig_from` in the current self and, if found, insert it into
         /// the list of candidate rules
         macro_rules! find_needle {
-            ($ty:ty, $orig_from:expr, $orig_to:expr, $rule:expr) => {{
+            ($ty:ty, $orig_from:expr, $orig_to:expr) => {{
                 const SIZE: usize = std::mem::size_of::<$ty>();
                 let from = $orig_from as $ty;
                 let to = $orig_to as $ty;
-                for i in 0..self.len().saturating_sub(SIZE) {
-                    if self[i..i + SIZE] == from.to_le_bytes() {
-                        candidates.push((i, Endian::Little, $rule));
-                    }
+                let from_le_bytes = from.to_le_bytes();
+                let from_be_bytes = from.to_be_bytes();
 
-                    // Only look for big endian operand redqueen if big != little endians
-                    if from.to_le_bytes() != from.to_be_bytes() {
-                        if self[i..i + SIZE] == from.to_be_bytes() {
-                            candidates.push((i, Endian::Big, $rule));
+                for i in 0..self.len().saturating_sub(SIZE) {
+                    #[cfg(feature = "redqueen_extended_sizes")]
+                    let sizes = [2, 3, 4, 5, 6, 7, 8, 16];
+
+                    #[cfg(not(feature = "redqueen_extended_sizes"))]
+                    let sizes = [2, 4, 8, 16];
+
+                    for curr_size in sizes {
+                        if curr_size > SIZE {
+                            continue;
+                        }
+
+                        let curr_from_le = &from_le_bytes[..curr_size];
+                        let curr_from_be = &from_be_bytes[..curr_size];
+
+                        let rule = match curr_size {
+                            16 => SingleU128($orig_from as u128, $orig_to as u128),
+                            8 => SingleU64($orig_from as u64, $orig_to as u64),
+                            4 => SingleU32($orig_from as u32, $orig_to as u32),
+                            2 => SingleU16($orig_from as u16, $orig_to as u16),
+                            7 | 6 | 5 | 3 => Bytes(
+                                curr_from_le[..curr_size].to_vec(),
+                                to.to_le_bytes()[..curr_size].to_vec(),
+                            ),
+                            _ => panic!("Unknown size: {curr_size:#x}"),
+                        };
+
+                        if &self[i..i + curr_size] == curr_from_le {
+                            candidates.push((i, Endian::Little, rule.clone()));
+                        }
+
+                        // Only look for big endian operand redqueen if big != little endians
+                        if curr_from_le != curr_from_be {
+                            if &self[i..i + curr_size] == curr_from_be {
+                                candidates.push((i, Endian::Big, rule));
+                            }
                         }
                     }
                 }
@@ -450,57 +480,19 @@ impl FuzzInput for Vec<u8> {
         // A u32 comparison will add a u32, u16, and u8 rule, ect.
         match rule {
             RedqueenRule::SingleU128(from, to) => {
-                find_needle!(u128, *from, *to, rule.clone());
-                if *from <= u64::MAX as u128 && *to <= u64::MAX as u128 {
-                    find_needle!(u64, *from, *to, SingleU64(*from as u64, *to as u64));
-                    if *from <= u32::MAX as u128 && *to <= u32::MAX as u128 {
-                        find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
-                        if *from <= u16::MAX as u128 && *to <= u16::MAX as u128 {
-                            find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
-                            /*
-                            if *from <= u8::MAX as u128 && *to <= u8::MAX as u128 {
-                                find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
-                            }
-                            */
-                        }
-                    }
-                }
+                find_needle!(u128, *from, *to);
             }
             RedqueenRule::SingleU64(from, to) => {
-                find_needle!(u64, *from, *to, rule.clone());
-                if *from <= u32::MAX as u64 && *to <= u32::MAX as u64 {
-                    find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
-                    if *from <= u16::MAX as u64 && *to <= u16::MAX as u64 {
-                        find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
-                        /*
-                        if *from <= u8::MAX as u64 && *to <= u8::MAX as u64 {
-                            find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
-                        }
-                        */
-                    }
-                }
+                find_needle!(u64, *from, *to);
             }
             RedqueenRule::SingleU32(from, to) => {
-                find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
-                if *from <= u16::MAX as u32 && *to <= u16::MAX as u32 {
-                    find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
-                    /*
-                    if *from <= u8::MAX as u32 && *to <= u8::MAX as u32 {
-                        find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
-                    }
-                    */
-                }
+                find_needle!(u32, *from, *to);
             }
             RedqueenRule::SingleU16(from, to) => {
-                find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
-                /*
-                if *from <= u8::MAX as u16 && *to <= u8::MAX as u16 {
-                    find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
-                }
-                */
+                find_needle!(u16, *from, *to);
             }
             RedqueenRule::SingleU8(from, to) => {
-                find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
+                find_needle!(u8, *from, *to);
             }
             RedqueenRule::SingleF32(from, to) => {
                 if self.len() >= from.len() {
