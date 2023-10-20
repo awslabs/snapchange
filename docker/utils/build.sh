@@ -303,6 +303,29 @@ for try_load in $SYMBOL_FILE_PATHS; do
     fi
 done
 
+
+SANITIZER_FUNCTIONS=''
+if nm "$BIN" | grep __sanitizer_cov_trace_cmp1; then
+    SANITIZER_FUNCTIONS="
+    # Remove all coverage trace from libfuzzer since we are using breakpoint coverage in Snapchange
+    set {unsigned char}(__sanitizer_cov_trace_cmp1)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_cmp2)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_cmp4)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_cmp8)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_const_cmp1)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_const_cmp2)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_const_cmp4)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_const_cmp8)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_div4)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_div8)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_gep)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_pc_guard)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_pc_guard_init)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_pc_indir)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_switch)=0xc3
+    "
+fi
+
 # Execute to the first int3, execute the gdbsnapshot, execute vmcall, then exit
 if [[ "$SNAPSHOT_FUNCTION" ]]; then
     echo "LIBFUZZER SNAPSHOT DETECTED"
@@ -317,22 +340,7 @@ set environment ASAN_OPTIONS=detect_leaks=0
 start
 del *
 
-# Remove all coverage trace from libfuzzer since we are using breakpoint coverage in Snapchange
-set {unsigned char}(__sanitizer_cov_trace_cmp1)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_cmp2)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_cmp4)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_cmp8)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_const_cmp1)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_const_cmp2)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_const_cmp4)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_const_cmp8)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_div4)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_div8)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_gep)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_pc_guard)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_pc_guard_init)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_pc_indir)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_switch)=0xc3
+$SANITIZER_FUNCTIONS
 
 # Insert (int3 ; vmcall) on the $SNAPSHOT_FUNCTION 
 set {unsigned char}($SNAPSHOT_FUNCTION+0x0)=0xcc
