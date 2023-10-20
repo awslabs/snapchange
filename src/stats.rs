@@ -574,6 +574,8 @@ impl_enum!(
         CoverageAddress,
         CoverageSource,
         Lcov,
+        CoverageAnalysis,
+        WriteCoverageAnalysis,
         Total,
     }
 );
@@ -932,6 +934,7 @@ pub fn worker<FUZZER: Fuzzer>(
     // Get the filenames for the various output files
     let lighthouse_file = project_dir.join("coverage.lighthouse");
     let coverage_addrs = project_dir.join("coverage.addresses");
+    let coverage_blockers_file = project_dir.join("coverage.blockers");
     // let coverage_src = project_dir.join("coverage.src");
     let coverage_lcov = project_dir.join("coverage.lcov");
     let coverage_in_order = project_dir.join("coverage.in_order");
@@ -1487,54 +1490,57 @@ pub fn worker<FUZZER: Fuzzer>(
             .collect();
 
         // Update the coverage blockers
-        if let Some(cov_analysis) = &mut coverage_analysis {
-            for addr in total_feedback.code_cov.keys() {
-                cov_analysis.hit(addr.0);
-            }
-
-            coverage_blockers.clear();
-
-            for (score, addr) in cov_analysis.best_options() {
-                if coverage_blockers.len() > 200 {
-                    break;
+        time!(CoverageAnalysis, {
+            if let Some(cov_analysis) = &mut coverage_analysis {
+                for addr in total_feedback.code_cov.keys() {
+                    cov_analysis.hit(addr.0);
                 }
 
-                if let Some(sym_data) = symbols {
-                    let addr = **addr;
-                    if let Some(symbol) = crate::symbols::get_symbol(addr, sym_data) {
-                        // Ignore asan/ubsan symbols
-                        if symbol.contains("asan")
-                            || symbol.contains("lsan")
-                            || symbol.contains("ubsan")
-                            || symbol.contains("sanitizer")
-                        {
-                            continue;
-                        }
+                coverage_blockers.clear();
 
-                        let mut line = format!("{score:>5?}: {addr:#x} {symbol}");
+                for (score, addr) in cov_analysis.best_options() {
+                    if coverage_blockers.len() > 2000 {
+                        log::info!("BREAKING");
+                        break;
+                    }
 
-                        // Add the source line for this address in the coverage timeline
-                        for context in &contexts {
-                            // Write the source and lcov coverage files if vmlinux exists
-                            for curr_addr in [addr, addr.saturating_sub(0x5555_5555_4000)] {
-                                if let Some(loc) = context.find_location(curr_addr)? {
-                                    line.push_str(&format!(
-                                        " {}:{}:{}",
-                                        loc.file.unwrap_or("??unknownfile??"),
-                                        loc.line.unwrap_or(0),
-                                        loc.column.unwrap_or(0)
-                                    ));
+                    if let Some(sym_data) = symbols {
+                        let addr = **addr;
+                        if let Some(symbol) = crate::symbols::get_symbol(addr, sym_data) {
+                            // Ignore asan/ubsan symbols
+                            if symbol.contains("asan")
+                                || symbol.contains("lsan")
+                                || symbol.contains("ubsan")
+                                || symbol.contains("sanitizer")
+                            {
+                                continue;
+                            }
 
-                                    break;
+                            let mut line = format!("{score:>5?}: {addr:#x} {symbol}");
+
+                            // Add the source line for this address in the coverage timeline
+                            for context in &contexts {
+                                // Write the source and lcov coverage files if vmlinux exists
+                                for curr_addr in [addr, addr.saturating_sub(0x5555_5555_4000)] {
+                                    if let Some(loc) = context.find_location(curr_addr)? {
+                                        line.push_str(&format!(
+                                            " {}:{}:{}",
+                                            loc.file.unwrap_or("??unknownfile??"),
+                                            loc.line.unwrap_or(0),
+                                            loc.column.unwrap_or(0)
+                                        ));
+
+                                        break;
+                                    }
                                 }
                             }
-                        }
 
-                        coverage_blockers.push(line);
+                            coverage_blockers.push(line);
+                        }
                     }
                 }
             }
-        }
+        });
 
         // If merge coverage timer has elapsed, set the total coverage across all cores
         // and give each core a new corpus to fuzz with
@@ -1675,6 +1681,13 @@ pub fn worker<FUZZER: Fuzzer>(
                 #[allow(clippy::needless_borrow)]
                 std::fs::write(&coverage_in_order, coverage_timeline.join("\n"))
                     .expect("Failed to write coverage in order file");
+            });
+
+            time!(WriteCoverageAnalysis, {
+                // Write the coverage raw addresses file (used with addr2line to get source cov)
+                #[allow(clippy::needless_borrow)]
+                std::fs::write(&coverage_blockers_file, coverage_blockers.join("\n"))
+                    .expect("Failed to write coverage addresses");
             });
 
             #[cfg(feature = "redqueen")]
@@ -2075,6 +2088,41 @@ pub fn worker<FUZZER: Fuzzer>(
     for input in &total_corpus {
         corpus_len += save_input_in_dir(input, &corpus_dir)?;
     }
+
+    std::fs::write(&coverage_blockers_file, coverage_blockers.join("\n"))
+        .expect("Failed to write coverage addresses");
+    std::fs::write(&lighthouse_file, &lighthouse_data).expect("Failed to write lighthouse file");
+    std::fs::write(&coverage_addrs, &cov_addrs).expect("Failed to write coverage addresses");
+    std::fs::write(&coverage_in_order, coverage_timeline.join("\n"))
+        .expect("Failed to write coverage in order file");
+
+    let redqueen_cov = total_redqueen_coverage
+        .iter()
+        .map(
+            |RedqueenCoverage {
+                 virt_addr,
+                 rflags,
+                 hit_count,
+             }| { format!("{:#x} {rflags:#x} {hit_count:#x}", virt_addr.0) },
+        )
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&coverage_redqueen, redqueen_cov).expect("Failed to write redqueen cov file");
+
+    time!(Lcov, {
+        // Write the lcov output format
+        let mut lcov_res = String::new();
+        lcov_res.push_str("TN:\n");
+        for (file, lines) in &lcov {
+            lcov_res.push_str(&format!("SF:{file}\n"));
+            for (line, hit_val) in lines {
+                lcov_res.push_str(&format!("DA:{line},{hit_val}\n"));
+            }
+            lcov_res.push_str("end_of_record\n");
+        }
+        #[allow(clippy::needless_borrow)]
+        std::fs::write(&coverage_lcov, &lcov_res)?;
+    });
 
     println!(
         "Writing corpus ({}) to disk: {:4.2} MB",
