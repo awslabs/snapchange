@@ -31,7 +31,7 @@ use crate::addrs::VirtAddr;
 use crate::cmdline::Modules;
 use crate::cmp_analysis::RedqueenCoverage;
 use crate::config::Config;
-use crate::coverage_analysis::CoverageAnalysis;
+use crate::coverage_analysis::{Blockers, CoverageAnalysis};
 use crate::feedback::FeedbackTracker;
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::FuzzVmExit;
@@ -543,6 +543,13 @@ impl_enum!(
         AddDirtyPages,
         FuzzerInitVm,
         RemainingResetGuest,
+        PostRunVmBp,
+        PostRunVmCovBp,
+        PostRunVmResetBp,
+        ResetImmediateReturn,
+        IncreaseInputEntropy,
+        GetRQRuleEntry,
+        InsertRQRuleEntry,
 
         /// time spent elsewhere that is not currently being tracked
         Remaining,
@@ -934,7 +941,8 @@ pub fn worker<FUZZER: Fuzzer>(
     // Get the filenames for the various output files
     let lighthouse_file = project_dir.join("coverage.lighthouse");
     let coverage_addrs = project_dir.join("coverage.addresses");
-    let coverage_blockers_file = project_dir.join("coverage.blockers");
+    let coverage_blockers_in_path_file = project_dir.join("coverage.blockers.in_path");
+    let coverage_blockers_total_file = project_dir.join("coverage.blockers.total");
     // let coverage_src = project_dir.join("coverage.src");
     let coverage_lcov = project_dir.join("coverage.lcov");
     let coverage_in_order = project_dir.join("coverage.in_order");
@@ -1068,7 +1076,8 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut num_interesting_crashes = 0_u32;
 
     // Initialize the coverage analysis with the current toal coverage
-    let mut coverage_blockers = Vec::new();
+    let mut coverage_blockers_in_path = Vec::new();
+    let mut coverage_blockers_total = Vec::new();
 
     let mut scratch_string = String::new();
 
@@ -1154,6 +1163,7 @@ pub fn worker<FUZZER: Fuzzer>(
                 // Add the core stats to the total stats across all cores
                 total_iters += stats.iterations;
                 total_rq_iters += stats.rq_iterations;
+                total_iters += stats.rq_iterations;
                 sum_iters[iters_index] += stats.iterations;
                 sum_rq_iters[iters_index] += stats.rq_iterations;
                 sum_timeouts += stats.timeouts;
@@ -1496,46 +1506,49 @@ pub fn worker<FUZZER: Fuzzer>(
                     cov_analysis.hit(addr.0);
                 }
 
-                coverage_blockers.clear();
+                coverage_blockers_in_path.clear();
+                coverage_blockers_total.clear();
 
-                for (score, addr) in cov_analysis.best_options() {
-                    if coverage_blockers.len() > 2000 {
-                        log::info!("BREAKING");
-                        break;
-                    }
+                let Blockers { in_path, total } = cov_analysis.best_options();
 
-                    if let Some(sym_data) = symbols {
-                        let addr = **addr;
-                        if let Some(symbol) = crate::symbols::get_symbol(addr, sym_data) {
-                            // Ignore asan/ubsan symbols
-                            if symbol.contains("asan")
-                                || symbol.contains("lsan")
-                                || symbol.contains("ubsan")
-                                || symbol.contains("sanitizer")
-                            {
-                                continue;
-                            }
+                for (blockers, mut curr_collection) in [
+                    (in_path, &mut coverage_blockers_in_path),
+                    (total, &mut coverage_blockers_total),
+                ] {
+                    for (score, addr) in blockers {
+                        if let Some(sym_data) = symbols {
+                            let addr = **addr;
+                            if let Some(symbol) = crate::symbols::get_symbol(addr, sym_data) {
+                                // Ignore asan/ubsan symbols
+                                if symbol.contains("asan")
+                                    || symbol.contains("lsan")
+                                    || symbol.contains("ubsan")
+                                    || symbol.contains("sanitizer")
+                                {
+                                    continue;
+                                }
 
-                            let mut line = format!("{score:>5?}: {addr:#x} {symbol}");
+                                let mut line = format!("{score:>5?}: {addr:#x} {symbol}");
 
-                            // Add the source line for this address in the coverage timeline
-                            for context in &contexts {
-                                // Write the source and lcov coverage files if vmlinux exists
-                                for curr_addr in [addr, addr.saturating_sub(0x5555_5555_4000)] {
-                                    if let Some(loc) = context.find_location(curr_addr)? {
-                                        line.push_str(&format!(
-                                            " {}:{}:{}",
-                                            loc.file.unwrap_or("??unknownfile??"),
-                                            loc.line.unwrap_or(0),
-                                            loc.column.unwrap_or(0)
-                                        ));
+                                // Add the source line for this address in the coverage timeline
+                                for context in &contexts {
+                                    // Write the source and lcov coverage files if vmlinux exists
+                                    for curr_addr in [addr, addr.saturating_sub(0x5555_5555_4000)] {
+                                        if let Some(loc) = context.find_location(curr_addr)? {
+                                            line.push_str(&format!(
+                                                " {}:{}:{}",
+                                                loc.file.unwrap_or("??unknownfile??"),
+                                                loc.line.unwrap_or(0),
+                                                loc.column.unwrap_or(0)
+                                            ));
 
-                                        break;
+                                            break;
+                                        }
                                     }
                                 }
-                            }
 
-                            coverage_blockers.push(line);
+                                curr_collection.push(line);
+                            }
                         }
                     }
                 }
@@ -1686,8 +1699,19 @@ pub fn worker<FUZZER: Fuzzer>(
             time!(WriteCoverageAnalysis, {
                 // Write the coverage raw addresses file (used with addr2line to get source cov)
                 #[allow(clippy::needless_borrow)]
-                std::fs::write(&coverage_blockers_file, coverage_blockers.join("\n"))
-                    .expect("Failed to write coverage addresses");
+                std::fs::write(
+                    &coverage_blockers_in_path_file,
+                    coverage_blockers_in_path.join("\n"),
+                )
+                .expect("Failed to write coverage addresses");
+
+                // Write the coverage raw addresses file (used with addr2line to get source cov)
+                #[allow(clippy::needless_borrow)]
+                std::fs::write(
+                    &coverage_blockers_total_file,
+                    coverage_blockers_total.join("\n"),
+                )
+                .expect("Failed to write coverage addresses");
             });
 
             #[cfg(feature = "redqueen")]
@@ -2017,7 +2041,8 @@ pub fn worker<FUZZER: Fuzzer>(
                 &coverage_timeline,
                 &crash_paths,
                 tab_index,
-                &coverage_blockers,
+                &coverage_blockers_in_path,
+                &coverage_blockers_total,
                 &mut tui_log_state,
                 &curr_tui_perf_stats,
                 avg_tui_iter,
@@ -2033,7 +2058,15 @@ pub fn worker<FUZZER: Fuzzer>(
             table.display();
 
             // Display coverage blockers for ascii stats
-            for line in coverage_blockers.iter().take(ASCII_COVERAGE_BLOCKERS) {
+            for line in coverage_blockers_in_path
+                .iter()
+                .take(ASCII_COVERAGE_BLOCKERS)
+            {
+                println!("{line:?}");
+            }
+
+            // Display coverage blockers for ascii stats
+            for line in coverage_blockers_total.iter().take(ASCII_COVERAGE_BLOCKERS) {
                 println!("{line:?}");
             }
         }
@@ -2089,8 +2122,11 @@ pub fn worker<FUZZER: Fuzzer>(
         corpus_len += save_input_in_dir(input, &corpus_dir)?;
     }
 
-    std::fs::write(&coverage_blockers_file, coverage_blockers.join("\n"))
-        .expect("Failed to write coverage addresses");
+    std::fs::write(
+        &coverage_blockers_in_path_file,
+        coverage_blockers_in_path.join("\n"),
+    )
+    .expect("Failed to write coverage addresses");
     std::fs::write(&lighthouse_file, &lighthouse_data).expect("Failed to write lighthouse file");
     std::fs::write(&coverage_addrs, &cov_addrs).expect("Failed to write coverage addresses");
     std::fs::write(&coverage_in_order, coverage_timeline.join("\n"))

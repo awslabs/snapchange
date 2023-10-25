@@ -946,7 +946,6 @@ fn start_core<FUZZER: Fuzzer>(
                         &mut feedback,
                         redqueen_time_spent,
                         &project_dir.join("metadata"),
-                        core_stats,
                         0,
                     )?;
 

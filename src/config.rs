@@ -64,9 +64,6 @@ pub struct Redqueen {
     /// can be applied is more than this threshold
     pub entropy_threshold: usize,
 
-    /// A core exits the redqueen implementation if it exceeds this timeout
-    pub timeout: Duration,
-
     /// Number of cores that can trigger redqueen
     pub cores: u64,
 
@@ -136,7 +133,6 @@ impl std::default::Default for Redqueen {
     fn default() -> Self {
         Self {
             entropy_threshold: 10,
-            timeout: Duration::from_secs(60),
             cores: 4,
             mutate_by_redqueen_rules: false,
         }

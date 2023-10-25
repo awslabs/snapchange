@@ -68,7 +68,10 @@ pub struct StatsApp<'a> {
     tab_index: usize,
 
     /// Locations that, if hit, could uncover the most new coverage
-    coverage_blockers: &'a [String],
+    coverage_blockers_in_path: &'a [String],
+
+    /// Locations that, if hit, could uncover the most new coverage
+    coverage_blockers_total: &'a [String],
 
     /// Current state of the logger to know which types of messages to display
     log_state: &'a mut TuiWidgetState,
@@ -90,7 +93,8 @@ impl<'a> StatsApp<'a> {
         coverage_timeline: &'a [String],
         crash_paths: &'a [ListItem<'a>],
         tab_index: u8,
-        coverage_blockers: &'a [String],
+        coverage_blockers_in_path: &'a [String],
+        coverage_blockers_total: &'a [String],
         log_state: &'a mut TuiWidgetState,
         tui_perf_stats: &'a [(&'a str, u64)],
         avg_tui_iter: f64,
@@ -102,7 +106,8 @@ impl<'a> StatsApp<'a> {
             general,
             coverage_timeline,
             crash_paths,
-            coverage_blockers,
+            coverage_blockers_in_path,
+            coverage_blockers_total,
             tab_index: usize::from(tab_index) % TAB_TITLES.len(),
             log_state,
             tui_perf_stats,
@@ -518,8 +523,14 @@ fn draw_log<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
 
 /// Draw the `coverage` tab
 fn draw_coverage<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(0)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+        .split(chunk);
+
     let blockers: Vec<_> = app
-        .coverage_blockers
+        .coverage_blockers_in_path
         .iter()
         .map(|x| ListItem::new(Span::raw(x)))
         .collect();
@@ -527,7 +538,7 @@ fn draw_coverage<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
     let blockers = List::new(blockers).block(
         Block::default()
             .title(Span::styled(
-                "Coverage blockers",
+                "Coverage blockers in path",
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
@@ -535,7 +546,26 @@ fn draw_coverage<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
             .borders(Borders::ALL),
     );
 
-    f.render_widget(blockers, chunk);
+    f.render_widget(blockers, chunks[0]);
+
+    let blockers: Vec<_> = app
+        .coverage_blockers_total
+        .iter()
+        .map(|x| ListItem::new(Span::raw(x)))
+        .collect();
+
+    let blockers = List::new(blockers).block(
+        Block::default()
+            .title(Span::styled(
+                "Coverage blockers in total (Not in path)",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL),
+    );
+
+    f.render_widget(blockers, chunks[1]);
 }
 
 /// Draw the `crashes` tab

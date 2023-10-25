@@ -3,8 +3,10 @@
 use std::ops::Add;
 use std::ops::Sub;
 
+use ahash::HashSetExt;
 use anyhow::Result;
 use iced_x86::Register as IcedRegister;
+use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::addrs::VirtAddr;
@@ -28,26 +30,141 @@ pub struct RedqueenCoverage {
     pub hit_count: u32,
 }
 
+/// A constant used by redqueen as a byte slice
+#[derive(Debug, Clone, Eq, Ord, PartialOrd, PartialEq, Hash)]
+pub enum RedqueenConst {
+    /// A u8 byte slice
+    U8([u8; 1]),
+    /// A u16 byte slice
+    U16([u8; 2]),
+    /// A u24 byte slice
+    U24([u8; 3]),
+    /// A u32 byte slice
+    U32([u8; 4]),
+    /// A u40 byte slice
+    U40([u8; 5]),
+    /// A u48 byte slice
+    U48([u8; 6]),
+    /// A u56 byte slice
+    U56([u8; 7]),
+    /// A u64 byte slice
+    U64([u8; 8]),
+    /// A u128 byte slice
+    U128([u8; 16]),
+}
+
+impl RedqueenConst {
+    /// Get the underlying byte slice for this RedqueenConst
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            RedqueenConst::U8(bytes) => bytes,
+            RedqueenConst::U16(bytes) => bytes,
+            RedqueenConst::U24(bytes) => bytes,
+            RedqueenConst::U32(bytes) => bytes,
+            RedqueenConst::U40(bytes) => bytes,
+            RedqueenConst::U48(bytes) => bytes,
+            RedqueenConst::U56(bytes) => bytes,
+            RedqueenConst::U64(bytes) => bytes,
+            RedqueenConst::U128(bytes) => bytes,
+        }
+    }
+
+    /// Get the length of this RedqueenConst
+    pub const fn len(&self) -> usize {
+        match self {
+            RedqueenConst::U8(bytes) => bytes.len(),
+            RedqueenConst::U16(bytes) => bytes.len(),
+            RedqueenConst::U24(bytes) => bytes.len(),
+            RedqueenConst::U32(bytes) => bytes.len(),
+            RedqueenConst::U40(bytes) => bytes.len(),
+            RedqueenConst::U48(bytes) => bytes.len(),
+            RedqueenConst::U56(bytes) => bytes.len(),
+            RedqueenConst::U64(bytes) => bytes.len(),
+            RedqueenConst::U128(bytes) => bytes.len(),
+        }
+    }
+
+    /// Get the minimum number of bytes needed to represent the given value
+    ///
+    /// Example:
+    /// RedqueenConst::U32([0x12, 0x34, 0x00, 0x00]) -> 2
+    /// RedqueenConst::U64([0x12, 0x34, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00]) -> 3
+    pub fn minimum_bytes(&self) -> usize {
+        let bytes = self.as_bytes();
+        let mut min = bytes.len();
+        while min > 1 {
+            if bytes[min - 1] != 0 {
+                return min;
+            }
+
+            min -= 1;
+        }
+
+        min
+    }
+}
+
+impl From<u8> for RedqueenConst {
+    fn from(val: u8) -> Self {
+        RedqueenConst::U8([val])
+    }
+}
+impl From<u16> for RedqueenConst {
+    fn from(val: u16) -> Self {
+        RedqueenConst::U16(val.to_le_bytes())
+    }
+}
+impl From<u32> for RedqueenConst {
+    fn from(val: u32) -> Self {
+        RedqueenConst::U32(val.to_le_bytes())
+    }
+}
+impl From<u64> for RedqueenConst {
+    fn from(val: u64) -> Self {
+        RedqueenConst::U64(val.to_le_bytes())
+    }
+}
+impl From<u128> for RedqueenConst {
+    fn from(val: u128) -> Self {
+        RedqueenConst::U128(val.to_le_bytes())
+    }
+}
+impl From<[u8; 3]> for RedqueenConst {
+    fn from(val: [u8; 3]) -> Self {
+        RedqueenConst::U24(val)
+    }
+}
+impl From<[u8; 5]> for RedqueenConst {
+    fn from(val: [u8; 5]) -> Self {
+        RedqueenConst::U40(val)
+    }
+}
+impl From<[u8; 6]> for RedqueenConst {
+    fn from(val: [u8; 6]) -> Self {
+        RedqueenConst::U48(val)
+    }
+}
+impl From<[u8; 7]> for RedqueenConst {
+    fn from(val: [u8; 7]) -> Self {
+        RedqueenConst::U56(val)
+    }
+}
+
 /// A replacement rule for cmp analysis
 ///
 /// When applying a replacement rule during mutation, if the left value is
 /// found in the input, replace it with the right. And also replace the
-#[derive(Debug, Clone, Eq, Ord, PartialOrd, PartialEq)]
+#[derive(Debug, Clone, Eq, Ord, PartialOrd, PartialEq, Hash)]
 pub enum RedqueenRule {
-    /// Replace one u8 with another
-    SingleU8(u8, u8),
-    /// Replace one u16 with another
-    SingleU16(u16, u16),
-    /// Replace one u32 with another
-    SingleU32(u32, u32),
-    /// Replace one u64 with another
-    SingleU64(u64, u64),
-    /// Replace one u128 with another
-    SingleU128(u128, u128),
+    /// Replace one RQ const with another
+    Primitive(RedqueenConst, RedqueenConst),
+
     /// Replace one f32 with another
-    SingleF32(Vec<u8>, Vec<u8>),
+    SingleF32([u8; 4], [u8; 4]),
+
     /// Replace one f64 with another
-    SingleF64(Vec<u8>, Vec<u8>),
+    SingleF64([u8; 8], [u8; 8]),
+
     /// Replace one set of bytes for another
     Bytes(Vec<u8>, Vec<u8>),
 }
@@ -525,31 +642,15 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
     let input_hash = input.fuzz_hash();
 
-    // Initialize an empty set of redqueen rules for this input
-    if !fuzzvm.redqueen_rules.contains_key(&input_hash) {
-        fuzzvm
-            .redqueen_rules
-            .insert(input_hash, std::collections::BTreeSet::new());
-        assert!(fuzzvm.redqueen_rules.contains_key(&input_hash));
-    }
-
     macro_rules! impl_primitive_sizes {
-        ($($size:ident, $ty:ty, $func:ident, $rule:ident),*) => {
+        ($($size:ident, $ty:ty, $func:ident),*) => {
             match size {
                 $(
                     Size::$size => {
-                        let left_val = left_op.$func(fuzzvm)?;
-                        let right_val = right_op.$func(fuzzvm)?;
+                        let left_val: $ty = left_op.$func(fuzzvm)?.into();
+                        let right_val: $ty = right_op.$func(fuzzvm)?.into();
                         match operation {
                             Conditional::Equal | Conditional::NotEqual => {
-                                /*
-                                let condition = match operation {
-                                    Conditional::Equal => left_val.eq(&right_val),
-                                    Conditional::NotEqual => !left_val.ne(&right_val),
-                                    _ => unreachable!()
-                                };
-                                */
-
                                 let condition = left_val.eq(&right_val);
 
                                 if condition {
@@ -561,10 +662,7 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Generate the rule to satisfy this comparison
                                     let new_val = right_val.wrapping_add(1);
-                                    let rule =  RedqueenRule::$rule(left_val, new_val);
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
+                                    let rule = RedqueenRule::Primitive(left_val.into(), new_val.into());
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
                                 } else {
                                     // OP - ax == bx (false)
@@ -575,17 +673,11 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Replace 5 -> 3
 
                                     // Generate the rule to satisfy this comparison
-                                    let rule =  RedqueenRule::$rule(left_val, right_val);
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
+                                    let rule =  RedqueenRule::Primitive(left_val.into(), right_val.into());
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
 
                                     // Generate the rule to satisfy this comparison
-                                    let rule = RedqueenRule::$rule(right_val, left_val);
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
+                                    let rule = RedqueenRule::Primitive(right_val.into(), left_val.into());
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
                                 }
                             }
@@ -593,18 +685,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                             | Conditional::SignedGreaterThanEqual
                             | Conditional::UnsignedLessThan
                             | Conditional::UnsignedGreaterThanEqual  => {
-                                /*
-                                let condition = match operation {
-                                    Conditional::SignedLessThan  | Conditional::UnsignedLessThan => {
-                                        left_val.lt(&right_val)
-                                    }
-                                    Conditional::SignedGreaterThanEqual | Conditional::UnsignedGreaterThanEqual => {
-                                        !left_val.ge(&right_val)
-                                    }
-                                    _ => unreachable!()
-                                };
-                                */
-
                                 let condition = left_val.lt(&right_val);
 
                                 if condition {
@@ -617,31 +697,17 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Generate the rule to satisfy this comparison
                                     if let Some(new_val) = right_val.checked_add(1) {
-                                        let rule =  RedqueenRule::$rule(left_val, new_val);
+                                        let rule =  RedqueenRule::Primitive(left_val.into(), new_val.into());
 
                                         // Only add this rule to the redqueen rules if the left operand
                                         // is actually in the input
                                         fuzzvm.set_redqueen_rule_candidates(&input, rule);
-
-                                        /*
-                                        if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                            fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                        }
-                                        */
                                     }
 
                                     if let Some(new_val) = left_val.checked_sub(1) {
                                         // Generate the rule to satisfy this comparison
-                                        let rule = RedqueenRule::$rule(right_val, new_val);
-
-                                        // Only add this rule to the redqueen rules if the left operand
-                                        // is actually in the input
+                                        let rule = RedqueenRule::Primitive(right_val.into(), new_val.into());
                                         fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                        /*
-                                        if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                            fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                        }
-                                        */
                                     }
                                 } else {
                                     // OP - ax < bx (false)
@@ -653,30 +719,14 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Generate the rule to satisfy this comparison
                                     if let Some(new_val) = right_val.checked_sub(1) {
-                                        let rule =  RedqueenRule::$rule(left_val, new_val);
-
-                                        // Only add this rule to the redqueen rules if the left operand
-                                        // is actually in the input
+                                        let rule =  RedqueenRule::Primitive(left_val.into(), new_val.into());
                                         fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                        /*
-                                        if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                            fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                        }
-                                        */
                                     }
 
                                     // Generate the rule to satisfy this comparison
                                     if let Some(new_val) = left_val.checked_add(1) {
-                                        let rule =  RedqueenRule::$rule(right_val, new_val);
-
-                                        // Only add this rule to the redqueen rules if the left operand
-                                        // is actually in the input
+                                        let rule =  RedqueenRule::Primitive(right_val.into(), new_val.into());
                                         fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                        /*
-                                        if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                            fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                        }
-                                        */
                                     }
                                 }
                             }
@@ -684,18 +734,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                             | Conditional::UnsignedLessThanEqual
                             | Conditional::SignedGreaterThan
                             | Conditional::UnsignedGreaterThan => {
-                                /*
-                                let condition = match operation {
-                                    Conditional::SignedLessThanEqual  | Conditional::UnsignedLessThanEqual => {
-                                        left_val.le(&right_val)
-                                    }
-                                    Conditional::SignedGreaterThan | Conditional::UnsignedGreaterThan => {
-                                        !left_val.gt(&right_val)
-                                    }
-                                    _ => unreachable!()
-                                };
-                                */
-
                                 let condition = left_val.le(&right_val);
 
                                 if condition {
@@ -708,19 +746,13 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Generate the rule to satisfy this comparison
                                     if let Some(new_val) = right_val.checked_add(1) {
-                                        let rule =  RedqueenRule::$rule(left_val, new_val);
-
-                                        // Only add this rule to the redqueen rules if the left operand
-                                        // is actually in the input
+                                        let rule =  RedqueenRule::Primitive(left_val.into(), new_val.into());
                                         fuzzvm.set_redqueen_rule_candidates(&input, rule);
                                     }
 
                                     if let Some(new_val) = left_val.checked_sub(1) {
                                         // Generate the rule to satisfy this comparison
-                                        let rule = RedqueenRule::$rule(right_val, new_val);
-
-                                        // Only add this rule to the redqueen rules if the left operand
-                                        // is actually in the input
+                                        let rule = RedqueenRule::Primitive(right_val.into(), new_val.into());
                                         fuzzvm.set_redqueen_rule_candidates(&input, rule);
                                     }
                                 } else {
@@ -733,19 +765,13 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Generate the rule to satisfy this comparison
                                     if let Some(new_val) = right_val.checked_sub(1) {
-                                        let rule =  RedqueenRule::$rule(left_val, new_val);
-
-                                        // Only add this rule to the redqueen rules if the left operand
-                                        // is actually in the input
+                                        let rule =  RedqueenRule::Primitive(left_val.into(), new_val.into());
                                         fuzzvm.set_redqueen_rule_candidates(&input, rule);
                                     }
 
                                     if let Some(new_val) = left_val.checked_add(1) {
                                         // Generate the rule to satisfy this comparison
-                                        let rule = RedqueenRule::$rule(right_val, new_val);
-
-                                        // Only add this rule to the redqueen rules if the left operand
-                                        // is actually in the input
+                                        let rule = RedqueenRule::Primitive(right_val.into(), new_val.into());
                                         fuzzvm.set_redqueen_rule_candidates(&input, rule);
                                     }
                                 }
@@ -766,8 +792,8 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                         match operation {
                             Conditional::Strcmp => {
-                                let mut left_bytes = fuzzvm.read_bytes_until(VirtAddr(left_val as u64), fuzzvm.cr3(), 0, 4 * 1024);
-                                let mut right_bytes = fuzzvm.read_bytes_until(VirtAddr(right_val as u64), fuzzvm.cr3(), 0, 4 * 1024);
+                                let mut left_bytes = fuzzvm.read_bytes_until(VirtAddr(left_val as u64), fuzzvm.cr3(), 0, 64 * 1024);
+                                let mut right_bytes = fuzzvm.read_bytes_until(VirtAddr(right_val as u64), fuzzvm.cr3(), 0, 64 * 1024);
 
                                 let mut left_bytes = left_bytes?;
                                 let mut right_bytes = right_bytes?;
@@ -819,22 +845,10 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                 if left_bytes != right_bytes {
                                     // bytes are not equal, force them to be equal
                                     let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
-
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                    /*
-                                    if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                    }
-                                    */
 
                                     let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                    /*
-                                    if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                    }
-                                    */
-
                                 } else {
                                     // bytes are equal. Force them to not be equal.
 
@@ -842,13 +856,7 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // is actually in the input
                                     left_bytes[0] = left_bytes[0].wrapping_add(1);
                                     let rule =  RedqueenRule::Bytes(left_bytes, right_bytes);
-
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                    /*
-                                    if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                    }
-                                    */
                                 }
                             }
                             _ => panic!("Unknown BYTES operation: {operation:?}")
@@ -861,36 +869,16 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                         if left_bytes != right_bytes {
                             // bytes are not equal, force them to be equal
                             let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
-
                             fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                            /*
-                            if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                            }
-                            */
 
                             let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
                             fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                            /*
-                            if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                            }
-                            */
-
                         } else {
                             // bytes are equal. Force them to not be equal.
 
-                            // Only add this rule to the redqueen rules if the left operand
-                            // is actually in the input
                             left_bytes[0] = left_bytes[0].wrapping_add(1);
                             let rule =  RedqueenRule::Bytes(left_bytes, right_bytes);
-
                             fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                            /*
-                            if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                            }
-                            */
                         }
 
                     }
@@ -912,12 +900,7 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                         // log::info!("FLOAT {size:?} {operation:?} Left {left_val:x?} Right {right_val:x?}");
                         match operation {
                             Conditional::FloatingPointEqual | Conditional::FloatingPointNotEqual => {
-                                let condition = match operation {
-                                    Conditional::FloatingPointEqual => left_val.eq(&right_val),
-                                    Conditional::FloatingPointNotEqual => !left_val.ne(&right_val),
-                                    _ => unreachable!()
-                                };
-
+                                let condition = left_val.eq(&right_val);
                                 if condition {
                                     // OP - ax == bx (true)
                                     // AX - 3
@@ -927,16 +910,8 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Generate the rule to satisfy this comparison
                                     let new_val = right_val.add(1.0);
-                                    let rule =  RedqueenRule::$rule(left_val.to_le_bytes().to_vec(), new_val.to_le_bytes().to_vec());
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
-                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                    /*
-                                    if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                    }
-                                    */
+                                    let rule =  RedqueenRule::$rule(left_val.to_le_bytes(), new_val.to_le_bytes());
+                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
                                 } else {
                                     // OP - ax == bx (false)
                                     // AX - 3
@@ -946,28 +921,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Replace 5 -> 3
 
                                     // Generate the rule to satisfy this comparison
-                                    let rule =  RedqueenRule::$rule(left_val.to_le_bytes().to_vec(), right_val.to_le_bytes().to_vec());
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
-                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                    /*
-                                    if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                    }
-                                    */
+                                    let rule =  RedqueenRule::$rule(left_val.to_le_bytes(), right_val.to_le_bytes());
+                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
 
                                     // Generate the rule to satisfy this comparison
-                                    let rule = RedqueenRule::$rule(right_val.to_le_bytes().to_vec(), left_val.to_le_bytes().to_vec());
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
-                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                    /*
-                                    if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                    }
-                                    */
+                                    let rule = RedqueenRule::$rule(right_val.to_le_bytes(), left_val.to_le_bytes());
+                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
                                 }
                             }
                             Conditional::FloatingPointLessThan | Conditional::FloatingPointGreaterThanEqual => {
@@ -991,24 +950,13 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Generate the rule to satisfy this comparison
                                     let new_val = right_val.add(1.0);
-                                    let rule =  RedqueenRule::$rule(left_val.to_le_bytes().to_vec(), new_val.to_le_bytes().to_vec());
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
-                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                    /*
-                                    if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                    }
-                                    */
+                                    let rule =  RedqueenRule::$rule(left_val.to_le_bytes(), new_val.to_le_bytes());
+                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
 
                                     // Generate the rule to satisfy this comparison
                                     let new_val = left_val.sub(1.0);
-                                    let rule = RedqueenRule::$rule(right_val.to_le_bytes().to_vec(), new_val.to_le_bytes().to_vec());
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
-                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                                    let rule = RedqueenRule::$rule(right_val.to_le_bytes(), new_val.to_le_bytes());
+                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
                                     /*
                                     if input.get_redqueen_rule_candidates(&rule).len() > 0 {
                                         fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
@@ -1024,29 +972,13 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Generate the rule to satisfy this comparison
                                     let new_val = right_val.sub(1.0);
-                                    let rule =  RedqueenRule::$rule(left_val.to_le_bytes().to_vec(), new_val.to_le_bytes().to_vec());
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
-                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                    /*
-                                    if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                    }
-                                    */
+                                    let rule =  RedqueenRule::$rule(left_val.to_le_bytes(), new_val.to_le_bytes());
+                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
 
                                     // Generate the rule to satisfy this comparison
                                     let new_val = left_val.add(1.0);
-                                    let rule =  RedqueenRule::$rule(right_val.to_le_bytes().to_vec(), new_val.to_le_bytes().to_vec());
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
-                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                    /*
-                                    if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                    }
-                                    */
+                                    let rule =  RedqueenRule::$rule(right_val.to_le_bytes(), new_val.to_le_bytes());
+                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
                                 }
                             }
                             Conditional::FloatingPointLessThanEqual | Conditional::FloatingPointGreaterThan => {
@@ -1070,31 +1002,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
                                     // Generate the rule to satisfy this comparison
                                     let new_val = right_val.add(1.0);
-
-                                    let rule =  RedqueenRule::$rule(left_val.to_le_bytes().to_vec(), new_val.to_le_bytes().to_vec());
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
-                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                    /*
-                                    if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                    }
-                                    */
+                                    let rule =  RedqueenRule::$rule(left_val.to_le_bytes(), new_val.to_le_bytes());
+                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
 
                                     let new_val = left_val.sub(1.0);
-
-                                    // Generate the rule to satisfy this comparison
-                                    let rule = RedqueenRule::$rule(right_val.to_le_bytes().to_vec(), new_val.to_le_bytes().to_vec());
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
+                                    let rule = RedqueenRule::$rule(right_val.to_le_bytes(), new_val.to_le_bytes());
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                    /*
-                                    if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                    }
-                                    */
                                 } else {
                                     // OP - ax <= bx (false)
                                     // AX - 4
@@ -1106,30 +1019,14 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     // Generate the rule to satisfy this comparison
                                     let new_val = right_val.sub(1.0);
 
-                                    let rule =  RedqueenRule::$rule(left_val.to_le_bytes().to_vec(), new_val.to_le_bytes().to_vec());
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
+                                    let rule =  RedqueenRule::$rule(left_val.to_le_bytes(), new_val.to_le_bytes());
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                    /*
-                                    if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                    }
-                                    */
 
                                     let new_val = left_val.add(1.0);
 
                                     // Generate the rule to satisfy this comparison
-                                    let rule = RedqueenRule::$rule(right_val.to_le_bytes().to_vec(), new_val.to_le_bytes().to_vec());
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
+                                    let rule = RedqueenRule::$rule(right_val.to_le_bytes(), new_val.to_le_bytes());
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                    /*
-                                    if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                    }
-                                    */
                                 }
                             }
                             _ => panic!("Unknown operation for primatives: {operation:?} {size:?} {args:x?}"),
@@ -1143,17 +1040,17 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
     #[rustfmt::skip]
     impl_primitive_sizes!(
-        U8,   u8,   read_u8,   SingleU8,
-        U16,  u16,  read_u16,  SingleU16,
-        U32,  u32,  read_u32,  SingleU32,
-        U64,  u64,  read_u64,  SingleU64,
-        U128, u128, read_u128, SingleU128
+        U8,   u8,   read_u8,   
+        U16,  u16,  read_u16,
+        U32,  u32,  read_u32,  
+        U64,  u64,  read_u64,  
+        U128, u128, read_u128
     );
 
     #[rustfmt::skip]
     impl_float_sizes!(
-        F32,  f32,  read_f32,  SingleF32,
-        F64,  f64,  read_f64,  SingleF64
+        F32,  f32,  read_f32, SingleF32,
+        F64,  f64,  read_f64, SingleF64
     );
 
     Ok(Execution::Continue)

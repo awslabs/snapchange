@@ -180,8 +180,10 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
             hit_count,
         }) = log_entry
         {
-            let rflags = RFlags::from_bits_truncate(rflags);
-            println!("Address: {virt_addr:#018x?} RFLAGS: {rflags:?} Hits: {hit_count}");
+            // let rflags = RFlags::from_bits_truncate(rflags);
+            // println!("Address: {virt_addr:#018x?} RFLAGS: {rflags:?} Hits: {hit_count}");
+            let virt_addr = virt_addr.0;
+            println!("{virt_addr:#x} {rflags:#x} {hit_count:#x}");
         }
     }
 

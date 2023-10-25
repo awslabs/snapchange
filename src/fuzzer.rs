@@ -10,6 +10,7 @@ use std::path::Path;
 use anyhow::{anyhow, ensure, Result};
 use rand::seq::SliceRandom;
 use rand::Rng as _;
+use rustc_hash::FxHashSet;
 
 use crate::addrs::{Cr3, VirtAddr};
 use crate::cmp_analysis::RedqueenRule;
@@ -200,7 +201,7 @@ pub trait Fuzzer: Default + Sized {
         corpus: &[Self::Input],
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
-        #[cfg(feature = "redqueen")] redqueen_rules: Option<&BTreeSet<RedqueenRule>>,
+        #[cfg(feature = "redqueen")] redqueen_rules: Option<&FxHashSet<RedqueenRule>>,
     ) -> Vec<String> {
         Self::Input::mutate(
             input,

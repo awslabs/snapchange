@@ -360,6 +360,12 @@ impl FeedbackTracker {
         self.eq_codecov_with(other, classify_hitcount_into_bucket)
     }
 
+    /// Check for equal custom feedback
+    #[cfg(feature = "custom_feedback")]
+    pub fn eq_custom_feedback(&self, other: &Self) -> bool {
+        self.custom == other.custom
+    }
+
     /// Check for equal code coverage using the given function to classify coverage hitcounts into
     /// buckets.
     ///
@@ -552,6 +558,7 @@ impl FeedbackTracker {
             }
         } else {
             self.log.push(FeedbackLog::CustomMax((t, v)));
+            // log::info!("NEW MAX: tag {t:#x}  value {v:#x}");
             self.max.insert(t, v);
             true
         }
