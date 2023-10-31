@@ -13,7 +13,7 @@ cargo build -r >/dev/null 2>/dev/null
 echo "Begin fuzzing!"
 mkdir -p snapshot/input
 echo -n fuzzmetosolvem11 > snapshot/input/test
-timeout 60s cargo run -r -- fuzz -c 92 --ascii-stats >/dev/null 2>/dev/null &
+cargo run -r -- fuzz -c 4 --ascii-stats --stop-after-first-crash --stop-after-time 1m >/dev/null 2>/dev/null &
 
 # If we find a crash early, kill the fuzzer
 for i in $(seq 0 60); do

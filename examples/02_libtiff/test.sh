@@ -14,7 +14,7 @@ example2() {
 
   # Start the fuzzers
   echo "Begin fuzzing!"
-  timeout 60s cargo run -r -- fuzz -c 64 --ascii-stats 2>/dev/null >/dev/null &
+  cargo run -r -- fuzz -c 64 --ascii-stats --stop-after-first-crash --stop-after-time 2m 2>/dev/null >/dev/null &
 
   # If we find a crash early, kill the fuzzer
   PID=$!
