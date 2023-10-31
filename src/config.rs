@@ -23,10 +23,10 @@ pub struct Config {
 /// Configurations settings specific for statistics gathering
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Stats {
-    /// Length of timer, in milliseconds, for the coverage to be collected from and
+    /// Length of timer, in milliseconds, for the corpus to be collected from and
     /// redistributed to the worker cores
-    #[serde(default = "default_merge_coverage_timer")]
-    pub merge_coverage_timer: Duration,
+    #[serde(default = "default_merge_corpus_timer")]
+    pub merge_corpus_timer: Duration,
 
     /// Maximum size of the new corpus handed to each core while distributing
     /// the main corpus
@@ -73,18 +73,18 @@ pub struct Redqueen {
 }
 
 const fn default_maximum_total_corpus_percentage_sync() -> u8 {
-    50
+    80
 }
 
 const fn default_minimum_total_corpus_percentage_sync() -> u8 {
-    10
+    40
 }
 
 const fn default_maximum_new_corpus_size() -> usize {
-    250
+    5000
 }
 
-const fn default_merge_coverage_timer() -> Duration {
+const fn default_merge_corpus_timer() -> Duration {
     Duration::from_secs(60)
 }
 
@@ -118,7 +118,7 @@ impl std::default::Default for Config {
 impl std::default::Default for Stats {
     fn default() -> Self {
         Self {
-            merge_coverage_timer: default_merge_coverage_timer(),
+            merge_corpus_timer: default_merge_corpus_timer(),
             stats_sync_timer: default_stats_sync(),
             coverage_sync_timer: default_coverage_sync(),
             maximum_new_corpus_size: default_maximum_new_corpus_size(),
