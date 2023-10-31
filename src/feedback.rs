@@ -16,6 +16,7 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
+use std::collections::hash_map::Entry;
 use std::collections::BTreeSet;
 use std::default::Default;
 use std::hash::Hash;
@@ -297,6 +298,47 @@ impl FeedbackTracker {
         r
     }
 
+    /// Add all feedback entries from another [`[FeedbackLog]`]. Returns true if a new entry was
+    /// added while merging.
+    pub fn merge_from_log(&mut self, log: &[FeedbackLog]) -> bool {
+        // No need to keep the log around
+        self.ensure_clean();
+
+        for entry in log {
+            match entry {
+                FeedbackLog::VAddr((addr, hitcount)) => {
+                    let curr_hitcount = self.code_cov.entry(*addr).or_insert(0);
+                    if hitcount > curr_hitcount {
+                        self.code_cov.insert(*addr, *hitcount);
+                        self.log.push(FeedbackLog::VAddr((*addr, *hitcount)));
+                    }
+                }
+
+                #[cfg(feature = "custom_feedback")]
+                FeedbackLog::Custom(val) => {
+                    let _new = self.record(*val);
+                }
+
+                /// observed new max value for given tag.
+                #[cfg(feature = "custom_feedback")]
+                FeedbackLog::CustomMax((tag, val)) => {
+                    let _new = self.record_max(*tag, *val);
+                }
+
+                /// while performing redqueen, observed new rflags for a given comparison address.
+                #[cfg(feature = "redqueen")]
+                FeedbackLog::Redqueen(rq_cov) => {
+                    if self.redqueen.insert(*rq_cov) {
+                        self.log.push(FeedbackLog::Redqueen(*rq_cov));
+                        // log::info!("NEW RQ: {rq_cov:x?}");
+                    }
+                }
+            }
+        }
+
+        self.has_new()
+    }
+
     /// Check whether there is some new feedback since the last time the log was cleared.
     pub fn has_new(&self) -> bool {
         !self.log.is_empty()
@@ -318,19 +360,36 @@ impl FeedbackTracker {
         self.log.clear();
     }
 
-    /// Record a code coverage hitpoint -> a virtual address executed. Can be used both two record
-    /// hitcount coverage and also single-shot scratch-away code coverage.
+    /// Record the first time a coverage address has been executed. This differs from record_codecov_hitcount
+    /// as this will not increase the hitcount. There is a possibility that multiple cores can reach the same
+    /// coverage address at the same time.
     ///
     /// Returns true if a new value `v` was observed.
     pub fn record_codecov(&mut self, v: VirtAddr) -> bool {
         match self.code_cov.entry(v) {
             // fast path -> first time code cov is recorded
-            std::collections::hash_map::Entry::Vacant(e) => {
+            Entry::Vacant(e) => {
                 e.insert(1);
                 self.log.push(FeedbackLog::VAddr((v, 1)));
                 true
             }
-            std::collections::hash_map::Entry::Occupied(mut e) => {
+            _ => false,
+        }
+    }
+
+    /// Record a code coverage hitpoint -> a virtual address executed. Can be used both two record
+    /// hitcount coverage and also single-shot scratch-away code coverage.
+    ///
+    /// Returns true if a new value `v` was observed.
+    pub fn record_codecov_hitcount(&mut self, v: VirtAddr) -> bool {
+        match self.code_cov.entry(v) {
+            // fast path -> first time code cov is recorded
+            Entry::Vacant(e) => {
+                e.insert(1);
+                self.log.push(FeedbackLog::VAddr((v, 1)));
+                true
+            }
+            Entry::Occupied(mut e) => {
                 let hitcount = e.get_mut();
                 let prev = *hitcount;
                 *hitcount = prev.saturating_add(1);
