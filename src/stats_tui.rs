@@ -358,6 +358,18 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
         let last_cov_minutes = (last_cov_elapsed / 60) % 60;
         let last_cov_hours = last_cov_elapsed / (60 * 60);
 
+        let rq_stats = format!("{:37} | {:37}", "", "");
+
+        #[cfg(feature = "redqueen")]
+        let rq_stats = format!(
+            "{:>11}: {:10} ({:6.2}/core) | {:>11}: {:24}",
+            "RQ Exec/sec",
+            general.rq_exec_per_sec,
+            general.rq_exec_per_sec / std::cmp::max(1, try_u64!(general.in_redqueen.len())),
+            "RQ Coverage",
+            general.rq_coverage
+        );
+
         let line = format!(
             "{} | {} | {} | {}",
             format!("{:>10}: {:>10}", "Time", general.time),
@@ -367,12 +379,7 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
                 general.exec_per_sec,
                 general.exec_per_sec / std::cmp::max(1, try_u64!(general.alive)),
             ),
-            format!(
-                "{:>11}: {:10} ({:6.2}/core)",
-                "RQ Exec/sec",
-                general.rq_exec_per_sec,
-                general.rq_exec_per_sec / std::cmp::max(1, try_u64!(general.in_redqueen.len())),
-            ),
+            format!("{:>11}: {:24}", "Corpus", general.corpus),
             format!(
                 "{:>11}: {:10} (last seen {last_cov_hours:02}:{last_cov_minutes:02}:{last_cov_seconds:02})",
                 "Coverage", general.coverage, 
@@ -382,10 +389,9 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
         stats.push('\n');
 
         let line = format!(
-            "{} | {} | {} | {}",
+            "{} | {} | {}",
             format!("{:>10}: {:10}", "Iters", general.iterations),
-            format!("{:>11}: {:24}", "Corpus", general.corpus),
-            format!("{:>11}: {:24}", "RQ Coverage", general.rq_coverage),
+            rq_stats,
             format!("{:>11}: {:10}", "Crashes", general.crashes),
         );
         stats.push_str(&line);
