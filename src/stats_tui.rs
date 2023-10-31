@@ -68,7 +68,10 @@ pub struct StatsApp<'a> {
     tab_index: usize,
 
     /// Locations that, if hit, could uncover the most new coverage
-    coverage_blockers: &'a [String],
+    coverage_blockers_in_path: &'a [String],
+
+    /// Locations that, if hit, could uncover the most new coverage
+    coverage_blockers_total: &'a [String],
 
     /// Current state of the logger to know which types of messages to display
     log_state: &'a mut TuiWidgetState,
@@ -90,7 +93,8 @@ impl<'a> StatsApp<'a> {
         coverage_timeline: &'a [String],
         crash_paths: &'a [ListItem<'a>],
         tab_index: u8,
-        coverage_blockers: &'a [String],
+        coverage_blockers_in_path: &'a [String],
+        coverage_blockers_total: &'a [String],
         log_state: &'a mut TuiWidgetState,
         tui_perf_stats: &'a [(&'a str, u64)],
         avg_tui_iter: f64,
@@ -102,7 +106,8 @@ impl<'a> StatsApp<'a> {
             general,
             coverage_timeline,
             crash_paths,
-            coverage_blockers,
+            coverage_blockers_in_path,
+            coverage_blockers_total,
             tab_index: usize::from(tab_index) % TAB_TITLES.len(),
             log_state,
             tui_perf_stats,
@@ -159,9 +164,9 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
                 [
                     Constraint::Length(6),
                     Constraint::Percentage(30),
-                    Constraint::Percentage(23),
-                    Constraint::Percentage(25),
-                    Constraint::Percentage(10),
+                    Constraint::Percentage(13),
+                    Constraint::Percentage(15),
+                    Constraint::Percentage(30),
                 ]
                 .as_ref(),
             )
@@ -175,8 +180,8 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
                 [
                     Constraint::Length(6),
                     Constraint::Percentage(35),
-                    Constraint::Percentage(30),
                     Constraint::Percentage(20),
+                    Constraint::Percentage(30),
                 ]
                 .as_ref(),
             )
@@ -353,17 +358,30 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
         let last_cov_minutes = (last_cov_elapsed / 60) % 60;
         let last_cov_hours = last_cov_elapsed / (60 * 60);
 
+        let rq_stats = format!("{:37} | {:37}", "", "");
+
+        #[cfg(feature = "redqueen")]
+        let rq_stats = format!(
+            "{:>11}: {:10} ({:6.2}/core) | {:>11}: {:24}",
+            "RQ Exec/sec",
+            general.rq_exec_per_sec,
+            general.rq_exec_per_sec / std::cmp::max(1, try_u64!(general.in_redqueen.len())),
+            "RQ Coverage",
+            general.rq_coverage
+        );
+
         let line = format!(
-            "{} | {} | {}",
+            "{} | {} | {} | {}",
             format!("{:>10}: {:>10}", "Time", general.time),
             format!(
-                "{:>10}: {:22} ({:8.2} per/core)",
+                "{:>11}: {:10} ({:6.2}/core)",
                 "Exec/sec",
                 general.exec_per_sec,
                 general.exec_per_sec / std::cmp::max(1, try_u64!(general.alive)),
             ),
+            format!("{:>11}: {:24}", "Corpus", general.corpus),
             format!(
-                "{:>10}: {:10} (last seen {last_cov_hours:02}:{last_cov_minutes:02}:{last_cov_seconds:02})",
+                "{:>11}: {:10} (last seen {last_cov_hours:02}:{last_cov_minutes:02}:{last_cov_seconds:02})",
                 "Coverage", general.coverage, 
             )
         );
@@ -373,8 +391,8 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
         let line = format!(
             "{} | {} | {}",
             format!("{:>10}: {:10}", "Iters", general.iterations),
-            format!("{:>10}: {:42}", "Corpus", general.corpus),
-            format!("{:>10}: {:10}", "Crashes", general.crashes),
+            rq_stats,
+            format!("{:>11}: {:10}", "Crashes", general.crashes),
         );
         stats.push_str(&line);
         stats.push('\n');
@@ -382,11 +400,11 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
         let line = format!(
             "{} | {} | {} | {}",
             format!("{:>10}: {:10}", "Timeouts", general.timeouts),
-            format!("{:>10}: {:11}", "Cov. Left", general.coverage_left),
-            format!("{:>17}: {:8}", "Dirty Pages / Iter", general.dirty_pages),
+            format!("{:>11}: {:20}", "VM Exits / iter", general.vmexits_per_iter),
+            format!("{:>18}: {:17}", "Dirty Pages / Iter", general.dirty_pages),
             if cfg!(feature = "redqueen") {
                 format!(
-                    "{:>10}: {} | Dead {} | Redqueen {}",
+                    "{:>11}: {} | Dead {} | Redqueen {}",
                     "Alive",
                     general.alive,
                     general.dead.len(),
@@ -394,7 +412,7 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
                 )
             } else {
                 format!(
-                    "{:>10}: {} | Dead {}",
+                    "{:>11}: {} | Dead {}",
                     "Alive",
                     general.alive,
                     general.dead.len(),
@@ -511,8 +529,14 @@ fn draw_log<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
 
 /// Draw the `coverage` tab
 fn draw_coverage<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(0)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+        .split(chunk);
+
     let blockers: Vec<_> = app
-        .coverage_blockers
+        .coverage_blockers_in_path
         .iter()
         .map(|x| ListItem::new(Span::raw(x)))
         .collect();
@@ -520,7 +544,7 @@ fn draw_coverage<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
     let blockers = List::new(blockers).block(
         Block::default()
             .title(Span::styled(
-                "Coverage blockers",
+                "Coverage blockers in path",
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
@@ -528,7 +552,26 @@ fn draw_coverage<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
             .borders(Borders::ALL),
     );
 
-    f.render_widget(blockers, chunk);
+    f.render_widget(blockers, chunks[0]);
+
+    let blockers: Vec<_> = app
+        .coverage_blockers_total
+        .iter()
+        .map(|x| ListItem::new(Span::raw(x)))
+        .collect();
+
+    let blockers = List::new(blockers).block(
+        Block::default()
+            .title(Span::styled(
+                "Coverage blockers in total (Not in path)",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL),
+    );
+
+    f.render_widget(blockers, chunks[1]);
 }
 
 /// Draw the `crashes` tab

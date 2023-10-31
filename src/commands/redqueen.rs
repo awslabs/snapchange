@@ -6,6 +6,9 @@ use std::sync::{Arc, RwLock};
 use anyhow::{anyhow, ensure, Context, Result};
 
 #[cfg(feature = "redqueen")]
+use x86_64::registers::rflags::RFlags;
+
+#[cfg(feature = "redqueen")]
 use core_affinity::CoreId;
 #[cfg(feature = "redqueen")]
 use kvm_bindings::CpuId;
@@ -22,14 +25,20 @@ use std::{
 };
 
 #[cfg(feature = "redqueen")]
-use x86_64::registers::rflags::RFlags;
-
-#[cfg(feature = "redqueen")]
 use crate::{
-    cmdline, config::Config, feedback::FeedbackLog, feedback::FeedbackTracker,
-    fuzz_input::FuzzInput, fuzzer::Fuzzer, fuzzvm, fuzzvm::FuzzVm, init_environment,
-    stack_unwinder::StackUnwinders, unblock_sigalrm, Cr3, KvmEnvironment, Memory, ProjectState,
-    ResetBreakpointType, Symbol, VbCpu, VirtAddr, THREAD_IDS,
+    cmdline,
+    cmp_analysis::{RedqueenArguments, RedqueenCoverage},
+    config::Config,
+    feedback::FeedbackLog,
+    feedback::FeedbackTracker,
+    fuzz_input::{FuzzInput, InputWithMetadata},
+    fuzzer::Fuzzer,
+    fuzzvm,
+    fuzzvm::FuzzVm,
+    init_environment,
+    stack_unwinder::StackUnwinders,
+    unblock_sigalrm, Cr3, KvmEnvironment, Memory, ProjectState, ResetBreakpointType, Symbol, VbCpu,
+    VirtAddr, THREAD_IDS,
 };
 
 /// Execute the c subcommand to gather coverage for a particular input
@@ -76,8 +85,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         symbol_breakpoints,
         covbp_bytes,
         &args.path,
-        &project_state.binaries,
-        project_state.config.clone(),
+        &project_state,
     )?;
 
     // Success
@@ -96,9 +104,8 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     symbols: &Option<VecDeque<Symbol>>,
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
     coverage_breakpoints: BTreeMap<VirtAddr, u8>,
-    input_case: &Path,
-    binaries: &[PathBuf],
-    config: Config,
+    input_case: &PathBuf,
+    project_state: &ProjectState,
 ) -> Result<()> {
     // Store the thread ID of this thread used for passing the SIGALRM to this thread
     let thread_id = unsafe { libc::pthread_self() };
@@ -109,6 +116,14 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
 
     // Set the core affinity for this core
     core_affinity::set_for_current(core_id);
+
+    let ProjectState {
+        binaries,
+        config,
+        redqueen_breakpoints,
+        path: project_dir,
+        ..
+    } = project_state;
 
     // Use the current fuzzer
     let mut fuzzer = FUZZER::default();
@@ -129,7 +144,6 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         contexts.push(tmp);
     }
 
-    let prev_redqueen_rules = BTreeMap::new();
     let mut feedback = FeedbackTracker::default();
 
     // Create a 64-bit VM for fuzzing
@@ -144,13 +158,13 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         Some(coverage_breakpoints),
         symbol_breakpoints,
         symbols,
-        config,
+        config.clone(),
         StackUnwinders::default(),
-        prev_redqueen_rules,
+        redqueen_breakpoints.clone(),
     )?;
 
     // Get the input to trace
-    let input = FUZZER::Input::from_bytes(&std::fs::read(input_case)?)?;
+    let input = InputWithMetadata::from_path(input_case, &project_dir)?;
 
     // Run the guest until reset
     let vm_timeout = Duration::from_secs(1);
@@ -164,9 +178,16 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     fuzzvm.reset_and_run_with_redqueen(&input, &mut fuzzer, vm_timeout, &mut feedback)?;
 
     for log_entry in feedback.take_log() {
-        if let FeedbackLog::Redqueen((addr, rflags)) = log_entry {
-            let rflags = RFlags::from_bits_truncate(rflags);
-            println!("Address: {addr:#018x?} RFLAGS: {rflags:?}");
+        if let FeedbackLog::Redqueen(RedqueenCoverage {
+            virt_addr,
+            rflags,
+            hit_count,
+        }) = log_entry
+        {
+            // let rflags = RFlags::from_bits_truncate(rflags);
+            // println!("Address: {virt_addr:#018x?} RFLAGS: {rflags:?} Hits: {hit_count}");
+            let virt_addr = virt_addr.0;
+            println!("{virt_addr:#x} {rflags:#x} {hit_count:#x}");
         }
     }
 

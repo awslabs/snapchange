@@ -33,6 +33,11 @@ else
 fi
 if [[ -z "$LIBFUZZER" ]]; then 
     LIBFUZZER=0
+else
+    SNAPSHOT_FUNCTION="LLVMFuzzerTestOneInput"
+fi
+if [[ -z "$SNAPSHOT_FUNCTION" ]]; then
+  SNAPSHOT_FUNCTION=""
 fi
 if [[ -z "$SNAPSHOT_EXTRACT" ]]; then
   SNAPSHOT_EXTRACT=""
@@ -97,10 +102,10 @@ if ! [[ -z "$SNAPSHOT_EXTRACT" ]]; then
   done
 fi
 
-if [[ "$LIBFUZZER" -eq 1 ]]; then 
+if [[ "$SNAPSHOT_FUNCTION" ]]; then 
 
-    if ! nm "$BIN" | grep LLVMFuzzerTestOneInput; then
-        log_error "LLVMFuzzerTestOneInput not found in $BIN."
+    if ! nm "$BIN" | grep $SNAPSHOT_FUNCTION; then
+        log_error "$SNAPSHOT_FUNCTION not found in $BIN."
         exit 1
     fi
 
@@ -114,9 +119,10 @@ if [[ "$LIBFUZZER" -eq 1 ]]; then
         exit 1
     fi
     
-    # If LIBFUZZER, dump the first 16 bytes of LLVMFuzzerTestOneInput to restore
+    # If there is a snapshot function, dump the first 16 bytes of LLVMFuzzerTestOneInput to restore
     # after taking the snapshot. These bytes are corrupted 
-    "$R2Z" -q -c 'p8 16 @ sym.LLVMFuzzerTestOneInput' $BIN > /tmp/libfuzzer.bytes.bak
+    "$R2Z" -q -c "p8 16 @ sym.$SNAPSHOT_FUNCTION" $BIN > /tmp/libfuzzer.bytes.bak
+    cat /tmp/libfuzzer.bytes.bak
 fi
 
  
@@ -297,61 +303,78 @@ for try_load in $SYMBOL_FILE_PATHS; do
     fi
 done
 
+
+SANITIZER_FUNCTIONS=''
+if nm "$BIN" | grep __sanitizer_cov_trace_cmp1; then
+    SANITIZER_FUNCTIONS="
+    # Remove all coverage trace from libfuzzer since we are using breakpoint coverage in Snapchange
+    set {unsigned char}(__sanitizer_cov_trace_cmp1)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_cmp2)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_cmp4)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_cmp8)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_const_cmp1)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_const_cmp2)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_const_cmp4)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_const_cmp8)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_div4)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_div8)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_gep)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_pc_guard)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_pc_guard_init)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_pc_indir)=0xc3
+    set {unsigned char}(__sanitizer_cov_trace_switch)=0xc3
+    "
+fi
+
 # Execute to the first int3, execute the gdbsnapshot, execute vmcall, then exit
-if [[ "$LIBFUZZER" -eq 1 ]]; then
+if [[ "$SNAPSHOT_FUNCTION" ]]; then
     echo "LIBFUZZER SNAPSHOT DETECTED"
-    echo "Taking a snapshot at LLVMFuzzerTestOneInput"
+    echo "Taking a snapshot at $SNAPSHOT_FUNCTION"
     cat > "$DIR/$GDBCMDS" <<EOF
 $(printf "$LOAD_SYMBOL_FILE")
 set pagination off
 # Ignore leak detection. 
 set environment ASAN_OPTIONS=detect_leaks=0
 
-# Stop at the first chance in the target in order to enable the breakpoint on LLVMFuzzerTestOneInput
+# Stop at the first chance in the target in order to enable the breakpoint on $SNAPSHOT_FUNCTION
 start
 del *
-x/16xb LLVMFuzzerTestOneInput
 
-# Remove all coverage trace from libfuzzer since we are using breakpoint coverage in Snapchange
-set {unsigned char}(__sanitizer_cov_trace_cmp1)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_cmp2)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_cmp4)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_cmp8)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_const_cmp1)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_const_cmp2)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_const_cmp4)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_const_cmp8)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_div4)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_div8)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_gep)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_pc_guard)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_pc_guard_init)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_pc_indir)=0xc3
-set {unsigned char}(__sanitizer_cov_trace_switch)=0xc3
+$SANITIZER_FUNCTIONS
 
-# Insert (int3 ; vmcall) on the LLVMFuzzerTestOneInput 
-set {unsigned char}(LLVMFuzzerTestOneInput+0x0)=0xcc
-set {unsigned char}(LLVMFuzzerTestOneInput+0x1)=0x0f
-set {unsigned char}(LLVMFuzzerTestOneInput+0x2)=0x01
-set {unsigned char}(LLVMFuzzerTestOneInput+0x3)=0xc1
-set {unsigned char}(LLVMFuzzerTestOneInput+0x4)=0xcd
-set {unsigned char}(LLVMFuzzerTestOneInput+0x5)=0xcd
-set {unsigned char}(LLVMFuzzerTestOneInput+0x6)=0xcd
-set {unsigned char}(LLVMFuzzerTestOneInput+0x7)=0xcd
-set {unsigned char}(LLVMFuzzerTestOneInput+0x8)=0xcd
-set {unsigned char}(LLVMFuzzerTestOneInput+0x9)=0xcd
-set {unsigned char}(LLVMFuzzerTestOneInput+0xa)=0xcd
-set {unsigned char}(LLVMFuzzerTestOneInput+0xb)=0xcd
-set {unsigned char}(LLVMFuzzerTestOneInput+0xc)=0xcd
-set {unsigned char}(LLVMFuzzerTestOneInput+0xd)=0xcd
-set {unsigned char}(LLVMFuzzerTestOneInput+0xe)=0xcd
-set {unsigned char}(LLVMFuzzerTestOneInput+0xf)=0xcd
+# Insert (int3 ; vmcall) on the $SNAPSHOT_FUNCTION 
+set {unsigned char}($SNAPSHOT_FUNCTION+0x0)=0xcc
+set {unsigned char}($SNAPSHOT_FUNCTION+0x1)=0x0f
+set {unsigned char}($SNAPSHOT_FUNCTION+0x2)=0x01
+set {unsigned char}($SNAPSHOT_FUNCTION+0x3)=0xc1
+set {unsigned char}($SNAPSHOT_FUNCTION+0x4)=0xcd
+set {unsigned char}($SNAPSHOT_FUNCTION+0x5)=0xcd
+set {unsigned char}($SNAPSHOT_FUNCTION+0x6)=0xcd
+set {unsigned char}($SNAPSHOT_FUNCTION+0x7)=0xcd
+set {unsigned char}($SNAPSHOT_FUNCTION+0x8)=0xcd
+set {unsigned char}($SNAPSHOT_FUNCTION+0x9)=0xcd
+set {unsigned char}($SNAPSHOT_FUNCTION+0xa)=0xcd
+set {unsigned char}($SNAPSHOT_FUNCTION+0xb)=0xcd
+set {unsigned char}($SNAPSHOT_FUNCTION+0xc)=0xcd
+set {unsigned char}($SNAPSHOT_FUNCTION+0xd)=0xcd
+set {unsigned char}($SNAPSHOT_FUNCTION+0xe)=0xcd
+set {unsigned char}($SNAPSHOT_FUNCTION+0xf)=0xcd
 
-# Continue execution until the LLVMFuzzerTestOneInput and take the snapshot as normal
+x/16xb \$rip
+x/16xb $SNAPSHOT_FUNCTION
+
+# Continue execution until the $SNAPSHOT_FUNCTION and take the snapshot as normal
 continue
+printf "Sourcing gdb script\n"
 source $GDBPY
+printf "Single step 1"
+x/16xb \$rip
 ni
+printf "Single step 2"
+x/16xb \$rip
 ni
+printf "Single step 3"
+x/16xb \$rip
 quit
 
 EOF
@@ -368,6 +391,7 @@ quit
 EOF
 fi
 chmod a+r "$DIR/$GDBCMDS"
+cat "$DIR/$GDBCMDS"
 
 
 # e.g., if we are in initramfs we need a script to run `/etc/rc.local`

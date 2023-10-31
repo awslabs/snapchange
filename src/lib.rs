@@ -193,7 +193,7 @@ pub mod mutators;
 
 mod stats_tui;
 pub mod utils;
-pub use fuzz_input::FuzzInput;
+pub use fuzz_input::{FuzzInput, InputWithMetadata};
 
 #[macro_use]
 mod try_macros;
@@ -263,7 +263,7 @@ impl Execution {
     pub fn is_crash(&self) -> bool {
         match &self {
             Self::CrashReset { .. } => true,
-            _ => false
+            _ => false,
         }
     }
 }
@@ -370,7 +370,7 @@ fn handle_vmexit<FUZZER: Fuzzer>(
     fuzzvm: &mut FuzzVm<FUZZER>,
     fuzzer: &mut FUZZER,
     crash_dir: Option<&Path>,
-    input: &FUZZER::Input,
+    input: &InputWithMetadata<FUZZER::Input>,
     feedback: Option<&mut FeedbackTracker>,
 ) -> Result<Execution> {
     let execution;
@@ -508,8 +508,7 @@ fn handle_vmexit<FUZZER: Fuzzer>(
                 Execution::Continue
             };
 
-            let mut input_bytes = Vec::new();
-            input.to_bytes(&mut input_bytes)?;
+            let mut input_bytes = input.input_as_bytes()?;
 
             if let Some(crash_file) =
                 write_crash_input(&crash_dir, &dirname, &input_bytes, &fuzzvm.console_output)?

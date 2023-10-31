@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "LIBFUZZER: $LIBFUZZER"
+echo "Snapshot Function: $SNAPSHOT_FUNCTION"
 
 # Exit early if no command was given
 if [ $# -eq 0 ]; then
@@ -38,17 +38,16 @@ then
     # Save the path of the binary to copy into the output directory
     BINARY=$1
 
-    # If LIBFUZZER, dump the first 16 bytes of LLVMFuzzerTestOneInput to restore
+    # If LIBFUZZER, dump the first 16 bytes of $SNAPSHOT_FUNCTION to restore
     # after taking the snapshot. These bytes are corrupted 
-    if [[ "$LIBFUZZER" ]]; then 
-        nm $1 | grep LLVMFuzzerTestOneInput
-
+    if [[ "$SNAPSHOT_FUNCTION" ]]; then 
+        nm $1 | grep $SNAPSHOT_FUNCTION
         if [ $? -eq 1 ]; then
-            echo "LLVMFuzzerTestOneInput not found in $1."
+            echo "$SNAPSHOT_FUNCTION not found in $1."
             exit 1
         fi
         
-        BYTES=`r2 -q -c 'p8 16 @ sym.LLVMFuzzerTestOneInput' $1`
+        BYTES=`r2 -q -c "p8 16 @ sym.$SNAPSHOT_FUNCTION" $1`
     fi
 
     # Copy the binary into the root directory of the image
@@ -130,17 +129,17 @@ then
     sudo chown root:root rc.local
 fi
 
-if [[ "$LIBFUZZER" ]]; then 
+if [[ "$SNAPSHOT_FUNCTION" ]]; then 
     echo "LIBFUZZER SNAPSHOT DETECTED"
-    echo "Taking a snapshot at LLVMFuzzerTestOneInput"
+    echo "Taking a snapshot at $SNAPSHOT_FUNCTION"
 
     # Ignore leak detection. 
     echo 'set environment ASAN_OPTIONS=detect_leaks=0' > gdbcmds
 
-    # Stop at the first chance in the target in order to enable the breakpoint on LLVMFuzzerTestOneInput
-    echo 'start'                         >> gdbcmds
-    echo 'del *'                         >> gdbcmds
-    echo 'x/16xb LLVMFuzzerTestOneInput' >> gdbcmds
+    # Stop at the first chance in the target in order to enable the breakpoint on $SNAPSHOT_FUNCTION
+    echo 'start'                     >> gdbcmds
+    echo 'del *'                     >> gdbcmds
+    echo 'x/16xb $SNAPSHOT_FUNCTION' >> gdbcmds
 
     # Remove all coverage trace from libfuzzer since we are using breakpoint coverage in Snapchange
     echo 'set {unsigned char}(__sanitizer_cov_trace_cmp1)=0xc3'          >> gdbcmds
@@ -159,28 +158,32 @@ if [[ "$LIBFUZZER" ]]; then
     echo 'set {unsigned char}(__sanitizer_cov_trace_pc_indir)=0xc3'      >> gdbcmds
     echo 'set {unsigned char}(__sanitizer_cov_trace_switch)=0xc3'        >> gdbcmds
 
-    # Insert (int3 ; vmcall) on the LLVMFuzzerTestOneInput 
-    echo 'set {unsigned char}(LLVMFuzzerTestOneInput+0x0)=0xcc' >> gdbcmds
-    echo 'set {unsigned char}(LLVMFuzzerTestOneInput+0x1)=0x0f' >> gdbcmds
-    echo 'set {unsigned char}(LLVMFuzzerTestOneInput+0x2)=0x01' >> gdbcmds
-    echo 'set {unsigned char}(LLVMFuzzerTestOneInput+0x3)=0xc1' >> gdbcmds
-    echo 'set {unsigned char}(LLVMFuzzerTestOneInput+0x4)=0xcd' >> gdbcmds
-    echo 'set {unsigned char}(LLVMFuzzerTestOneInput+0x5)=0xcd' >> gdbcmds
-    echo 'set {unsigned char}(LLVMFuzzerTestOneInput+0x6)=0xcd' >> gdbcmds
-    echo 'set {unsigned char}(LLVMFuzzerTestOneInput+0x7)=0xcd' >> gdbcmds
-    echo 'set {unsigned char}(LLVMFuzzerTestOneInput+0x8)=0xcd' >> gdbcmds
-    echo 'set {unsigned char}(LLVMFuzzerTestOneInput+0x9)=0xcd' >> gdbcmds
-    echo 'set {unsigned char}(LLVMFuzzerTestOneInput+0xa)=0xcd' >> gdbcmds
-    echo 'set {unsigned char}(LLVMFuzzerTestOneInput+0xb)=0xcd' >> gdbcmds
-    echo 'set {unsigned char}(LLVMFuzzerTestOneInput+0xc)=0xcd' >> gdbcmds
-    echo 'set {unsigned char}(LLVMFuzzerTestOneInput+0xd)=0xcd' >> gdbcmds
-    echo 'set {unsigned char}(LLVMFuzzerTestOneInput+0xe)=0xcd' >> gdbcmds
-    echo 'set {unsigned char}(LLVMFuzzerTestOneInput+0xf)=0xcd' >> gdbcmds
+    # Insert (int3 ; vmcall) on the $SNAPSHOT_FUNCTION 
+    echo 'set {unsigned char}($SNAPSHOT_FUNCTION+0x0)=0xcc' >> gdbcmds
+    echo 'set {unsigned char}($SNAPSHOT_FUNCTION+0x1)=0x0f' >> gdbcmds
+    echo 'set {unsigned char}($SNAPSHOT_FUNCTION+0x2)=0x01' >> gdbcmds
+    echo 'set {unsigned char}($SNAPSHOT_FUNCTION+0x3)=0xc1' >> gdbcmds
+    echo 'set {unsigned char}($SNAPSHOT_FUNCTION+0x4)=0xcd' >> gdbcmds
+    echo 'set {unsigned char}($SNAPSHOT_FUNCTION+0x5)=0xcd' >> gdbcmds
+    echo 'set {unsigned char}($SNAPSHOT_FUNCTION+0x6)=0xcd' >> gdbcmds
+    echo 'set {unsigned char}($SNAPSHOT_FUNCTION+0x7)=0xcd' >> gdbcmds
+    echo 'set {unsigned char}($SNAPSHOT_FUNCTION+0x8)=0xcd' >> gdbcmds
+    echo 'set {unsigned char}($SNAPSHOT_FUNCTION+0x9)=0xcd' >> gdbcmds
+    echo 'set {unsigned char}($SNAPSHOT_FUNCTION+0xa)=0xcd' >> gdbcmds
+    echo 'set {unsigned char}($SNAPSHOT_FUNCTION+0xb)=0xcd' >> gdbcmds
+    echo 'set {unsigned char}($SNAPSHOT_FUNCTION+0xc)=0xcd' >> gdbcmds
+    echo 'set {unsigned char}($SNAPSHOT_FUNCTION+0xd)=0xcd' >> gdbcmds
+    echo 'set {unsigned char}($SNAPSHOT_FUNCTION+0xe)=0xcd' >> gdbcmds
+    echo 'set {unsigned char}($SNAPSHOT_FUNCTION+0xf)=0xcd' >> gdbcmds
 
-    # Continue execution until the LLVMFuzzerTestOneInput and take the snapshot as normal
+    # Continue execution until the $SNAPSHOT_FUNCTION and take the snapshot as normal
+    echo 'x/8xb $rip'                                         >> gdbcmds
     echo 'continue'                                         >> gdbcmds
+    echo 'x/8xb $rip'                                         >> gdbcmds
     echo "source $HOMEDIR/gdbsnapshot.py"                   >> gdbcmds
+    echo 'x/8xb $rip'                                         >> gdbcmds
     echo 'ni'                                               >> gdbcmds
+    echo 'x/8xb $rip'                                         >> gdbcmds
     echo 'ni'                                               >> gdbcmds
     echo 'quit'                                             >> gdbcmds
 else
@@ -217,11 +220,11 @@ mv output fuzzer/snapshot
 # Copy the binary to the snapshot directory
 cp $BINARY fuzzer/snapshot/`basename $BINARY`.bin
 
-if [[ "$LIBFUZZER" ]]; then 
+if [[ $SNAPSHOT_FUNCTION ]]; then 
     # Use the libfuzzer template fuzzer
     mv src/fuzzer.rs.libfuzzer fuzzer/src/fuzzer.rs
 
-    # Restore the original bytes at the LLVMFuzzerTestOneInput bytes
+    # Restore the original bytes at the $SNAPSHOT_FUNCTION bytes
     r2 -w -q -c "/x cc0f01c1cdcdcdcdcdcdcdcdcdcdcdcd ; wx $BYTES @ hit0_0" ./fuzzer/snapshot/fuzzvm.physmem
 else
     # Default to the normal fuzzer template

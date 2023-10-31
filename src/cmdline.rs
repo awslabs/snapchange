@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::addrs::{Cr3, VirtAddr};
+use crate::cmp_analysis::{Conditional, Operand, RedqueenArguments, RedqueenCoverage, Size};
 use crate::config::Config;
+use crate::feedback::FeedbackTracker;
 use crate::fuzzer::ResetBreakpointType;
 use crate::stack_unwinder::StackUnwinders;
 use crate::symbols::{Symbol, LINUX_KERNEL_SYMBOLS, LINUX_USERLAND_SYMBOLS};
@@ -59,6 +61,10 @@ pub enum Error {
         "Module ({1}) coverage breakpoint ({0:#x}) not found in module address range ({2:x?})"
     )]
     CoverageBreakpointNotFoundInModuleRange(u64, String, Range<u64>),
+
+    /// Cmp Operand unable to be parsed
+    #[error("Found a redqueen operand that couldn't be parsed: {0}")]
+    UnimplementedCmpOperand(String),
 }
 
 /// The files associated with the snapshot state
@@ -95,12 +101,8 @@ pub struct ProjectState {
     /// The configuration settings for this project
     pub(crate) config: Config,
 
-    /// Project has `.cmps` file for redqueen
-    ///
-    /// Used to decide whether or not to map a second clean physical snapshot used exclusively
-    /// for redqueen breakpoints without applying coverage breakpoints
-    #[cfg(feature = "redqueen")]
-    pub(crate) redqueen_available: bool,
+    /// The redqueen breakpoints used to capture comparison arguments during runtime
+    pub(crate) redqueen_breakpoints: Option<Vec<(u64, RedqueenArguments)>>,
 
     /// A stack unwinder that can be used to unwind stack
     pub(crate) unwinders: StackUnwinders,
@@ -110,99 +112,58 @@ pub struct ProjectState {
 #[derive(Default)]
 pub struct ProjectCoverage {
     /// Previously seen coverage by the fuzzer
-    pub prev_coverage: BTreeSet<VirtAddr>,
+    pub prev_coverage: FeedbackTracker,
 
     /// Coverage left to be seen by the fuzzer
     pub coverage_left: BTreeSet<VirtAddr>,
-
-    /// Previously seen redqueen coverage by the fuzzer
-    pub prev_redqueen_coverage: BTreeSet<(VirtAddr, u64)>,
 }
 
 impl ProjectState {
     /// Return the coverage remaining from the original coverage and the previously found
-    /// coverage along with the previously found coverage itself. Also adds breakpoints
-    /// for basic blocks as seen in SanitiverCoverage when compiling a target with
-    /// `-fsanitize-coverage=trace-pc-guard,pc-table`.
+    /// coverage along with the previously found coverage itself.
     ///
     /// # Errors
     ///
-    /// Can error during parsing the coverage.addresses project file
+    /// Can error during parsing the coverage.all project file
     #[allow(clippy::missing_panics_doc)]
-    pub fn coverage_left(&self) -> Result<ProjectCoverage> {
-        // If there was previous coverage seen, remove that from the total coverage
-        // breakpoints
-        let mut prev_coverage = BTreeSet::new();
-        let prev_coverage_file = self.path.join("coverage.addresses");
-        if prev_coverage_file.exists() {
-            prev_coverage = std::fs::read_to_string(prev_coverage_file)
-                .context("Failed to read coverage.addresses file")?
-                .split('\n')
-                .filter_map(|x| u64::from_str_radix(x.trim_start_matches("0x"), 16).ok())
-                .map(VirtAddr)
-                .collect();
-        }
-
-        let mut prev_redqueen_coverage = BTreeSet::new();
-        let prev_rq_coverage_file = self.path.join("coverage.redqueen");
-        if prev_rq_coverage_file.exists() {
-            prev_redqueen_coverage = std::fs::read_to_string(prev_rq_coverage_file)
-                .context("Failed to read coverage.redqueen file")?
-                .split('\n')
-                .filter_map(|line| {
-                    let mut iter = line.split(' ');
-                    let Some(addr) = iter.next() else {
-                        return None;
-                    };
-                    let Some(rflags) = iter.next() else {
-                        return None;
-                    };
-
-                    let addr = u64::from_str_radix(addr.trim_start_matches("0x"), 16);
-                    let rflags = u64::from_str_radix(rflags.trim_start_matches("0x"), 16);
-                    if let (Ok(addr), Ok(rflags)) = (addr, rflags) {
-                        let rflags = RFlags::from_bits_truncate(rflags);
-                        Some((VirtAddr(addr), rflags.bits()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+    pub fn feedback(&self) -> Result<ProjectCoverage> {
+        let prev_coverage_file = self.path.join("coverage.all");
+        let mut prev_coverage: FeedbackTracker = FeedbackTracker::default();
+        if let Ok(data) = std::fs::read_to_string(&prev_coverage_file) {
+            prev_coverage = serde_json::from_str(&data)?;
         }
 
         if self.coverage_breakpoints.is_none() {
             return Ok(ProjectCoverage {
                 prev_coverage,
-                prev_redqueen_coverage,
                 coverage_left: BTreeSet::new(),
             });
         }
 
-        log::info!(
-            "Total coverage: {} Coverage seen: {} Redqueen coverage: {}",
-            self.coverage_breakpoints.as_ref().unwrap().len(),
-            prev_coverage.len(),
-            prev_redqueen_coverage.len()
-        );
+        let hits = prev_coverage
+            .code_cov
+            .iter()
+            .map(|x| *x.0)
+            .collect::<BTreeSet<VirtAddr>>();
 
         // The coverage left to hit
         let coverage_left = self
             .coverage_breakpoints
             .as_ref()
             .unwrap()
-            .difference(&prev_coverage)
+            .difference(&hits)
             .copied()
             .collect();
 
         // Get the current coverage not yet seen across previous runs
         Ok(ProjectCoverage {
-            prev_coverage,
             coverage_left,
-            prev_redqueen_coverage,
+            prev_coverage,
         })
     }
 
-    /// Parse sancov coverage breakpoints if they are available in this target
+    /// Parse sancov coverage breakpoints if they are available in this target. Use
+    /// -fsanitize-coverage=pc-table to enable this.
     pub fn parse_sancov_breakpoints(&mut self) -> Result<Option<BTreeSet<VirtAddr>>> {
         if let Some(symbol_path) = &self.symbols {
             let mut new_covbps = BTreeSet::new();
@@ -483,7 +444,7 @@ pub struct Minimize {
 
     /// Specify, which type of code coverage feedback should be considered, when minimizing
     /// the given input. `none` ignores all code coverage. `basic-blocks` is the regular fuzzing
-    /// coverage. `symbols` is function-level coverage when symbols are available. `hitcounts` 
+    /// coverage. `symbols` is function-level coverage when symbols are available. `hitcounts`
     /// is basic-block coverage considering hitcounts.
     #[clap(long, value_enum, default_value_t = MinimizeCodeCovLevel::None)]
     pub(crate) consider_coverage: MinimizeCodeCovLevel,
@@ -495,7 +456,7 @@ pub struct Minimize {
     /// Ignore the consoel output when checking for same state after minimizing an input.
     #[clap(long)]
     pub(crate) ignore_console_output: bool,
-   
+
     /// Dump the observed feedback into a file. Useful when debugging minimization according to
     /// observed feedback.
     #[clap(long)]
@@ -684,11 +645,13 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     let mut binaries = Vec::new();
     let mut config = Config::default();
     let mut update_config = true;
+    let mut covbps_paths = Vec::new();
 
     #[cfg(feature = "redqueen")]
     let mut redqueen_available = false;
 
-    let mut covbps_paths = Vec::new();
+    #[cfg(feature = "redqueen")]
+    let mut cmps_paths = Vec::new();
 
     // Read the snapshot directory looking for the specific file extensions
     for file in dir.read_dir()? {
@@ -737,6 +700,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
                 #[cfg(feature = "redqueen")]
                 Some("cmps") => {
                     redqueen_available = true;
+                    cmps_paths.push(file.path());
                 }
                 Some("physmem") => physical_memory = Some(file.path()),
                 Some("symbols") => {
@@ -796,13 +760,42 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         std::fs::write(dir.join("config.toml"), &toml::to_string(&config)?)?;
     }
 
+    // Parse the available redqueen cmps files
+    // Also gather the redqueen breakpoint addresses to remove them from the
+    // coverage breakpoints
+    let mut redqueen_breakpoints = None;
+    let mut redqueen_bp_addrs: BTreeSet<u64> = BTreeSet::new();
+
+    #[cfg(feature = "redqueen")]
+    if !cmps_paths.is_empty() {
+        let mut result = Vec::new();
+        for cmps_path in &cmps_paths {
+            let rules = parse_cmps(cmps_path)?;
+            for (addr, _) in &rules {
+                redqueen_bp_addrs.insert(*addr);
+            }
+
+            result.extend(rules);
+        }
+
+        redqueen_breakpoints = Some(result);
+    }
+
     let mut coverage_breakpoints: Option<BTreeSet<VirtAddr>> = None;
     let mut coverage_breakpoints_src = None;
 
     for covbps_path in &covbps_paths {
         let covbps = coverage_breakpoints.get_or_insert(BTreeSet::new());
 
-        let bps = parse_coverage_breakpoints(&covbps_path)?;
+        let mut bps = parse_coverage_breakpoints(&covbps_path)?;
+
+        // Ensure no coverage breakpoints are redqueen breakpoints as the
+        // redqueen breakpoints are not one-shot and will be reapplied
+        // even when they are hit
+        bps = bps
+            .into_iter()
+            .filter(|addr| !redqueen_bp_addrs.contains(&addr.0))
+            .collect();
 
         let module = covbps_path
             .file_prefix()
@@ -929,8 +922,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         vmlinux,
         config,
         unwinders,
-        #[cfg(feature = "redqueen")]
-        redqueen_available,
+        redqueen_breakpoints,
     };
 
     // Check for sancov basic blocks in the target
@@ -1608,4 +1600,682 @@ fn parse_cores(str: &str) -> Result<usize, anyhow::Error> {
         }
     };
     Ok(cores)
+}
+
+/// Parse the cmp analysis breakpoints. This will read the given path and parse
+/// the redqueen breakpoints from binary ninja.
+///
+/// Example:
+///
+/// 0x555555555268,0x4,reg eax,CMP_SLT,load_from add reg rbp -0x1c
+///
+/// (0x555555555268, RedqueenArguments {
+///     size: Size::U32,
+///     operation: Operation::SignedLessThan,
+///     left_op: Operand::Register(EAX),
+///     right_op: Operand::Memory {
+///         register: RBP,
+///         displacement: -0x1c,
+///     },
+/// })
+///
+/// # Errors
+///
+/// * Failed to read cmps file
+pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
+    // Read the breakpoints
+    let data = std::fs::read_to_string(cmps_path).context("Failed to read cmps file")?;
+    let lines: Vec<_> = data.lines().collect();
+
+    let mut result = Vec::new();
+
+    let mut index = 0;
+    let mut invalid = 0;
+
+    'done: while index < lines.len() {
+        let mut line = lines[index].to_string();
+        index += 1;
+
+        // Ignore empty lines
+        if line.is_empty() {
+            continue;
+        }
+
+        if line.contains("x87") {
+            println!("[CMP] Not impl - x87 line: {line}");
+            invalid += 1;
+            continue;
+        }
+
+        if line.contains("recurs") {
+            println!("[CMP] Skipping recursion error: {line}");
+            invalid += 1;
+            continue;
+        }
+
+        if line.contains("unknown") {
+            println!("[CMP] unknown operand found: {line}");
+            invalid += 1;
+            continue;
+        }
+
+        // Expected rule format: 0x555555555246,4,load_from add rbp -0x10,NE,0x11111111
+        let Some([addr, cmp_size, left_op_str, operation, right_op_str]) =
+            line.split(',').array_chunks().next()
+        else {
+            // panic!("Invalid cmp analysis rule found: {line}");
+            println!("[CMP] ERROR: invalid cmp analysis rule found: {line:?}");
+            invalid += 1;
+            index += 1;
+            continue;
+        };
+
+        let addr = u64::from_str_radix(&addr.replace("0x", ""), 16)
+            .expect("Failed to parse cmp analysis address");
+
+        // look ahead to see if the next line also has the same address. it's possible currently for the
+        // same address to have different comparisons (like checking doubles)
+        // example:
+        // 5555555558a0 zmm0 < zmm1
+        // 5555555558a0 zmm0 == zmm1
+        for _ in 0..4 {
+            // Break if there are no more lines
+            let Some(next_line) = lines.get(index) else {
+                break;
+            };
+
+            // Ignore empty lines
+            if next_line.is_empty() {
+                continue;
+            }
+
+            let next_line = lines[index];
+            let Some(
+                [next_line_addr, next_line_cmp_size, next_line_left, next_line_op, next_line_right],
+            ) = next_line.split(",").array_chunks().next()
+            else {
+                println!("ERROR: invalid cmp analysis rule found: {next_line:?}");
+                invalid += 1;
+                index += 1;
+                continue;
+            };
+
+            let next_line_addr = u64::from_str_radix(&next_line_addr.replace("0x", ""), 16)
+                .expect("Failed to parse next line addr: {next_line_addr}");
+
+            if addr != next_line_addr {
+                break;
+            }
+
+            // Update the index forward
+            index += 1;
+        }
+
+        let mut size = match cmp_size {
+            "0x1" => Size::U8,
+            "0x2" => Size::U16,
+            "0x4" => Size::U32,
+            "0x8" => Size::U64,
+            "0x10" => Size::U128,
+            "f0x4" => Size::F32,
+            "f0x8" => Size::F64,
+            size => {
+                if let Some(reg) = size.strip_prefix("reg ") {
+                    Size::Register(try_parse_register(reg)?)
+                } else {
+                    Size::Bytes(usize::from_str_radix(&size.replace("0x", ""), 16)?)
+                }
+            }
+        };
+
+        let operation = match operation {
+            "CMP_E" => Conditional::Equal,
+            "CMP_NE" => Conditional::NotEqual,
+            "CMP_SLT" => Conditional::SignedLessThan,
+            "CMP_ULT" => Conditional::UnsignedLessThan,
+            "CMP_SLE" => Conditional::SignedLessThanEqual,
+            "CMP_ULE" => Conditional::UnsignedLessThanEqual,
+            "CMP_SGT" => Conditional::SignedGreaterThan,
+            "CMP_UGT" => Conditional::UnsignedGreaterThan,
+            "CMP_SGE" => Conditional::SignedGreaterThanEqual,
+            "CMP_UGE" => Conditional::UnsignedGreaterThanEqual,
+            "FCMP_E" => Conditional::FloatingPointEqual,
+            "FCMP_NE" => Conditional::FloatingPointNotEqual,
+            "FCMP_LT" => Conditional::FloatingPointLessThan,
+            "FCMP_LE" => Conditional::FloatingPointLessThanEqual,
+            "FCMP_GT" => Conditional::FloatingPointGreaterThan,
+            "FCMP_GE" => Conditional::FloatingPointGreaterThanEqual,
+            "strcmp" => {
+                // strcmp's size should just be a Size::Bytes regardless of the given size
+                size = Size::Bytes(0x1234);
+                Conditional::Strcmp
+            }
+            "memcmp" => {
+                size = if let Some(reg) = cmp_size.strip_prefix("reg ") {
+                    Size::Register(try_parse_register(reg)?)
+                } else {
+                    Size::Bytes(usize::from_str_radix(&cmp_size.replace("0x", ""), 16)?)
+                };
+
+                Conditional::Memcmp
+            }
+            _ => {
+                println!("[CMP] skipping unknown operation: {operation}");
+                continue;
+            }
+        };
+
+        // Adjust the floating point sizes if invalid in the cmp line
+        if matches!(
+            operation,
+            Conditional::FloatingPointEqual
+                | Conditional::FloatingPointNotEqual
+                | Conditional::FloatingPointLessThan
+                | Conditional::FloatingPointLessThanEqual
+                | Conditional::FloatingPointGreaterThan
+                | Conditional::FloatingPointGreaterThanEqual
+        ) {
+            match size {
+                Size::F32 | Size::F64 => {
+                    // Good floating point size, nothing to do
+                }
+                Size::U32 => size = Size::F32,
+                Size::U64 => size = Size::F64,
+                Size::Bytes(0xa) => size = Size::X87,
+                _ => panic!("Invalid floating point size: {line} {size:?}"),
+            }
+        }
+
+        // Parse the left and right operands
+        match (
+            parse_cmp_operand(left_op_str),
+            parse_cmp_operand(right_op_str),
+        ) {
+            (Ok((left_op, left_remaining)), Ok((right_op, right_remaining))) => {
+                let arg = RedqueenArguments {
+                    size,
+                    operation,
+                    left_op,
+                    right_op,
+                };
+                result.push((addr, arg));
+            }
+            (Err(e), _) => {
+                println!(
+                    "[CMP] skipping rule due to failure parsing LHS: {:?} {e:?}",
+                    left_op_str
+                );
+                invalid += 1;
+            }
+            (Ok(_), Err(e)) => {
+                println!(
+                    "[CMP] skipping rule due to failure parsing RHS: {:?} {e:?}",
+                    right_op_str
+                );
+                invalid += 1;
+            }
+        }
+        // let (left_op, remaining_str) = parse_cmp_operand(left_op_str)?;
+        // let (right_op, remaining_str) = parse_cmp_operand(right_op_str)?;
+    }
+
+    if invalid > 0 {
+        println!("Skipped {invalid}/{} invalid cmp breakpoints", lines.len());
+    }
+
+    Ok(result)
+}
+
+/// Parse a number string and return the parsed value
+fn parse_number(num: &str) -> Result<i64> {
+    // Keep negative number if original string was negative
+    let is_negative = num.starts_with("-");
+
+    // Remove 0x or -0x prefixes
+    let without_prefix = num.trim_start_matches("0x").trim_start_matches("-0x");
+
+    // Return parsed number
+    Ok(u64::from_str_radix(without_prefix, 16).map(|n| {
+        if is_negative {
+            n as i64
+        } else {
+            n as i64
+        }
+    })?)
+}
+
+/// Parse the cmp line given by the binja plugin and return how to retrieve
+/// the information from a `fuzzvm`.
+///
+/// Example:
+///
+/// BP Address,Size,Operand 1,Operation,Operand 2
+///
+/// 0x555555555514,0x4,reg eax,E,0x912f2593
+/// 0x55555555557e,0x4,load_from add reg rax 0x4,SLT,0x41414141
+///
+/// Operand examples:
+///
+/// reg eax -> eax
+/// load_from add reg rax 0x4 -> [rax + 0x4]
+/// load_from 0xdeadbeef -> [0xdeadbeef]
+/// 0x12341234 -> 0x12341234
+///
+/// Function calls:
+///
+/// 0x55555555582c,0x30,reg rdi,memcmp,reg rsi -> memcmp(rdi, rsi)
+fn parse_cmp_operand(input: &str) -> Result<(Operand, &str)> {
+    if let Some(args) = input.strip_prefix("load_from ") {
+        let (address, remaining) = parse_cmp_operand(args)?;
+
+        Ok((
+            Operand::Load {
+                address: Box::new(address),
+            },
+            remaining,
+        ))
+    } else if let Some(args) = input.strip_prefix("and ") {
+        // Parses and <operation>
+        let (left, remaining) = parse_cmp_operand(args)?;
+        let (right, remaining) = parse_cmp_operand(remaining)?;
+
+        Ok((
+            Operand::And {
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            remaining,
+        ))
+    } else if let Some(args) = input.strip_prefix("neg ") {
+        // Parses neg <operation>
+
+        // Parse the register
+        let (src, remaining) = parse_cmp_operand(args)?;
+
+        Ok((Operand::Neg { src: Box::new(src) }, remaining))
+    } else if let Some(args) = input.strip_prefix("not ") {
+        // Parses not <operation>
+
+        // Parse the register
+        let (src, remaining) = parse_cmp_operand(args)?;
+
+        Ok((Operand::Not { src: Box::new(src) }, remaining))
+    } else if let Some(args) = input.strip_prefix("add ") {
+        // Parses add <operation>
+        let (left, remaining) = parse_cmp_operand(args)?;
+        let (right, remaining) = parse_cmp_operand(remaining)?;
+
+        Ok((
+            Operand::Add {
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            remaining,
+        ))
+    } else if let Some(args) = input.strip_prefix("mul ") {
+        // Parses add <operation>
+        let (left, remaining) = parse_cmp_operand(args)?;
+        let (right, remaining) = parse_cmp_operand(remaining)?;
+
+        Ok((
+            Operand::Mul {
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            remaining,
+        ))
+    } else if let Some(args) = input
+        .strip_prefix("logical_shift_left ")
+        .or_else(|| input.strip_prefix("lsl "))
+    {
+        // Parses lsl <operation>
+        let (left, remaining) = parse_cmp_operand(args)?;
+        let (right, remaining) = parse_cmp_operand(remaining)?;
+
+        Ok((
+            Operand::LogicalShiftLeft {
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            remaining,
+        ))
+    } else if let Some(args) = input.strip_prefix("sub ") {
+        // Parses sub <operation>
+        let (left, remaining) = parse_cmp_operand(args)?;
+        let (right, remaining) = parse_cmp_operand(remaining)?;
+
+        Ok((
+            Operand::Sub {
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            remaining,
+        ))
+    } else if let Some(args) = input
+        .strip_prefix("arithmetic_shift_right ")
+        .or_else(|| input.strip_prefix("lsr "))
+    {
+        // Parses arithmetic_shift_right <operation>
+        let (left, remaining) = parse_cmp_operand(args)?;
+        let (right, remaining) = parse_cmp_operand(remaining)?;
+
+        Ok((
+            Operand::ArithmeticShiftRight {
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            remaining,
+        ))
+    } else if let Some(args) = input.strip_prefix("sign_extend ") {
+        // Parses sign_extend <operation>
+        let (left, remaining) = parse_cmp_operand(args)?;
+
+        Ok((
+            Operand::SignExtend {
+                src: Box::new(left),
+            },
+            remaining,
+        ))
+    } else if let Some(args) = input.strip_prefix("reg ") {
+        // Parses reg <reg>
+
+        // Split on the first space if there is one
+        let (reg_str, remaining) = args.split_once(' ').unwrap_or((args, ""));
+
+        // Parse the register
+        let reg = try_parse_register(reg_str)?;
+
+        Ok((Operand::Register(reg), remaining))
+    } else if let Some(args) = input.strip_prefix("0x") {
+        // Parses 0x<value>
+        let (value_str, remaining) = args.split_once(' ').unwrap_or((args, ""));
+
+        // Parse the value
+        let value = parse_number(value_str)?;
+
+        Ok((Operand::ConstU64(value as u64), remaining))
+    } else if let Some(args) = input.strip_prefix("-0x") {
+        // Parses -0x<value>
+        let (value_str, remaining) = args.split_once(' ').unwrap_or((args, ""));
+
+        // Parse the value
+        let value = parse_number(value_str)?;
+
+        Ok((Operand::ConstU64(-value as u64), remaining))
+    } else if let Ok(float_num) = input.parse::<f64>() {
+        // Parses <f64>
+        Ok((Operand::ConstF64(float_num), "NOTHERE_f64"))
+    } else if let Some([num, remaining]) = input.splitn(2, " ").array_chunks().next() {
+        if let Ok(num_u64) = num.parse::<u64>() {
+            // Parses <u64>
+            Ok((Operand::ConstU64(num_u64), remaining))
+        } else if let Ok(num_f64) = num.parse::<f64>() {
+            // Parses <f64>
+            Ok((Operand::ConstF64(num_f64), remaining))
+        } else {
+            Err(Error::UnimplementedCmpOperand(input.to_string()).into())
+        }
+    } else {
+        Err(Error::UnimplementedCmpOperand(input.to_string()).into())
+    }
+}
+
+fn try_parse_register(reg: &str) -> Result<iced_x86::Register> {
+    use iced_x86::Register;
+
+    Ok(match reg.to_ascii_lowercase().as_str() {
+        "al" => Register::AL,
+        "bl" => Register::BL,
+        "cl" => Register::AL,
+        "dl" => Register::DL,
+        "ch" => Register::CH,
+        "dh" => Register::DH,
+        "bh" => Register::BH,
+        "spl" => Register::SPL,
+        "bpl" => Register::BPL,
+        "sil" => Register::SIL,
+        "dil" => Register::DIL,
+        "r8b" => Register::R8L,
+        "r9b" => Register::R9L,
+        "r10b" => Register::R10L,
+        "r11b" => Register::R11L,
+        "r12b" => Register::R12L,
+        "r13b" => Register::R13L,
+        "r14b" => Register::R14L,
+        "r15b" => Register::R15L,
+        "ax" => Register::AX,
+        "cx" => Register::CX,
+        "dx" => Register::DX,
+        "bx" => Register::BX,
+        "sp" => Register::SP,
+        "bp" => Register::BP,
+        "si" => Register::SI,
+        "di" => Register::DI,
+        "r8w" => Register::R8W,
+        "r9w" => Register::R9W,
+        "r10w" => Register::R10W,
+        "r11w" => Register::R11W,
+        "r12w" => Register::R12W,
+        "r13w" => Register::R13W,
+        "r14w" => Register::R14W,
+        "r15w" => Register::R15W,
+        "eax" => Register::EAX,
+        "ecx" => Register::ECX,
+        "edx" => Register::EDX,
+        "ebx" => Register::EBX,
+        "esp" => Register::ESP,
+        "ebp" => Register::EBP,
+        "esi" => Register::ESI,
+        "edi" => Register::EDI,
+        "r8d" => Register::R8D,
+        "r9d" => Register::R9D,
+        "r10d" => Register::R10D,
+        "r11d" => Register::R11D,
+        "r12d" => Register::R12D,
+        "r13d" => Register::R13D,
+        "r14d" => Register::R14D,
+        "r15d" => Register::R15D,
+        "rax" => Register::RAX,
+        "rcx" => Register::RCX,
+        "rdx" => Register::RDX,
+        "rbx" => Register::RBX,
+        "rsp" => Register::RSP,
+        "rbp" => Register::RBP,
+        "rsi" => Register::RSI,
+        "rdi" => Register::RDI,
+        "r8" => Register::R8,
+        "r9" => Register::R9,
+        "r10" => Register::R10,
+        "r11" => Register::R11,
+        "r12" => Register::R12,
+        "r13" => Register::R13,
+        "r14" => Register::R14,
+        "r15" => Register::R15,
+        "eip" => Register::EIP,
+        "rip" => Register::RIP,
+        "es" => Register::ES,
+        "cs" => Register::CS,
+        "ss" => Register::SS,
+        "ds" => Register::DS,
+        "fs" => Register::FS,
+        "gs" => Register::GS,
+        "xmm0" => Register::XMM0,
+        "xmm1" => Register::XMM1,
+        "xmm2" => Register::XMM2,
+        "xmm3" => Register::XMM3,
+        "xmm4" => Register::XMM4,
+        "xmm5" => Register::XMM5,
+        "xmm6" => Register::XMM6,
+        "xmm7" => Register::XMM7,
+        "xmm8" => Register::XMM8,
+        "xmm9" => Register::XMM9,
+        "xmm10" => Register::XMM10,
+        "xmm11" => Register::XMM11,
+        "xmm12" => Register::XMM12,
+        "xmm13" => Register::XMM13,
+        "xmm14" => Register::XMM14,
+        "xmm15" => Register::XMM15,
+        "xmm16" => Register::XMM16,
+        "xmm17" => Register::XMM17,
+        "xmm18" => Register::XMM18,
+        "xmm19" => Register::XMM19,
+        "xmm20" => Register::XMM20,
+        "xmm21" => Register::XMM21,
+        "xmm22" => Register::XMM22,
+        "xmm23" => Register::XMM23,
+        "xmm24" => Register::XMM24,
+        "xmm25" => Register::XMM25,
+        "xmm26" => Register::XMM26,
+        "xmm27" => Register::XMM27,
+        "xmm28" => Register::XMM28,
+        "xmm29" => Register::XMM29,
+        "xmm30" => Register::XMM30,
+        "xmm31" => Register::XMM31,
+        "ymm0" => Register::YMM0,
+        "ymm1" => Register::YMM1,
+        "ymm2" => Register::YMM2,
+        "ymm3" => Register::YMM3,
+        "ymm4" => Register::YMM4,
+        "ymm5" => Register::YMM5,
+        "ymm6" => Register::YMM6,
+        "ymm7" => Register::YMM7,
+        "ymm8" => Register::YMM8,
+        "ymm9" => Register::YMM9,
+        "ymm10" => Register::YMM10,
+        "ymm11" => Register::YMM11,
+        "ymm12" => Register::YMM12,
+        "ymm13" => Register::YMM13,
+        "ymm14" => Register::YMM14,
+        "ymm15" => Register::YMM15,
+        "ymm16" => Register::YMM16,
+        "ymm17" => Register::YMM17,
+        "ymm18" => Register::YMM18,
+        "ymm19" => Register::YMM19,
+        "ymm20" => Register::YMM20,
+        "ymm21" => Register::YMM21,
+        "ymm22" => Register::YMM22,
+        "ymm23" => Register::YMM23,
+        "ymm24" => Register::YMM24,
+        "ymm25" => Register::YMM25,
+        "ymm26" => Register::YMM26,
+        "ymm27" => Register::YMM27,
+        "ymm28" => Register::YMM28,
+        "ymm29" => Register::YMM29,
+        "ymm30" => Register::YMM30,
+        "ymm31" => Register::YMM31,
+        "zmm0" => Register::ZMM0,
+        "zmm1" => Register::ZMM1,
+        "zmm2" => Register::ZMM2,
+        "zmm3" => Register::ZMM3,
+        "zmm4" => Register::ZMM4,
+        "zmm5" => Register::ZMM5,
+        "zmm6" => Register::ZMM6,
+        "zmm7" => Register::ZMM7,
+        "zmm8" => Register::ZMM8,
+        "zmm9" => Register::ZMM9,
+        "zmm10" => Register::ZMM10,
+        "zmm11" => Register::ZMM11,
+        "zmm12" => Register::ZMM12,
+        "zmm13" => Register::ZMM13,
+        "zmm14" => Register::ZMM14,
+        "zmm15" => Register::ZMM15,
+        "zmm16" => Register::ZMM16,
+        "zmm17" => Register::ZMM17,
+        "zmm18" => Register::ZMM18,
+        "zmm19" => Register::ZMM19,
+        "zmm20" => Register::ZMM20,
+        "zmm21" => Register::ZMM21,
+        "zmm22" => Register::ZMM22,
+        "zmm23" => Register::ZMM23,
+        "zmm24" => Register::ZMM24,
+        "zmm25" => Register::ZMM25,
+        "zmm26" => Register::ZMM26,
+        "zmm27" => Register::ZMM27,
+        "zmm28" => Register::ZMM28,
+        "zmm29" => Register::ZMM29,
+        "zmm30" => Register::ZMM30,
+        "zmm31" => Register::ZMM31,
+        "k0" => Register::K0,
+        "k1" => Register::K1,
+        "k2" => Register::K2,
+        "k3" => Register::K3,
+        "k4" => Register::K4,
+        "k5" => Register::K5,
+        "k6" => Register::K6,
+        "k7" => Register::K7,
+        "bnd0" => Register::BND0,
+        "bnd1" => Register::BND1,
+        "bnd2" => Register::BND2,
+        "bnd3" => Register::BND3,
+        "cr0" => Register::CR0,
+        "cr1" => Register::CR1,
+        "cr2" => Register::CR2,
+        "cr3" => Register::CR3,
+        "cr4" => Register::CR4,
+        "cr5" => Register::CR5,
+        "cr6" => Register::CR6,
+        "cr7" => Register::CR7,
+        "cr8" => Register::CR8,
+        "cr9" => Register::CR9,
+        "cr10" => Register::CR10,
+        "cr11" => Register::CR11,
+        "cr12" => Register::CR12,
+        "cr13" => Register::CR13,
+        "cr14" => Register::CR14,
+        "cr15" => Register::CR15,
+        "dr0" => Register::DR0,
+        "dr1" => Register::DR1,
+        "dr2" => Register::DR2,
+        "dr3" => Register::DR3,
+        "dr4" => Register::DR4,
+        "dr5" => Register::DR5,
+        "dr6" => Register::DR6,
+        "dr7" => Register::DR7,
+        "dr8" => Register::DR8,
+        "dr9" => Register::DR9,
+        "dr10" => Register::DR10,
+        "dr11" => Register::DR11,
+        "dr12" => Register::DR12,
+        "dr13" => Register::DR13,
+        "dr14" => Register::DR14,
+        "dr15" => Register::DR15,
+        "st0" => Register::ST0,
+        "st1" => Register::ST1,
+        "st2" => Register::ST2,
+        "st3" => Register::ST3,
+        "st4" => Register::ST4,
+        "st5" => Register::ST5,
+        "st6" => Register::ST6,
+        "st7" => Register::ST7,
+        "mm0" => Register::MM0,
+        "mm1" => Register::MM1,
+        "mm2" => Register::MM2,
+        "mm3" => Register::MM3,
+        "mm4" => Register::MM4,
+        "mm5" => Register::MM5,
+        "mm6" => Register::MM6,
+        "mm7" => Register::MM7,
+        "tr0" => Register::TR0,
+        "tr1" => Register::TR1,
+        "tr2" => Register::TR2,
+        "tr3" => Register::TR3,
+        "tr4" => Register::TR4,
+        "tr5" => Register::TR5,
+        "tr6" => Register::TR6,
+        "tr7" => Register::TR7,
+        "tmm0" => Register::TMM0,
+        "tmm1" => Register::TMM1,
+        "tmm2" => Register::TMM2,
+        "tmm3" => Register::TMM3,
+        "tmm4" => Register::TMM4,
+        "tmm5" => Register::TMM5,
+        "tmm6" => Register::TMM6,
+        "tmm7" => Register::TMM7,
+        "fsbase" => Register::DontUseFA,
+        x => anyhow::bail!("Unknown register value: {x:?}"),
+    })
+}
+
+fn parse_register(reg: &str) -> iced_x86::Register {
+    try_parse_register(reg).unwrap()
 }

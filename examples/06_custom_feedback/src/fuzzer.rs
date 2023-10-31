@@ -12,6 +12,8 @@ use snapchange::fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer};
 use snapchange::fuzzvm::FuzzVm;
 use snapchange::rng::Rng;
 use snapchange::Execution;
+use snapchange::InputWithMetadata;
+use std::sync::Arc;
 
 use crate::constants;
 
@@ -85,7 +87,7 @@ pub struct MazeFuzzer {
     /// Range `0..corpus.len()`, but we cache it as a `Vec<u32>` here so that we don't allocate for
     /// every call the `schedule_next_input`.
     dist_len: usize,
-    dist: Option<rand::distributions::WeightedIndex<u32>>
+    dist: Option<rand::distributions::WeightedIndex<u32>>,
 }
 
 impl Fuzzer for MazeFuzzer {
@@ -94,7 +96,11 @@ impl Fuzzer for MazeFuzzer {
     const MAX_INPUT_LENGTH: usize = 1024;
     const MAX_MUTATIONS: u64 = 4;
 
-    fn set_input(&mut self, input: &Self::Input, fuzzvm: &mut FuzzVm<Self>) -> Result<()> {
+    fn set_input(
+        &mut self,
+        input: &InputWithMetadata<Self::Input>,
+        fuzzvm: &mut FuzzVm<Self>,
+    ) -> Result<()> {
         // although the WasdArray should never be too long, we truncate here again anyway.
         let i = input.data.len().min(Self::MAX_INPUT_LENGTH - 1);
         // then we write the array data.
@@ -229,11 +235,11 @@ impl Fuzzer for MazeFuzzer {
 
     fn schedule_next_input(
         &mut self,
-        corpus: &[Self::Input],
+        corpus: &[Arc<InputWithMetadata<Self::Input>>],
         _feedback: &mut snapchange::feedback::FeedbackTracker,
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
-    ) -> Self::Input {
+    ) -> InputWithMetadata<Self::Input> {
         // bring trait in scope
         use rand::distributions::Distribution;
 
@@ -264,7 +270,7 @@ impl Fuzzer for MazeFuzzer {
         let idx = self.dist.as_ref().unwrap().sample(rng) as usize;
         assert!(idx < corpus.len());
         // we can safely unwrap here, because corpus.len() > 0 and idx < corpus.len()
-        corpus.get(idx).unwrap().clone()
+        corpus.get(idx).unwrap().fork()
     }
 }
 
@@ -326,19 +332,19 @@ impl snapchange::FuzzInput for WasdArray {
     }
 
     fn generate(
-        _corpus: &[Self],
+        _corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         _dictionary: &Option<Vec<Vec<u8>>>,
         _max_length: usize,
-    ) -> Self {
+    ) -> InputWithMetadata<Self> {
         // Start with a random new direction
         let d: Wasd = rng.gen();
-        WasdArray { data: vec![d] }
+        InputWithMetadata::from_input(WasdArray { data: vec![d] })
     }
 
     fn mutate(
         input: &mut Self,
-        corpus: &[Self],
+        corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         _dictionary: &Option<Vec<Vec<u8>>>,
         max_length: usize,
@@ -424,7 +430,7 @@ impl snapchange::FuzzInput for WasdArray {
                     Splice => {
                         if !corpus.is_empty() {
                             let corpus_idx = rng.gen_range(0..corpus.len());
-                            let other = &corpus[corpus_idx].data;
+                            let other = &corpus[corpus_idx].input.data;
                             if !other.is_empty() {
                                 let other_start = if other.len() == 1 {
                                     0

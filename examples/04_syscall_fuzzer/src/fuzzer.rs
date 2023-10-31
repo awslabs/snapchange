@@ -8,12 +8,14 @@ use anyhow::Result;
 use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::Arc;
 use thiserror::Error;
 
 use snapchange::addrs::{Cr3, VirtAddr};
 use snapchange::fuzzer::{AddressLookup, Fuzzer};
 use snapchange::fuzzvm::FuzzVm;
 use snapchange::rng::Rng;
+use snapchange::InputWithMetadata;
 
 use crate::constants;
 
@@ -392,7 +394,11 @@ impl Fuzzer for Example04Fuzzer {
         Ok(())
     }
 
-    fn set_input(&mut self, input: &Self::Input, fuzzvm: &mut FuzzVm<Self>) -> Result<()> {
+    fn set_input(
+        &mut self,
+        input: &InputWithMetadata<Self::Input>,
+        fuzzvm: &mut FuzzVm<Self>,
+    ) -> Result<()> {
         let _ = input.write(fuzzvm, self);
 
         Ok(())
@@ -414,7 +420,7 @@ impl Fuzzer for Example04Fuzzer {
 
     fn handle_crash(
         &self,
-        input: &Self::Input,
+        input: &InputWithMetadata<Self::Input>,
         _fuzzvm: &mut FuzzVm<Self>,
         crash_file: &Path,
     ) -> Result<()> {
@@ -450,13 +456,13 @@ impl snapchange::FuzzInput for Syscalls {
     /// maximum length of `max_length`
     fn mutate(
         input: &mut Self,
-        corpus: &[Self],
+        corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
         max_length: usize,
         _max_mutations: u64,
     ) -> Vec<String> {
-        *input = Syscalls::generate(corpus, rng, dictionary, max_length);
+        *input = Syscalls::generate(corpus, rng, dictionary, max_length).input;
 
         // Return an empty set of mutations
         Vec::new()
@@ -464,11 +470,11 @@ impl snapchange::FuzzInput for Syscalls {
 
     /// Generate a random version of this type
     fn generate(
-        _corpus: &[Self],
+        _corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         _dictionary: &Option<Vec<Vec<u8>>>,
         _max_length: usize,
-    ) -> Self {
+    ) -> InputWithMetadata<Self> {
         let mut res = Vec::new();
 
         res.push(Syscall::FsOpen {
@@ -487,7 +493,7 @@ impl snapchange::FuzzInput for Syscalls {
             });
         }
 
-        Syscalls { data: res }
+        InputWithMetadata::from_input(Syscalls { data: res })
     }
 
     /// Minimize the given `input` based on a minimization strategy

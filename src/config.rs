@@ -23,10 +23,10 @@ pub struct Config {
 /// Configurations settings specific for statistics gathering
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Stats {
-    /// Length of timer, in milliseconds, for the coverage to be collected from and
+    /// Length of timer, in milliseconds, for the corpus to be collected from and
     /// redistributed to the worker cores
-    #[serde(default = "default_merge_coverage_timer")]
-    pub merge_coverage_timer: Duration,
+    #[serde(default = "default_merge_corpus_timer")]
+    pub merge_corpus_timer: Duration,
 
     /// Maximum size of the new corpus handed to each core while distributing
     /// the main corpus
@@ -64,26 +64,27 @@ pub struct Redqueen {
     /// can be applied is more than this threshold
     pub entropy_threshold: usize,
 
-    /// A core exits the redqueen implementation if it exceeds this timeout
-    pub timeout: Duration,
-
     /// Number of cores that can trigger redqueen
     pub cores: u64,
+
+    /// Use redqueen rules during random mutations
+    #[serde(default = "default_mutate_by_redqueen_rules")]
+    pub mutate_by_redqueen_rules: bool,
 }
 
 const fn default_maximum_total_corpus_percentage_sync() -> u8 {
-    50
+    80
 }
 
 const fn default_minimum_total_corpus_percentage_sync() -> u8 {
-    10
+    40
 }
 
 const fn default_maximum_new_corpus_size() -> usize {
-    250
+    5000
 }
 
-const fn default_merge_coverage_timer() -> Duration {
+const fn default_merge_corpus_timer() -> Duration {
     Duration::from_secs(60)
 }
 
@@ -97,6 +98,10 @@ const fn default_coverage_sync() -> Duration {
 
 const fn default_guest_memory_size() -> u64 {
     5 * 1024 * 1024 * 1024
+}
+
+const fn default_mutate_by_redqueen_rules() -> bool {
+    false
 }
 
 impl std::default::Default for Config {
@@ -113,7 +118,7 @@ impl std::default::Default for Config {
 impl std::default::Default for Stats {
     fn default() -> Self {
         Self {
-            merge_coverage_timer: default_merge_coverage_timer(),
+            merge_corpus_timer: default_merge_corpus_timer(),
             stats_sync_timer: default_stats_sync(),
             coverage_sync_timer: default_coverage_sync(),
             maximum_new_corpus_size: default_maximum_new_corpus_size(),
@@ -127,9 +132,9 @@ impl std::default::Default for Stats {
 impl std::default::Default for Redqueen {
     fn default() -> Self {
         Self {
-            entropy_threshold: 100,
-            timeout: Duration::from_secs(2),
-            cores: 8,
+            entropy_threshold: 10,
+            cores: 4,
+            mutate_by_redqueen_rules: false,
         }
     }
 }

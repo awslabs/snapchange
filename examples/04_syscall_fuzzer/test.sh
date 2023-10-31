@@ -14,7 +14,7 @@ example4() {
 
   # Start the fuzzers
   echo "Begin fuzzing!"
-  timeout 60s cargo run -r -- fuzz -c 8 --ascii-stats 2>/dev/null >/dev/null &
+  cargo run -r -- fuzz -c 8 --ascii-stats --stop-after-first-crash --stop-after-time 1m 2>/dev/null >/dev/null &
 
   # If we find a crash early, kill the fuzzer
   PID=$!
@@ -42,7 +42,6 @@ example4() {
   else 
     echo -e "\e[32mExample 04 SUCCESS!\e[0m"
   fi
-
 }
 
 example4

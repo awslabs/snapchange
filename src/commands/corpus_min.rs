@@ -16,7 +16,7 @@ use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
 
 use crate::config::Config;
-use crate::fuzz_input::FuzzInput;
+use crate::fuzz_input::{FuzzInput, InputWithMetadata};
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::{FuzzVm, FuzzVmExit};
 use crate::memory::Memory;
@@ -137,6 +137,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
             let covbp_bytes = covbp_bytes.clone();
             let timeout = args.timeout.clone();
             let clean_snapshot = clean_snapshot.clone();
+            let project_dir = project_state.path.clone();
 
             // Start executing on this core
             let t = std::thread::spawn(move || {
@@ -155,6 +156,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
                     paths,
                     path_index,
                     ending_index,
+                    &project_dir,
                 )
             });
 
@@ -285,6 +287,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     paths: Arc<Vec<PathBuf>>,
     path_index: Arc<AtomicUsize>,
     ending_index: usize,
+    project_dir: &PathBuf,
 ) -> Result<BTreeMap<usize, BTreeSet<u64>>> {
     // Store the thread ID of this thread used for passing the SIGALRM to this thread
     let thread_id = unsafe { libc::pthread_self() };
@@ -306,7 +309,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     );
 
     #[cfg(feature = "redqueen")]
-    let redqueen_rules = BTreeMap::new();
+    let redqueen_breakpoints = None;
 
     // Create a 64-bit VM for fuzzing
     let mut fuzzvm = FuzzVm::<FUZZER>::create(
@@ -323,7 +326,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         config,
         crate::stack_unwinder::StackUnwinders::default(),
         #[cfg(feature = "redqueen")]
-        redqueen_rules,
+        redqueen_breakpoints,
     )?;
 
     let start = std::time::Instant::now();
@@ -357,20 +360,21 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         // Initialize variables needed for this run
         let mut execution = Execution::Continue;
         let mut coverage = BTreeSet::new();
-        let mut perf = crate::fuzzvm::VmRunPerf::default();
 
         // Get the current input to gather coverage for
         let input_case = &paths[curr_index];
 
         // Restore all of the known coverage
-        let Some(cov_bps) = fuzzvm.coverage_breakpoints.take() else { unreachable!() };
+        let Some(cov_bps) = fuzzvm.coverage_breakpoints.take() else {
+            unreachable!()
+        };
         for (addr, _byte) in cov_bps.iter() {
             fuzzvm.write_bytes_dirty(*addr, fuzzvm.cr3(), &[0xcc])?;
         }
         fuzzvm.coverage_breakpoints = Some(cov_bps);
 
         // Get the input to trace
-        let input = FUZZER::Input::from_bytes(&std::fs::read(input_case)?)?;
+        let input = InputWithMetadata::from_path(input_case, project_dir)?;
 
         // Set the input into the VM as per the fuzzer
         fuzzer.set_input(&input, &mut fuzzvm)?;
@@ -383,7 +387,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
             }
 
             // Execute the VM
-            let ret = fuzzvm.run(&mut perf)?;
+            let ret = fuzzvm.run()?;
 
             if let FuzzVmExit::CoverageBreakpoint(rip) = ret {
                 coverage.insert(rip);

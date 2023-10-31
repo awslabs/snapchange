@@ -14,7 +14,7 @@ use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
 
 use crate::config::Config;
-use crate::fuzz_input::FuzzInput;
+use crate::fuzz_input::{FuzzInput, InputWithMetadata};
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::{FuzzVm, FuzzVmExit};
 use crate::memory::Memory;
@@ -41,6 +41,7 @@ fn start_core<FUZZER: Fuzzer>(
     files: Arc<Vec<PathBuf>>,
     finished: Arc<AtomicBool>,
     wanted_virt_addr: VirtAddr,
+    project_dir: &PathBuf,
 ) -> Result<Vec<PathBuf>> {
     // Store the thread ID of this thread used for passing the SIGALRM to this thread
     let thread_id = unsafe { libc::pthread_self() };
@@ -62,7 +63,7 @@ fn start_core<FUZZER: Fuzzer>(
     );
 
     #[cfg(feature = "redqueen")]
-    let redqueen_rules = BTreeMap::new();
+    let redqueen_breakpoints = None;
 
     // Create a 64-bit VM for fuzzing
     let mut fuzzvm = FuzzVm::create(
@@ -79,7 +80,7 @@ fn start_core<FUZZER: Fuzzer>(
         config,
         StackUnwinders::default(),
         #[cfg(feature = "redqueen")]
-        redqueen_rules,
+        redqueen_breakpoints,
     )?;
 
     log::info!("Tracing timeout: {:?}", vm_timeout);
@@ -97,6 +98,8 @@ fn start_core<FUZZER: Fuzzer>(
         // If we are tracing an input, set that input in the guest
         let input = <FUZZER::Input as FuzzInput>::from_bytes(&std::fs::read(input_path)?)?;
 
+        let input = InputWithMetadata::from_path(input_path, &project_dir)?;
+
         // Reset the guest state
         let _guest_reset_perf = fuzzvm.reset_guest_state(&mut fuzzer)?;
 
@@ -112,9 +115,6 @@ fn start_core<FUZZER: Fuzzer>(
         // Set the input into the VM as per the fuzzer
         fuzzer.set_input(&input, &mut fuzzvm)?;
 
-        // Initialize the performance counters for executing a VM
-        let mut perf = crate::fuzzvm::VmRunPerf::default();
-
         // Top of the run iteration loop for the current fuzz case
         loop {
             // Reset the VM if the vmexit handler says so
@@ -123,7 +123,7 @@ fn start_core<FUZZER: Fuzzer>(
             }
 
             // Execute the VM
-            let ret = fuzzvm.run(&mut perf)?;
+            let ret = fuzzvm.run()?;
 
             // If we caught a breakpoint containing the requested address or symbol, save this file
             // and try the next file
@@ -253,6 +253,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
 
         let timeout = args.timeout;
         let vbcpu = project_state.vbcpu;
+        let project_dir = project_state.path.clone();
 
         let curr_symbols = std::mem::take(&mut starting_symbols[id]);
         let config = std::mem::take(&mut starting_configs[id]);
@@ -281,6 +282,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
                 files,
                 finished,
                 wanted_virt_addr,
+                &project_dir,
             )
         });
 
@@ -291,7 +293,9 @@ pub(crate) fn run<FUZZER: Fuzzer>(
 
     for t in threads {
         let res = t.join();
-        let Ok(Ok(files)) = res else { continue; };
+        let Ok(Ok(files)) = res else {
+            continue;
+        };
 
         for file in files {
             found.insert(file);

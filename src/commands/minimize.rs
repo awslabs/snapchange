@@ -4,7 +4,7 @@ use rustc_hash::FxHashSet;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::os::unix::io::AsRawFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -14,7 +14,7 @@ use kvm_ioctls::VmFd;
 
 use crate::cmdline::{self, MinimizeCodeCovLevel};
 use crate::config::Config;
-use crate::fuzz_input::FuzzInput;
+use crate::fuzz_input::{FuzzInput, InputWithMetadata};
 use crate::fuzzer::{BreakpointType, Fuzzer};
 use crate::fuzzvm::FuzzVm;
 use crate::memory::Memory;
@@ -54,11 +54,12 @@ fn start_core<FUZZER: Fuzzer>(
     symbols: &Option<VecDeque<Symbol>>,
     symbol_reset_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
     coverage_breakpoints: Option<FxHashSet<VirtAddr>>,
-    input_case: &Path,
+    input_case: &PathBuf,
     vm_timeout: Duration,
     max_iterations: u32,
     config: Config,
     min_params: MinimizerConfig,
+    project_dir: &PathBuf,
 ) -> Result<()> {
     // Use the current fuzzer
     let mut fuzzer = FUZZER::default();
@@ -82,7 +83,7 @@ fn start_core<FUZZER: Fuzzer>(
     core_affinity::set_for_current(core_id);
 
     #[cfg(feature = "redqueen")]
-    let redqueen_rules = BTreeMap::new();
+    let redqueen_breakpoints = None;
 
     if min_params.codecov_level == MinimizeCodeCovLevel::Hitcounts
         || min_params.codecov_level == MinimizeCodeCovLevel::BasicBlock
@@ -139,20 +140,22 @@ fn start_core<FUZZER: Fuzzer>(
         config,
         StackUnwinders::default(),
         #[cfg(feature = "redqueen")]
-        redqueen_rules,
+        redqueen_breakpoints,
     )?;
 
     log::info!("Minimize timeout: {:?}", vm_timeout);
 
     // Get the initial input
-    let input_bytes = std::fs::read(input_case)?;
-    let starting_input = <FUZZER::Input as FuzzInput>::from_bytes(&input_bytes)?;
-    let mut input = starting_input.clone();
 
+    let input_bytes = std::fs::read(&input_case)?;
     let start_input_size = input_bytes.len();
 
+    let starting_input: InputWithMetadata<FUZZER::Input> =
+        InputWithMetadata::from_path(input_case, project_dir)?;
+    let mut input = starting_input.fork();
+
     // Initialize the performance counters for executing a VM
-    let (orig_execution, mut orig_feedback, _) = fuzzvm.gather_feedback(
+    let (orig_execution, mut orig_feedback) = fuzzvm.gather_feedback(
         &mut fuzzer,
         &starting_input,
         vm_timeout,
@@ -259,14 +262,14 @@ fn start_core<FUZZER: Fuzzer>(
         }
 
         // Clone a new input for this minimization run
-        let mut curr_input = time!(InputClone, { input.clone() });
+        let mut curr_input = time!(InputClone, { input.fork() });
 
         // Minimize the input based on the Input type
         time!(InputMinimize, {
             FUZZER::Input::minimize(&mut curr_input, &mut rng);
         });
 
-        let (execution, mut feedback, _) = time!(
+        let (execution, mut feedback) = time!(
             RunInput,
             fuzzvm.gather_feedback(&mut fuzzer, &curr_input, vm_timeout, &covbps_addrs, bp_type)?
         );
@@ -334,8 +337,7 @@ fn start_core<FUZZER: Fuzzer>(
         return Ok(());
     }
 
-    let mut result_bytes = Vec::new();
-    input.to_bytes(&mut result_bytes)?;
+    let mut result_bytes = input.input_as_bytes()?;
 
     // Write the minimized file
     log::info!(
@@ -444,6 +446,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         args.iterations_per_stage,
         project_state.config.clone(),
         minparams,
+        &project_state.path,
     )?;
 
     // Success

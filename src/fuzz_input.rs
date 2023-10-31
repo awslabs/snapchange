@@ -4,20 +4,27 @@
 use crate::cmp_analysis::RedqueenRule;
 
 #[cfg(feature = "redqueen")]
-use crate::cmp_analysis::RedqueenRule::{SingleF32, SingleU16, SingleU32, SingleU64, SingleU8};
+use crate::cmp_analysis::RedqueenCoverage;
 
 use crate::expensive_mutators;
+use crate::feedback::{FeedbackLog, FeedbackTracker};
+use crate::fuzzvm::FuzzVm;
 use crate::mutators;
 use crate::rng::Rng;
-use crate::feedback::FeedbackLog;
+use crate::{Fuzzer, VirtAddr};
 
 use anyhow::Result;
-use rand::{Rng as _, RngCore};
+use rand::{Fill, Rng as _, RngCore};
+use rustc_hash::FxHashSet;
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_hex::{CompactPfx, SerHex};
+use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 /// An abstract input used in fuzzing. This trait provides methods for mutating, generating, and
 /// minimizing an input. This trait also has required methods for enabling Redqueen analysis
@@ -29,7 +36,7 @@ pub trait FuzzInput:
     #[allow(clippy::type_complexity)]
     type MutatorFunc = fn(
         input: &mut Self,
-        corpus: &[Self],
+        corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
     ) -> Option<String>;
@@ -53,11 +60,12 @@ pub trait FuzzInput:
     /// mutation
     fn mutate(
         input: &mut Self,
-        corpus: &[Self],
+        corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
         max_length: usize,
         max_mutations: u64,
+        #[cfg(feature = "redqueen")] redqueen_rules: Option<&FxHashSet<RedqueenRule>>,
     ) -> Vec<String>;
 
     /// Basic mutators available to mutate this fuzzer's input
@@ -75,11 +83,11 @@ pub trait FuzzInput:
 
     /// Generate a random version of this type
     fn generate(
-        corpus: &[Self],
+        corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
         max_length: usize,
-    ) -> Self;
+    ) -> InputWithMetadata<Self>;
 
     /// Minimize the given `input` based on a minimization strategy
     fn minimize(_input: &mut Self, _rng: &mut Rng) {
@@ -109,10 +117,15 @@ pub trait FuzzInput:
         panic!("Redqueen not implemented for this type. Please impl `apply_redqueen_rule`");
     }
 
-    /// Replace all instances of the `left` side of the given rule with random bytes
+    /// Upper bound for the ranges produced during increasing entropy for redqueen
+    fn entropy_limit(&self) -> usize {
+        panic!("Redqueen not implemented for this type. Please impl `entropy_limit`");
+    }
+
+    /// Increase entropy of the input between the given start and end values
     #[cfg(feature = "redqueen")]
-    fn increase_redqueen_entropy(&mut self, _rule: &RedqueenRule, _rng: &mut Rng) {
-        panic!("Redqueen not implemented for this type. Please impl `increase_redqueen_entropy`");
+    fn increase_entropy(&mut self, _rng: &mut Rng, _start: usize, _end: usize) -> Result<()> {
+        panic!("Redqueen not implemented for this type. Please impl `increase_entropy`");
     }
 
     /// Get a list of all of the `RuleCandidate`s that the given `rule` can be applied to. These
@@ -124,11 +137,20 @@ pub trait FuzzInput:
             "Redqueen not implemented for this type. Please impl `get_redqueen_rule_candidates`"
         );
     }
+
+    /// Returns true if the given rule can be applied to this input. Used as a fast path instead of
+    /// using get_redqueen_rule_candidates.
+    #[cfg(feature = "redqueen")]
+    fn has_redqueen_rule_candidates(&self, _rule: &RedqueenRule) -> bool {
+        panic!(
+            "Redqueen not implemented for this type. Please impl `has_redqueen_rule_candidates`"
+        );
+    }
 }
 
 impl FuzzInput for Vec<u8> {
     #[cfg(feature = "redqueen")]
-    type RuleCandidate = (usize, Endian, RedqueenRule);
+    type RuleCandidate = (usize, Endian);
 
     fn from_bytes(bytes: &[u8]) -> Result<Self> {
         Ok(bytes.to_vec())
@@ -143,11 +165,12 @@ impl FuzzInput for Vec<u8> {
 
     fn mutate(
         input: &mut Self,
-        corpus: &[Self],
+        corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
         max_length: usize,
         max_mutations: u64,
+        #[cfg(feature = "redqueen")] redqueen_rules: Option<&FxHashSet<RedqueenRule>>,
     ) -> Vec<String> {
         // Get the number of changes to make to the input
         let num_change = (rng.next_u64() % max_mutations).max(1);
@@ -157,6 +180,42 @@ impl FuzzInput for Vec<u8> {
 
         // Perform some number of mutations on the input
         for _ in 0..num_change {
+            // Special case the redqueen mutation if there are available rules
+            #[cfg(feature = "redqueen")]
+            if let Some(rules) = redqueen_rules {
+                let total_mutators = Self::mutators().len() + Self::expensive_mutators().len();
+
+                if !rules.is_empty() && rng.gen::<usize>() % total_mutators == 0 {
+                    // Select one of the redqueen rules
+                    let rule_index = rng.gen::<usize>() % rules.len();
+                    let Some(curr_rule) = rules.iter().nth(rule_index) else {
+                        continue;
+                    };
+
+                    // Select one of the possible locations in the input to apply this rule
+                    let candidates = input.get_redqueen_rule_candidates(curr_rule);
+                    if candidates.is_empty() {
+                        /*
+                        log::warn!(
+                            "Found no candidates for this rule: {:#x} {curr_rule:x?}",
+                            input.fuzz_hash()
+                        );
+                        */
+                        continue;
+                    }
+
+                    let candidate_index = rng.gen::<usize>() % candidates.len();
+                    let curr_candidate = &candidates[candidate_index];
+
+                    // Apply the redqueen rule to the current input
+                    if let Some(mutation) = input.apply_redqueen_rule(&curr_rule, curr_candidate) {
+                        mutations.push(format!("RQ_MUTATE_{mutation}"));
+                    }
+
+                    continue;
+                }
+            }
+
             // Choose which mutators to use for this mutation. Expensive mutators are
             // harder to hit since they are a bit more costly
             let curr_mutators = if rng.next_u64() % max_mutations * 5 == 0 {
@@ -185,46 +244,22 @@ impl FuzzInput for Vec<u8> {
     #[cfg(feature = "redqueen")]
     fn apply_redqueen_rule(
         &mut self,
-        _rule: &RedqueenRule,
+        rule: &RedqueenRule,
         candidate: &Self::RuleCandidate,
     ) -> Option<String> {
-        let (index, endian, rule) = candidate;
+        let (index, endian) = candidate;
 
-        /// Write the given `to` bytes into `self` at `index`
-        macro_rules! apply_rule {
-            ($ty:ty, $from:expr, $to:expr) => {{
-                let size = std::mem::size_of::<$ty>();
-
-                let bytes = match endian {
-                    Endian::Little => $to.to_le_bytes(),
-                    Endian::Big => $to.to_be_bytes(),
-                };
+        match rule {
+            RedqueenRule::Primitive(_from, to) => {
+                let size = to.len();
 
                 // Ensure we can actually fit the rule in the current input
                 if *index + size >= self.len() {
                     return None;
                 }
 
-                self[*index..*index + size].copy_from_slice(&bytes);
-                Some(format!("{rule:x?}_offset_{index:#x}"))
-            }};
-        }
-
-        match rule {
-            RedqueenRule::SingleU128(_from, to) => {
-                apply_rule!(u128, from, to)
-            }
-            RedqueenRule::SingleU64(_from, to) => {
-                apply_rule!(u64, from, to)
-            }
-            RedqueenRule::SingleU32(_from, to) => {
-                apply_rule!(u32, from, to)
-            }
-            RedqueenRule::SingleU16(_from, to) => {
-                apply_rule!(u16, from, to)
-            }
-            RedqueenRule::SingleU8(_from, to) => {
-                apply_rule!(u8, from, to)
+                self[*index..*index + size].copy_from_slice(&to.as_bytes());
+                Some(format!("{to:x?}_offset_{index:#x}"))
             }
             RedqueenRule::SingleF32(_from, to) => {
                 let size = to.len();
@@ -235,7 +270,7 @@ impl FuzzInput for Vec<u8> {
                 }
 
                 self[*index..*index + size].copy_from_slice(to);
-                Some(format!("{rule:x?}_offset_{index:#x}"))
+                Some(format!("f32_{to:x?}_offset_{index:#x}"))
             }
             RedqueenRule::SingleF64(_from, to) => {
                 let size = to.len();
@@ -246,15 +281,17 @@ impl FuzzInput for Vec<u8> {
                 }
 
                 self[*index..*index + size].copy_from_slice(to);
-                Some(format!("{rule:x?}_offset_{index:#x}"))
+                Some(format!("f64_{to:x?}_offset_{index:#x}"))
             }
             RedqueenRule::Bytes(from, to) => {
                 let index: usize = *index;
 
-                if to.len() == from.len() {
+                let len = if to.len() == from.len() {
                     // Both from and to are the same size, directly copy the bytes
                     let size = to.len();
-                    self[index..index + size].copy_from_slice(to);
+                    self[index..index + size].copy_from_slice(&to);
+
+                    to.len()
                 } else {
                     // If the "to" bytes is longer than the "from" needle, splice the "to" bytes
                     // where the from needle was
@@ -268,73 +305,28 @@ impl FuzzInput for Vec<u8> {
 
                     let mut new_self = vec![0_u8; new_length];
                     new_self[..index].copy_from_slice(&self[..index]);
-                    new_self[index..index + to.len()].copy_from_slice(to);
+                    new_self[index..index + to.len()].copy_from_slice(&to);
                     new_self[index + to.len()..].copy_from_slice(&self[index + from.len()..]);
                     *self = new_self;
-                }
 
-                Some(format!("Bytes_offset_{index:#x}"))
+                    new_length
+                };
+
+                Some(format!("Bytes_offset_{index:#x}_len_{len:#x}"))
             }
         }
     }
 
-    /// Replace all instances of the `left` side of the given rule with random bytes
+    #[cfg(feature = "redqueen")]
+    fn entropy_limit(&self) -> usize {
+        self.len()
+    }
+
     #[allow(clippy::cast_possible_truncation, clippy::doc_markdown)]
     #[cfg(feature = "redqueen")]
-    fn increase_redqueen_entropy(&mut self, rule: &RedqueenRule, rng: &mut Rng) {
-        /// If `needle` is found in the current bytes, replace that needle with random bytes
-        /// in order to attempt to uniquely identify this particular location and reduce the
-        /// number of candidates to apply when using redqueen
-        ///
-        /// Example:
-        /// Input:     aaaabaaacaaadaaa
-        /// Needle:    aa
-        /// New Input: AQRWbIOacMDad9N
-        macro_rules! entropy_rule {
-            ($ty:ty, $size:literal, $needle:expr) => {{
-                for i in 0..self.len() - $size {
-                    if self[i..i + $size] == $needle.to_le_bytes() {
-                        self[i..i + $size].copy_from_slice(&(rng.next() as $ty).to_le_bytes());
-                    }
-
-                    if $needle.to_le_bytes() != $needle.to_be_bytes() {
-                        if self[i..i + $size] == $needle.to_be_bytes() {
-                            self[i..i + $size].copy_from_slice(&(rng.next() as $ty).to_le_bytes());
-                        }
-                    }
-                }
-            }};
-        }
-
-        // Apply each rule by randomly setting the needle (left operand)
-        match rule {
-            RedqueenRule::SingleU128(needle, _) => {
-                entropy_rule!(u128, 0x10, needle);
-            }
-            RedqueenRule::SingleU64(needle, _) => {
-                entropy_rule!(u64, 8, needle);
-            }
-            RedqueenRule::SingleU32(needle, _) => {
-                entropy_rule!(u32, 4, needle);
-            }
-            RedqueenRule::SingleU16(needle, _) => {
-                entropy_rule!(u16, 2, needle);
-            }
-            RedqueenRule::SingleU8(needle, _) => {
-                entropy_rule!(u8, 1, needle);
-            }
-            RedqueenRule::SingleF32(needle, _)
-            | RedqueenRule::SingleF64(needle, _)
-            | RedqueenRule::Bytes(needle, _) => {
-                for i in 0..self.len() - needle.len() {
-                    if &self[i..i + needle.len()] == needle.as_slice() {
-                        for curr_byte in 0..needle.len() {
-                            self[i + curr_byte] = rng.next() as u8;
-                        }
-                    }
-                }
-            }
-        }
+    fn increase_entropy(&mut self, rng: &mut Rng, start: usize, end: usize) -> Result<()> {
+        // Randomize these bytes
+        Ok(self[start..end].try_fill(rng)?)
     }
 
     /// Get a list of all of the [`RuleCandidate`]s that the given `rule` can be applied to. These
@@ -348,134 +340,12 @@ impl FuzzInput for Vec<u8> {
     )]
     #[cfg(feature = "redqueen")]
     fn get_redqueen_rule_candidates(&self, rule: &RedqueenRule) -> Vec<Self::RuleCandidate> {
-        let mut candidates = Vec::new();
+        get_redqueen_rule_candidates_for_vec(self, rule, GetRuleMode::All)
+    }
 
-        /// Search for the `orig_from` in the current self and, if found, insert it into
-        /// the list of candidate rules
-        macro_rules! find_needle {
-            ($ty:ty, $orig_from:expr, $orig_to:expr, $rule:expr) => {{
-                const SIZE: usize = std::mem::size_of::<$ty>();
-                let from = $orig_from as $ty;
-                let to = $orig_to as $ty;
-                for i in 0..self.len().saturating_sub(SIZE) {
-                    if self[i..i + SIZE] == from.to_le_bytes() {
-                        candidates.push((i, Endian::Little, $rule));
-                    }
-
-                    // Only look for big endian operand redqueen if big != little endians
-                    if from.to_le_bytes() != from.to_be_bytes() {
-                        if self[i..i + SIZE] == from.to_be_bytes() {
-                            candidates.push((i, Endian::Big, $rule));
-                        }
-                    }
-                }
-            }};
-        }
-
-        // For a given comparison parsed from binja, we can't know which part of the whole number
-        // is being compared
-        //
-        // Example:
-        // EAX - 0x41
-        // EBX - 0xff
-        // cmp eax, ebx
-        //
-        // Is this comparing the u8 values 0x41 to 0xff?
-        // Or the bytes [0x41, 0x00, 0x00, 0x00] with [0xff, 0x00, 0x00, 0x00]?
-        // For this reason, we add all the smaller rules that make up each larger type's rule.
-        // So a u16 comparison will add a u16 rule and a u8 rule,
-        // A u32 comparison will add a u32, u16, and u8 rule, ect.
-        match rule {
-            RedqueenRule::SingleU128(from, to) => {
-                find_needle!(u128, *from, *to, rule.clone());
-                if *from as u64 <= u64::MAX && *to as u64 <= u64::MAX {
-                    find_needle!(u64, *from, *to, SingleU64(*from as u64, *to as u64));
-                    if *from as u32 <= u32::MAX && *to as u32 <= u32::MAX {
-                        find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
-                        if *from as u16 <= u16::MAX && *to as u16 <= u16::MAX {
-                            find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
-                            if *from as u8 <= u8::MAX && *to as u8 <= u8::MAX {
-                                find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
-                            }
-                        }
-                    }
-                }
-            }
-            RedqueenRule::SingleU64(from, to) => {
-                find_needle!(u64, *from, *to, rule.clone());
-                if *from as u32 <= u32::MAX && *to as u32 <= u32::MAX {
-                    find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
-                    if *from as u16 <= u16::MAX && *to as u16 <= u16::MAX {
-                        find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
-                        if *from as u8 <= u8::MAX && *to as u8 <= u8::MAX {
-                            find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
-                        }
-                    }
-                }
-            }
-            RedqueenRule::SingleU32(from, to) => {
-                find_needle!(u32, *from, *to, SingleU32(*from as u32, *to as u32));
-                if *from as u16 <= u16::MAX && *to as u16 <= u16::MAX {
-                    find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
-                    if *from as u8 <= u8::MAX && *to as u8 <= u8::MAX {
-                        find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
-                    }
-                }
-            }
-            RedqueenRule::SingleU16(from, to) => {
-                find_needle!(u16, *from, *to, SingleU16(*from as u16, *to as u16));
-                if *from as u8 <= u8::MAX && *to as u8 <= u8::MAX {
-                    find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
-                }
-            }
-            RedqueenRule::SingleU8(from, to) => {
-                find_needle!(u8, *from, *to, SingleU8(*from as u8, *to as u8));
-            }
-            RedqueenRule::SingleF32(from, to) => {
-                if self.len() >= from.len() {
-                    for i in 0..self.len().saturating_sub(from.len() - 1) {
-                        if &self[i..i + from.len()] == from.as_slice() {
-                            candidates.push((i, Endian::Little, rule.clone()));
-                        }
-                    }
-                }
-            }
-            RedqueenRule::SingleF64(from, to) => {
-                if self.len() >= from.len() {
-                    for i in 0..self.len().saturating_sub(from.len() - 1) {
-                        if &self[i..i + from.len()] == from.as_slice() {
-                            candidates.push((i, Endian::Little, rule.clone()));
-                        }
-                    }
-                }
-
-                assert!(from.len() == 8 && to.len() == 8);
-                let from_dword = from[..4].to_vec();
-                let to_dword = to[..4].to_vec();
-                if self.len() >= from_dword.len() {
-                    for i in 0..self.len().saturating_sub(from_dword.len() - 1) {
-                        if &self[i..i + from_dword.len()] == from_dword.as_slice() {
-                            candidates.push((
-                                i,
-                                Endian::Little,
-                                SingleF32(from[..4].to_vec(), to[..4].to_vec()),
-                            ));
-                        }
-                    }
-                }
-            }
-            RedqueenRule::Bytes(from, to) => {
-                if self.len() >= from.len() {
-                    for i in 0..self.len().saturating_sub(from.len() - 1) {
-                        if &self[i..i + from.len()] == from.as_slice() {
-                            candidates.push((i, Endian::Little, rule.clone()));
-                        }
-                    }
-                }
-            }
-        }
-
-        candidates
+    #[cfg(feature = "redqueen")]
+    fn has_redqueen_rule_candidates(&self, rule: &RedqueenRule) -> bool {
+        get_redqueen_rule_candidates_for_vec(self, rule, GetRuleMode::Fast).len() > 0
     }
 
     /// Current mutators available for mutation
@@ -506,14 +376,14 @@ impl FuzzInput for Vec<u8> {
 
     /// Generate a random `Vec<u8>` of `max_length` size
     fn generate(
-        _corpus: &[Self],
+        _corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         _dictionary: &Option<Vec<Vec<u8>>>,
         max_length: usize,
-    ) -> Self {
+    ) -> InputWithMetadata<Self> {
         let mut result = vec![0u8; max_length];
         rng.fill_bytes(&mut result);
-        result
+        InputWithMetadata::from_input(result)
     }
 
     /// Minimize a `Vec<u8>` with a variety of different techniques
@@ -567,11 +437,128 @@ impl FuzzInput for Vec<u8> {
                     let offset = rng.gen::<usize>() % curr_input_len;
 
                     // Found a newly replaced byte, replace it
-                    input[offset] = redqueen_byte;
+                    // input[offset] = redqueen_byte;
+                    input[offset] = rng.gen::<u8>();
                 }
             }
         }
     }
+}
+
+/// The mode to get redqueen rule candidates for Vec<u8>
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum GetRuleMode {
+    /// Return from the function after the first found candidate
+    Fast,
+
+    /// Return after all candidates are found
+    All,
+}
+
+/// Get the rule candidates for a Vec<u8>. If fast, return the candidates on the first found
+/// candidate.
+#[cfg(feature = "redqueen")]
+fn get_redqueen_rule_candidates_for_vec(
+    input: &Vec<u8>,
+    rule: &RedqueenRule,
+    mode: GetRuleMode,
+) -> Vec<<Vec<u8> as FuzzInput>::RuleCandidate> {
+    let mut candidates = Vec::new();
+
+    let fast = matches!(mode, GetRuleMode::Fast);
+
+    match rule {
+        RedqueenRule::Primitive(from, to) => {
+            // Use the minimum number of bytes to compare values (removing the leading zeros)
+            let from_min_bytes = from.minimum_bytes();
+            let to_min_bytes = to.minimum_bytes();
+
+            let size = from_min_bytes.max(to_min_bytes);
+            let from = &from.as_bytes()[..size];
+            let to = &to.as_bytes()[..size];
+
+            let from_le_bytes = from;
+            let from_be_bytes = from.iter().rev();
+
+            let same_big_endian = from_le_bytes
+                .iter()
+                .zip(from_le_bytes.iter().rev())
+                .all(|(x, y)| *x == *y);
+
+            for index in 0..input.len().saturating_sub(size) {
+                let curr_window = &input[index..index + size];
+
+                if curr_window == from_le_bytes {
+                    candidates.push((index, Endian::Little));
+                    if fast {
+                        return candidates;
+                    }
+                }
+
+                // Only look for big endian operand redqueen if big != little endians
+                if !same_big_endian {
+                    let from_be_bytes = from.iter().rev();
+                    if curr_window.iter().zip(from_be_bytes).all(|(x, y)| *x == *y) {
+                        candidates.push((index, Endian::Big));
+                        if fast {
+                            return candidates;
+                        }
+                    }
+                }
+            }
+        }
+        RedqueenRule::SingleF32(from, to) => {
+            if input.len() >= from.len() {
+                for i in 0..input.len().saturating_sub(from.len() - 1) {
+                    if &input[i..i + from.len()] == from.as_slice() {
+                        candidates.push((i, Endian::Little));
+                        if fast {
+                            return candidates;
+                        }
+                    }
+                }
+            }
+        }
+        RedqueenRule::SingleF64(from, to) => {
+            if input.len() >= from.len() {
+                for i in 0..input.len().saturating_sub(from.len() - 1) {
+                    if &input[i..i + from.len()] == from {
+                        candidates.push((i, Endian::Little));
+                        if fast {
+                            return candidates;
+                        }
+                    }
+                }
+            }
+
+            /*
+            assert!(from.len() == 8 && to.len() == 8);
+            let from_dword = from[..4].to_vec();
+            let to_dword = to[..4].to_vec();
+            if input.len() >= from_dword.len() {
+                for i in 0..input.len().saturating_sub(from_dword.len() - 1) {
+                    if &input[i..i + from_dword.len()] == from_dword.as_slice() {
+                        candidates.push((i, Endian::Little));
+                    }
+                }
+            }
+            */
+        }
+        RedqueenRule::Bytes(from, to) => {
+            if input.len() >= from.len() {
+                for i in 0..input.len().saturating_sub(from.len() - 1) {
+                    if &input[i..i + from.len()] == from {
+                        candidates.push((i, Endian::Little));
+                        if fast {
+                            return candidates;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    candidates
 }
 
 /// Stages of the minimization process
@@ -605,22 +592,37 @@ pub enum Endian {
     Big,
 }
 
+/// A particular type of new coverage
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum CoverageType {
+    /// Only a new address was found
+    Address(u64),
+
+    /// A new coverage with rflags and hit count provided by redqueen
+    #[cfg(feature = "redqueen")]
+    Redqueen(RedqueenCoverage),
+}
+
 /// Metadata about a crashing input or a new input that found new coverage.
-#[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 pub(crate) struct InputMetadata {
     /// Fuzz hash of the original file used for mutation
     #[serde(with = "SerHex::<CompactPfx>")]
     pub(crate) original_file: u64,
 
     /// Mutatation strategies used on this file
-    pub(crate) mutation: Vec<String>,
+    pub(crate) mutations: Vec<String>,
 
     /// New coverage blocks hit by this input
     pub(crate) new_coverage: Vec<FeedbackLog>,
+
+    /// Is this input the result of increased entropy
+    pub(crate) entropy: bool,
 }
 
+/*
 /// Custom serialize for Vec<u64>
-fn serialize_vec_u64_as_hex<S>(values: &[u64], serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_as_hex<S>(values: &[CoverageType], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -629,8 +631,17 @@ where
     // Begin the sequence of elements
     let mut seq = serializer.serialize_seq(Some(values.len()))?;
 
-    // Serialize each individual element
-    for element in values.iter().map(|x| format!("{x:#x}")) {
+    for value in values {
+        let element = match value {
+            CoverageType::Address(addr) => format!("{addr:#x}"),
+            #[cfg(feature = "redqueen")]
+            CoverageType::Redqueen(RedqueenCoverage {
+                virt_addr,
+                rflags,
+                hit_count,
+            }) => format!("{:#x}|{rflags:#x}|{hit_count:#x}", virt_addr.0),
+        };
+
         seq.serialize_element(&element)?;
     }
 
@@ -639,20 +650,162 @@ where
 }
 
 /// Custom deserialize for Vec<u64>
-fn deserialize_vec_u64_from_hex<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>
+fn deserialize_from_hex<'de, D>(deserializer: D) -> Result<Vec<CoverageType>, D::Error>
 where
     D: Deserializer<'de>,
 {
     // Get a Vec of hex strings from the deserializer
     let hex: Vec<String> = Deserialize::deserialize(deserializer)?;
 
-    // Convert the hex strings back into u64
+    // Convert the hex strings back into CoverageType
     let data = hex
         .iter()
-        .map(|x| u64::from_str_radix(&x[2..], 16))
-        .collect::<Result<Vec<u64>, _>>()
-        .map_err(serde::de::Error::custom)?;
+        .map(|x| {
+            if let Some([addr, rflags, hit_count]) = x.split(&"|").array_chunks().next() {
+                let virt_addr = u64::from_str_radix(&addr[2..], 16)
+                    .expect("Failed to deserialize virt addr: {addr}");
+                let rflags = u64::from_str_radix(&rflags[2..], 16)
+                    .expect("Failed to deserialize rflags: {rflags}");
+                let hit_count = u32::from_str_radix(&hit_count[2..], 16)
+                    .expect("Failed to deserialize hit_count {hit_count}");
+
+                CoverageType::Redqueen(RedqueenCoverage {
+                    virt_addr: VirtAddr(virt_addr),
+                    rflags,
+                    hit_count,
+                })
+            } else {
+                CoverageType::Address(
+                    u64::from_str_radix(&x[2..], 16).expect("Failed to parse coverage addrss {x}"),
+                )
+            }
+        })
+        .collect::<Vec<_>>();
 
     // Return the result
     Ok(data)
+}
+*/
+
+/// An input tied with metadata about that input
+pub struct InputWithMetadata<T: FuzzInput> {
+    /// The input in question
+    pub input: T,
+
+    /// Metadata about this input
+    pub metadata: RwLock<InputMetadata>,
+}
+impl<T: FuzzInput> std::panic::UnwindSafe for InputWithMetadata<T> {}
+impl<T: FuzzInput> std::panic::RefUnwindSafe for InputWithMetadata<T> {}
+unsafe impl<T: FuzzInput> Send for InputWithMetadata<T> {}
+unsafe impl<T: FuzzInput> Sync for InputWithMetadata<T> {}
+
+impl<T: FuzzInput> std::cmp::PartialEq for InputWithMetadata<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.input == other.input
+    }
+}
+impl<T: FuzzInput> std::cmp::Eq for InputWithMetadata<T> {}
+
+impl<T: FuzzInput> std::hash::Hash for InputWithMetadata<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.input.hash(state);
+        self.metadata.read().unwrap().hash(state);
+    }
+}
+impl<T: FuzzInput> std::default::Default for InputWithMetadata<T> {
+    fn default() -> Self {
+        Self {
+            input: T::default(),
+            metadata: RwLock::new(InputMetadata::default()),
+        }
+    }
+}
+impl<T: FuzzInput> std::ops::Deref for InputWithMetadata<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.input
+    }
+}
+impl<T: FuzzInput> std::ops::DerefMut for InputWithMetadata<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.input
+    }
+}
+
+impl<T: FuzzInput> InputWithMetadata<T> {
+    /// Create an [`InputWithMetadata`] with empty metadata
+    pub fn from_input(input: T) -> Self {
+        Self {
+            input,
+            metadata: RwLock::new(InputMetadata {
+                original_file: 0,
+                mutations: Vec::new(),
+                new_coverage: Vec::new(),
+                entropy: false,
+            }),
+        }
+    }
+
+    /// Read an input from an input's path
+    pub fn from_path(input_path: &PathBuf, project_dir: &PathBuf) -> Result<Self> {
+        let input = T::from_bytes(&std::fs::read(input_path)?)?;
+        let filename = crate::utils::hexdigest(&input);
+
+        let metadata_path = project_dir.join("metadata").join(filename);
+
+        let metadata = if metadata_path.exists() {
+            let data = std::fs::read_to_string(metadata_path)?;
+            serde_json::from_str(&data)?
+        } else {
+            InputMetadata::default()
+        };
+
+        Ok(Self {
+            input,
+            metadata: RwLock::new(metadata),
+        })
+    }
+
+    /// Create a clone of this input with empty metadata and as the original input
+    /// as the parent
+    pub fn fork(&self) -> Self {
+        Self {
+            input: self.input.clone(),
+            metadata: RwLock::new(InputMetadata {
+                original_file: self.input.fuzz_hash(),
+                mutations: Vec::new(),
+                new_coverage: Vec::new(),
+                entropy: false,
+            }),
+        }
+    }
+
+    /// Serialize the input as bytes
+    pub fn input_as_bytes(&self) -> Result<Vec<u8>> {
+        let mut input_bytes: Vec<u8> = vec![];
+        self.input.to_bytes(&mut input_bytes)?;
+        Ok(input_bytes)
+    }
+
+    /// Serialize the metadata as json
+    pub fn serialized_metadata(&self) -> Result<String> {
+        let data = self.metadata.read().unwrap();
+        Ok(serde_json::to_string(&*data)?)
+    }
+
+    /// Get the fuzz_hash of the underlying input
+    pub fn fuzz_hash(&self) -> u64 {
+        self.input.fuzz_hash()
+    }
+
+    /// Set the new coverage for this input
+    pub fn add_new_coverage(&self, mut new_coverage: Vec<FeedbackLog>) {
+        self.metadata
+            .write()
+            .unwrap()
+            .new_coverage
+            .append(&mut new_coverage);
+    }
 }

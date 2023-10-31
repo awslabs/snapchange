@@ -6,7 +6,9 @@
 
 use anyhow::Result;
 use rand::Rng as _;
+use std::sync::Arc;
 
+use snapchange::fuzz_input::InputWithMetadata;
 use snapchange::fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer};
 use snapchange::fuzzvm::FuzzVm;
 use snapchange::linux::{read_args, ReadArgs};
@@ -28,7 +30,11 @@ impl Fuzzer for Example03Fuzzer {
         self.file_offset = 0;
     }
 
-    fn set_input(&mut self, _input: &MovGenerator, _fuzzvm: &mut FuzzVm<Self>) -> Result<()> {
+    fn set_input(
+        &mut self,
+        _input: &InputWithMetadata<Self::Input>,
+        _fuzzvm: &mut FuzzVm<Self>,
+    ) -> Result<()> {
         // There is no set input condition since the input is written via the read
         // breakpoint below
         Ok(())
@@ -46,7 +52,7 @@ impl Fuzzer for Example03Fuzzer {
             Breakpoint {
                 lookup: AddressLookup::SymbolOffset("ffmpeg!__interceptor_read", 0x0),
                 bp_type: BreakpointType::Repeated,
-                bp_hook: |fuzzvm: &mut FuzzVm<Self>, input, fuzzer| {
+                bp_hook: |fuzzvm: &mut FuzzVm<Self>, input, fuzzer, _feedback| {
                     let args = read_args(&fuzzvm);
                     let ReadArgs { fd, buf, count } = args;
 
@@ -540,21 +546,21 @@ impl snapchange::FuzzInput for MovGenerator {
     }
 
     fn generate(
-        corpus: &[Self],
+        corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
         max_length: usize,
-    ) -> Self {
+    ) -> InputWithMetadata<Self> {
         let mut res = MovGenerator::default();
         MovGenerator::mutate(&mut res, corpus, rng, &dictionary, max_length, 8);
-        res
+        InputWithMetadata::from_input(res)
     }
 
     /// Mutate the current object using a `corpus`, `rng`, and `dictionary` that has a
     /// maximum length of `max_length`
     fn mutate(
         input: &mut Self,
-        _corpus: &[Self],
+        _corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         _dictionary: &Option<Vec<Vec<u8>>>,
         _max_length: usize,

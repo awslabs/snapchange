@@ -10,6 +10,7 @@ use snapchange::addrs::{Cr3, VirtAddr};
 use snapchange::fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer};
 use snapchange::fuzzvm::FuzzVm;
 use snapchange::Execution;
+use snapchange::InputWithMetadata;
 
 use crate::constants;
 
@@ -26,7 +27,11 @@ impl Fuzzer for Example1Fuzzer {
     const MAX_INPUT_LENGTH: usize = 16;
     const MAX_MUTATIONS: u64 = 4;
 
-    fn set_input(&mut self, input: &Self::Input, fuzzvm: &mut FuzzVm<Self>) -> Result<()> {
+    fn set_input(
+        &mut self,
+        input: &InputWithMetadata<Self::Input>,
+        fuzzvm: &mut FuzzVm<Self>,
+    ) -> Result<()> {
         // Write the mutated input
         fuzzvm.write_bytes_dirty(VirtAddr(constants::INPUT), CR3, &input)?;
 
@@ -37,7 +42,7 @@ impl Fuzzer for Example1Fuzzer {
         Some(&[Breakpoint {
             lookup: AddressLookup::SymbolOffset("ld-musl-x86_64.so.1!getpid", 0x0),
             bp_type: BreakpointType::Repeated,
-            bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer| {
+            bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer, _feedback| {
                 // Set the return value to 0xdeadbeef
                 fuzzvm.set_rax(0xdead_beef);
 

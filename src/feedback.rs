@@ -15,10 +15,13 @@
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
+
+use std::collections::hash_map::Entry;
 use std::collections::BTreeSet;
 use std::default::Default;
 use std::hash::Hash;
 
+use crate::cmp_analysis::RedqueenCoverage;
 use crate::VirtAddr;
 
 // TODO: maybe we should use the https://crates.io/crates/nohash-hasher crate for the feedback
@@ -33,12 +36,12 @@ pub type CustomFeedback = FxHashSet<u64>;
 
 /// Used to record redqueen feedback
 #[cfg(feature = "redqueen")]
-pub type RedqueenFeedback = BTreeSet<(VirtAddr, u64)>;
+pub type RedqueenFeedback = BTreeSet<RedqueenCoverage>;
 
 /// The [`FeedbackTracker`] keeps track of a log of never-before seen feedback. This is logged for
 /// each execution and can be obtained with [`FeedbackTracker::take_log`]. This enum is used to
 /// distinguish between different entries within the feedback log.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug, Ord, PartialOrd)]
 pub enum FeedbackLog {
     /// Observed new code coverage
     VAddr((VirtAddr, u16)),
@@ -52,8 +55,7 @@ pub enum FeedbackLog {
 
     /// While performing redqueen, observed new RFlags for a given comparison address.
     #[cfg(feature = "redqueen")]
-    #[serde(skip)]
-    Redqueen((VirtAddr, u64)),
+    Redqueen(RedqueenCoverage),
 }
 
 /// AFL introduced a [bucketing mechanism](https://lcamtuf.coredump.cx/afl/technical_details.txt) to avoid filling the corpus/queue with too many similar
@@ -296,6 +298,47 @@ impl FeedbackTracker {
         r
     }
 
+    /// Add all feedback entries from another [`[FeedbackLog]`]. Returns true if a new entry was
+    /// added while merging.
+    pub fn merge_from_log(&mut self, log: &[FeedbackLog]) -> bool {
+        // No need to keep the log around
+        self.ensure_clean();
+
+        for entry in log {
+            match entry {
+                FeedbackLog::VAddr((addr, hitcount)) => {
+                    let curr_hitcount = self.code_cov.entry(*addr).or_insert(0);
+                    if hitcount > curr_hitcount {
+                        self.code_cov.insert(*addr, *hitcount);
+                        self.log.push(FeedbackLog::VAddr((*addr, *hitcount)));
+                    }
+                }
+
+                #[cfg(feature = "custom_feedback")]
+                FeedbackLog::Custom(val) => {
+                    let _new = self.record(*val);
+                }
+
+                /// observed new max value for given tag.
+                #[cfg(feature = "custom_feedback")]
+                FeedbackLog::CustomMax((tag, val)) => {
+                    let _new = self.record_max(*tag, *val);
+                }
+
+                /// while performing redqueen, observed new rflags for a given comparison address.
+                #[cfg(feature = "redqueen")]
+                FeedbackLog::Redqueen(rq_cov) => {
+                    if self.redqueen.insert(*rq_cov) {
+                        self.log.push(FeedbackLog::Redqueen(*rq_cov));
+                        // log::info!("NEW RQ: {rq_cov:x?}");
+                    }
+                }
+            }
+        }
+
+        self.has_new()
+    }
+
     /// Check whether there is some new feedback since the last time the log was cleared.
     pub fn has_new(&self) -> bool {
         !self.log.is_empty()
@@ -317,19 +360,36 @@ impl FeedbackTracker {
         self.log.clear();
     }
 
-    /// Record a code coverage hitpoint -> a virtual address executed. Can be used both two record
-    /// hitcount coverage and also single-shot scratch-away code coverage.
+    /// Record the first time a coverage address has been executed. This differs from record_codecov_hitcount
+    /// as this will not increase the hitcount. There is a possibility that multiple cores can reach the same
+    /// coverage address at the same time.
     ///
     /// Returns true if a new value `v` was observed.
     pub fn record_codecov(&mut self, v: VirtAddr) -> bool {
         match self.code_cov.entry(v) {
             // fast path -> first time code cov is recorded
-            std::collections::hash_map::Entry::Vacant(e) => {
+            Entry::Vacant(e) => {
                 e.insert(1);
                 self.log.push(FeedbackLog::VAddr((v, 1)));
                 true
             }
-            std::collections::hash_map::Entry::Occupied(mut e) => {
+            _ => false,
+        }
+    }
+
+    /// Record a code coverage hitpoint -> a virtual address executed. Can be used both two record
+    /// hitcount coverage and also single-shot scratch-away code coverage.
+    ///
+    /// Returns true if a new value `v` was observed.
+    pub fn record_codecov_hitcount(&mut self, v: VirtAddr) -> bool {
+        match self.code_cov.entry(v) {
+            // fast path -> first time code cov is recorded
+            Entry::Vacant(e) => {
+                e.insert(1);
+                self.log.push(FeedbackLog::VAddr((v, 1)));
+                true
+            }
+            Entry::Occupied(mut e) => {
                 let hitcount = e.get_mut();
                 let prev = *hitcount;
                 *hitcount = prev.saturating_add(1);
@@ -344,9 +404,9 @@ impl FeedbackTracker {
     }
 
     /// Check for equality of custom feedback only.
-    #[cfg(feature = "custom_feedback")]
-    pub fn eq_custom_feedback(&self, other: &Self) -> bool {
-        self.custom == other.custom && self.max == other.max
+    #[cfg(feature = "redqueen")]
+    pub fn eq_redqueen(&self, other: &Self) -> bool {
+        self.redqueen == other.redqueen
     }
 
     /// Check for equal code coverage with an exact hitcount comparison
@@ -357,6 +417,12 @@ impl FeedbackTracker {
     /// Check for equal code coverage with our standard classified hitcount comparison.
     pub fn eq_codecov(&self, other: &Self) -> bool {
         self.eq_codecov_with(other, classify_hitcount_into_bucket)
+    }
+
+    /// Check for equal custom feedback
+    #[cfg(feature = "custom_feedback")]
+    pub fn eq_custom_feedback(&self, other: &Self) -> bool {
+        self.custom == other.custom
     }
 
     /// Check for equal code coverage using the given function to classify coverage hitcounts into
@@ -428,13 +494,25 @@ impl FeedbackTracker {
 
     #[cfg(feature = "redqueen")]
     /// Record RFlags for redqueen coverage.
-    pub fn record_redqueen(&mut self, v: VirtAddr, f: x86_64::registers::rflags::RFlags) -> bool {
-        let flags_bits = f.bits();
-        let r = self.redqueen.insert((v, flags_bits));
-        if r {
-            self.log.push(FeedbackLog::Redqueen((v, flags_bits)));
+    pub fn record_redqueen(
+        &mut self,
+        virt_addr: VirtAddr,
+        rflags: x86_64::registers::rflags::RFlags,
+        hit_count: u32,
+    ) -> bool {
+        // Add this redqueen coverage
+        let cov = RedqueenCoverage {
+            virt_addr,
+            rflags: rflags.bits(),
+            hit_count,
+        };
+
+        let is_new_entry = self.redqueen.insert(cov);
+        if is_new_entry {
+            self.log.push(FeedbackLog::Redqueen(cov));
         }
-        r
+
+        is_new_entry
     }
 
     /// Record an arbitrary [`u64`] value as custom feedback.
@@ -539,6 +617,7 @@ impl FeedbackTracker {
             }
         } else {
             self.log.push(FeedbackLog::CustomMax((t, v)));
+            // log::info!("NEW MAX: tag {t:#x}  value {v:#x}");
             self.max.insert(t, v);
             true
         }

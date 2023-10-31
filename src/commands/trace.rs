@@ -13,7 +13,7 @@ use core_affinity::CoreId;
 use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
 
-use crate::fuzz_input::FuzzInput;
+use crate::fuzz_input::{FuzzInput, InputWithMetadata};
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::{FuzzVm, FuzzVmExit};
 use crate::interrupts::IdtEntry;
@@ -74,7 +74,7 @@ fn start_core<FUZZER: Fuzzer>(
     );
 
     #[cfg(feature = "redqueen")]
-    let redqueen_rules = BTreeMap::new();
+    let redqueen_breakpoints = None;
 
     // Create a 64-bit VM for fuzzing
     let mut fuzzvm = FuzzVm::create(
@@ -91,7 +91,7 @@ fn start_core<FUZZER: Fuzzer>(
         config.clone(),
         unwinders.clone(),
         #[cfg(feature = "redqueen")]
-        redqueen_rules,
+        redqueen_breakpoints,
     )?;
 
     // Enable single step for tracing
@@ -131,9 +131,9 @@ fn start_core<FUZZER: Fuzzer>(
 
     // If we are tracing an input, set that input in the guest
     let input = if let Some(input_path) = input_case {
-        <FUZZER::Input as FuzzInput>::from_bytes(&std::fs::read(input_path)?)?
+        InputWithMetadata::from_path(input_path, &project_state.path)?
     } else {
-        FUZZER::Input::default()
+        InputWithMetadata::default()
     };
 
     for iter in 0..NUMBER_OF_ITERATIONS {
@@ -444,7 +444,7 @@ fn start_core<FUZZER: Fuzzer>(
             }
 
             // Execute the VM
-            let ret = fuzzvm.run(&mut perf)?;
+            let ret = fuzzvm.run()?;
 
             match ret {
                 FuzzVmExit::KasanRead { ip, size, addr } => {
