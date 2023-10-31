@@ -13,7 +13,7 @@ use core_affinity::CoreId;
 use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
 
-use crate::fuzz_input::FuzzInput;
+use crate::fuzz_input::{FuzzInput, InputWithMetadata};
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::{FuzzVm, FuzzVmExit};
 use crate::interrupts::IdtEntry;
@@ -131,9 +131,9 @@ fn start_core<FUZZER: Fuzzer>(
 
     // If we are tracing an input, set that input in the guest
     let input = if let Some(input_path) = input_case {
-        <FUZZER::Input as FuzzInput>::from_bytes(&std::fs::read(input_path)?)?
+        InputWithMetadata::from_path(input_path, &project_state.path)?
     } else {
-        FUZZER::Input::default()
+        InputWithMetadata::default()
     };
 
     for iter in 0..NUMBER_OF_ITERATIONS {

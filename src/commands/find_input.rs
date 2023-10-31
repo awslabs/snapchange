@@ -14,7 +14,7 @@ use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
 
 use crate::config::Config;
-use crate::fuzz_input::FuzzInput;
+use crate::fuzz_input::{FuzzInput, InputWithMetadata};
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::{FuzzVm, FuzzVmExit};
 use crate::memory::Memory;
@@ -41,6 +41,7 @@ fn start_core<FUZZER: Fuzzer>(
     files: Arc<Vec<PathBuf>>,
     finished: Arc<AtomicBool>,
     wanted_virt_addr: VirtAddr,
+    project_dir: &PathBuf,
 ) -> Result<Vec<PathBuf>> {
     // Store the thread ID of this thread used for passing the SIGALRM to this thread
     let thread_id = unsafe { libc::pthread_self() };
@@ -96,6 +97,8 @@ fn start_core<FUZZER: Fuzzer>(
 
         // If we are tracing an input, set that input in the guest
         let input = <FUZZER::Input as FuzzInput>::from_bytes(&std::fs::read(input_path)?)?;
+
+        let input = InputWithMetadata::from_path(input_path, &project_dir)?;
 
         // Reset the guest state
         let _guest_reset_perf = fuzzvm.reset_guest_state(&mut fuzzer)?;
@@ -250,6 +253,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
 
         let timeout = args.timeout;
         let vbcpu = project_state.vbcpu;
+        let project_dir = project_state.path.clone();
 
         let curr_symbols = std::mem::take(&mut starting_symbols[id]);
         let config = std::mem::take(&mut starting_configs[id]);
@@ -278,6 +282,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
                 files,
                 finished,
                 wanted_virt_addr,
+                &project_dir,
             )
         });
 

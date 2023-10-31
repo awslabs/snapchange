@@ -2,6 +2,7 @@
 
 use std::ops::Add;
 use std::ops::Sub;
+use std::sync::Arc;
 
 use ahash::HashSetExt;
 use anyhow::Result;
@@ -10,7 +11,7 @@ use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::addrs::VirtAddr;
-use crate::fuzz_input::FuzzInput;
+use crate::fuzz_input::{FuzzInput, InputWithMetadata};
 use crate::fuzzer::Fuzzer;
 use crate::regs::x86;
 use crate::stats::PerfMark;
@@ -620,9 +621,10 @@ impl Operand {
 ///
 /// This will read the values needed to compare against and add a RedqueenRule to the
 /// FuzzVm for the found values.
+#[cfg(feature = "redqueen")]
 pub fn gather_comparison<FUZZER: Fuzzer>(
     fuzzvm: &mut FuzzVm<FUZZER>,
-    input: &<FUZZER as Fuzzer>::Input,
+    input: &InputWithMetadata<<FUZZER as Fuzzer>::Input>,
     args: &RedqueenArguments,
 ) -> Result<Execution> {
     let _timer = fuzzvm.scoped_timer(PerfMark::GatherComparison);
@@ -957,11 +959,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                     let new_val = left_val.sub(1.0);
                                     let rule = RedqueenRule::$rule(right_val.to_le_bytes(), new_val.to_le_bytes());
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                    /*
-                                    if input.get_redqueen_rule_candidates(&rule).len() > 0 {
-                                        fuzzvm.redqueen_rules.entry(input_hash).or_default().insert(rule);
-                                    }
-                                    */
                                 } else {
                                     // OP - ax < bx (false)
                                     // AX - 4

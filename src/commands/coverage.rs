@@ -14,7 +14,7 @@ use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
 
 use crate::config::Config;
-use crate::fuzz_input::FuzzInput;
+use crate::fuzz_input::{FuzzInput, InputWithMetadata};
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::{FuzzVm, FuzzVmExit};
 use crate::memory::Memory;
@@ -77,7 +77,6 @@ pub(crate) fn run<FUZZER: Fuzzer>(
     start_core::<FUZZER>(
         core_id,
         &vm,
-        &project_state.vbcpu,
         &cpuids,
         physmem_file.as_raw_fd(),
         clean_snapshot,
@@ -86,10 +85,8 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         covbp_bytes,
         &args.path,
         args.timeout,
-        &project_state.modules,
+        &project_state,
         args.context,
-        &project_state.binaries,
-        project_state.config.clone(),
     )?;
 
     // Success
@@ -100,19 +97,16 @@ pub(crate) fn run<FUZZER: Fuzzer>(
 pub(crate) fn start_core<FUZZER: Fuzzer>(
     core_id: CoreId,
     vm: &VmFd,
-    vbcpu: &VbCpu,
     cpuid: &CpuId,
     snapshot_fd: i32,
     clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<VecDeque<Symbol>>,
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
     coverage_breakpoints: BTreeMap<VirtAddr, u8>,
-    input_case: &Path,
+    input_case: &PathBuf,
     vm_timeout: Duration,
-    modules: &Modules,
+    project_state: &ProjectState,
     display_context: bool,
-    binaries: &[PathBuf],
-    config: Config,
 ) -> Result<()> {
     // Store the thread ID of this thread used for passing the SIGALRM to this thread
     let thread_id = unsafe { libc::pthread_self() };
@@ -123,6 +117,21 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
 
     // Set the core affinity for this core
     core_affinity::set_for_current(core_id);
+
+    let ProjectState {
+        vbcpu,
+        modules,
+        binaries,
+        config,
+        path: project_dir,
+        ..
+    } = project_state;
+
+    let vbcpu = project_state.vbcpu;
+    let modules = &project_state.modules;
+    let binaries = &project_state.binaries;
+    let config = &project_state.config;
+    let project_dir = &project_state.path;
 
     // Use the current fuzzer
     let mut fuzzer = FUZZER::default();
@@ -168,14 +177,14 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         u64::try_from(core_id.id)?,
         &mut fuzzer,
         vm,
-        vbcpu,
+        &vbcpu,
         cpuid,
         snapshot_fd.as_raw_fd(),
         clean_snapshot,
         Some(coverage_breakpoints),
         symbol_breakpoints,
         symbols,
-        config,
+        config.clone(),
         crate::stack_unwinder::StackUnwinders::default(),
         #[cfg(feature = "redqueen")]
         redqueen_breakpoints,
@@ -189,7 +198,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     let start = std::time::Instant::now();
 
     // Get the input to trace
-    let input = FUZZER::Input::from_bytes(&std::fs::read(input_case)?)?;
+    let input = InputWithMetadata::from_path(input_case, &project_dir)?;
 
     // Set the input into the VM as per the fuzzer
     fuzzer.set_input(&input, &mut fuzzvm)?;

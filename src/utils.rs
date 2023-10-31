@@ -10,7 +10,7 @@ use std::hash::Hasher;
 use std::path::Path;
 use std::str::FromStr;
 
-use crate::fuzz_input::FuzzInput;
+use crate::fuzz_input::{FuzzInput, InputWithMetadata};
 use crate::{Symbol, VirtAddr};
 
 /// Print a hexdump representation of given data bytes
@@ -108,25 +108,42 @@ pub fn hexdigest<T: Hash>(t: &T) -> String {
     format!("{h:016x}")
 }
 
-/// Save the [`FuzzInput`] into the directory using the hash of input as the filename
+/// Save the [`InputWithMetadata`] into the project directory using the hash of input as the filename
 ///
 /// # Errors
 ///
 /// * Given `input.to_bytes()` failed
+/// * Creating the corpus or metadata directory failed
 /// * Failed to write the bytes to disk
-pub fn save_input_in_dir(input: &impl FuzzInput, dir: &Path) -> Result<usize> {
-    let mut input_bytes: Vec<u8> = vec![];
-    input.to_bytes(&mut input_bytes)?;
+pub fn save_input_in_project<T: FuzzInput>(
+    input: &InputWithMetadata<T>,
+    project_dir: &Path,
+) -> Result<usize> {
+    let input_bytes = input.input_as_bytes()?;
     let length = input_bytes.len();
 
     // Create the filename for this input
     let filename = hexdigest(&input);
 
+    let corpus_dir = project_dir.join("current_corpus");
+    let metadata_dir = project_dir.join("metadata");
+
+    // Ensure the corpus and metadata directories exist
+    for dir in [&corpus_dir, &metadata_dir] {
+        if !dir.exists() {
+            std::fs::create_dir(dir)?;
+        }
+    }
+
     // Write the input
-    let filepath = dir.join(filename);
+    let filepath = corpus_dir.join(&filename);
     if !filepath.exists() {
         std::fs::write(filepath, input_bytes)?;
     }
+
+    // Write the metadata to the metadata folder
+    let filepath = metadata_dir.join(filename);
+    std::fs::write(filepath, input.serialized_metadata()?);
 
     Ok(length)
 }
@@ -251,12 +268,11 @@ pub fn parse_cli_symbol(
     }
 }
 
-
 /// helper functions for directly using libfuzzer binaries as harness.
 pub mod libfuzzer {
-    use crate::fuzzvm::FuzzVm;
-    use crate::fuzzer::Fuzzer;
     use crate::addrs::VirtAddr;
+    use crate::fuzzer::Fuzzer;
+    use crate::fuzzvm::FuzzVm;
 
     /// sets a input for libfuzzers LLVMFuzzerTestOneInput
     pub fn set_input<F: Fuzzer>(input: &[u8], fuzzvm: &mut FuzzVm<F>) -> anyhow::Result<()> {
@@ -286,7 +302,10 @@ pub mod libfuzzer {
             crate::fuzzvm::BreakpointHook::None,
         )?;
         if let Some(ref mut reset_bps) = fuzzvm.reset_breakpoints {
-            reset_bps.insert((VirtAddr(retaddr), cr3), crate::fuzzer::ResetBreakpointType::Reset);
+            reset_bps.insert(
+                (VirtAddr(retaddr), cr3),
+                crate::fuzzer::ResetBreakpointType::Reset,
+            );
         }
         Ok(())
     }

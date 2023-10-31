@@ -16,7 +16,7 @@ use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
 
 use crate::config::Config;
-use crate::fuzz_input::FuzzInput;
+use crate::fuzz_input::{FuzzInput, InputWithMetadata};
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::{FuzzVm, FuzzVmExit};
 use crate::memory::Memory;
@@ -137,6 +137,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
             let covbp_bytes = covbp_bytes.clone();
             let timeout = args.timeout.clone();
             let clean_snapshot = clean_snapshot.clone();
+            let project_dir = project_state.path.clone();
 
             // Start executing on this core
             let t = std::thread::spawn(move || {
@@ -155,6 +156,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
                     paths,
                     path_index,
                     ending_index,
+                    &project_dir,
                 )
             });
 
@@ -285,6 +287,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     paths: Arc<Vec<PathBuf>>,
     path_index: Arc<AtomicUsize>,
     ending_index: usize,
+    project_dir: &PathBuf,
 ) -> Result<BTreeMap<usize, BTreeSet<u64>>> {
     // Store the thread ID of this thread used for passing the SIGALRM to this thread
     let thread_id = unsafe { libc::pthread_self() };
@@ -371,7 +374,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         fuzzvm.coverage_breakpoints = Some(cov_bps);
 
         // Get the input to trace
-        let input = FUZZER::Input::from_bytes(&std::fs::read(input_case)?)?;
+        let input = InputWithMetadata::from_path(input_case, project_dir)?;
 
         // Set the input into the VM as per the fuzzer
         fuzzer.set_input(&input, &mut fuzzvm)?;

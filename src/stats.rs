@@ -9,6 +9,7 @@ use addr2line::Context;
 use anyhow::Result;
 use crossterm::event::KeyCode;
 
+use ahash::AHashSet;
 use rand::seq::IteratorRandom;
 use rand::Rng as _;
 use serde::{Deserialize, Serialize};
@@ -29,16 +30,19 @@ use std::time::Duration;
 
 use crate::addrs::VirtAddr;
 use crate::cmdline::Modules;
-use crate::cmp_analysis::RedqueenCoverage;
 use crate::config::Config;
 use crate::coverage_analysis::{Blockers, CoverageAnalysis};
-use crate::feedback::FeedbackTracker;
+use crate::feedback::{FeedbackLog, FeedbackTracker};
+use crate::fuzz_input::InputWithMetadata;
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::FuzzVmExit;
 use crate::rng::Rng;
 use crate::stats_tui::StatsApp;
 use crate::symbols::Symbol;
-use crate::utils::save_input_in_dir;
+use crate::utils::save_input_in_project;
+
+#[cfg(feature = "redqueen")]
+use crate::cmp_analysis::RedqueenCoverage;
 
 /// Size of the rolling window to calculate the iters/sec
 const ITERS_WINDOW_SIZE: usize = 10;
@@ -71,7 +75,7 @@ pub struct Stats<FUZZER: Fuzzer> {
     pub feedback: FeedbackTracker,
 
     /// Current redqueen coverage seen by this core
-    pub redqueen_coverage: BTreeSet<RedqueenCoverage>,
+    // pub redqueen_coverage: BTreeSet<RedqueenCoverage>,
 
     /// Number of restored pages
     pub restored_pages: u64,
@@ -97,11 +101,11 @@ pub struct Stats<FUZZER: Fuzzer> {
 
     /// The current corpus on the fuzzer. This is copied into by each fuzzing core and is
     /// collected by the stats worker to collect the total corpus across all workers.
-    pub old_corpus: Option<Vec<FUZZER::Input>>,
+    pub old_corpus: Option<Vec<Arc<InputWithMetadata<FUZZER::Input>>>>,
 
     /// A new corpus to be picked up by the fuzzer. This is populated by the main stats
     /// worker containing some random inputs from the total corpus.
-    pub new_corpus: Option<Vec<FUZZER::Input>>,
+    pub new_corpus: Option<Vec<Arc<InputWithMetadata<FUZZER::Input>>>>,
 
     /// Performance metrics for this core indexed by `PerfMark`
     pub perf_stats: PerfStats,
@@ -141,17 +145,11 @@ pub struct GlobalStats {
     /// Total coverage seen
     pub coverage: usize,
 
-    /// Total coverage seen in redqueen
-    pub rq_coverage: usize,
-
     /// Seconds since the last coverage
     pub last_coverage: u64,
 
     /// Executions per second (total)
     pub exec_per_sec: u64,
-
-    /// Executions per second (total) in Redqueen
-    pub rq_exec_per_sec: u64,
 
     /// Number of timeouts
     pub timeouts: u32,
@@ -192,6 +190,14 @@ pub struct GlobalStats {
 
     /// Number of vmexits per iteration on average
     pub vmexits_per_iter: u64,
+
+    /// Total coverage seen in redqueen
+    #[cfg(feature = "redqueen")]
+    pub rq_coverage: usize,
+
+    /// Executions per second (total) in Redqueen
+    #[cfg(feature = "redqueen")]
+    pub rq_exec_per_sec: u64,
 }
 
 struct PerfMarks {
@@ -483,6 +489,9 @@ impl_enum!(
         /// Time to for stats coverage sync
         SyncCov2,
 
+        /// Time to for stats coverage sync
+        SyncCov3,
+
         /// Time taken to gather redqueen breakpoints
         Redqueen,
 
@@ -583,6 +592,7 @@ impl_enum!(
         Lcov,
         CoverageAnalysis,
         WriteCoverageAnalysis,
+        WriteCoverageAll,
         Total,
     }
 );
@@ -887,9 +897,8 @@ pub fn worker<FUZZER: Fuzzer>(
     stats: Arc<Vec<Arc<Mutex<Stats<FUZZER>>>>>,
     modules: &Modules,
     project_dir: &Path,
-    prev_coverage: BTreeSet<VirtAddr>,
-    prev_redqueen_coverage: BTreeSet<RedqueenCoverage>,
-    input_corpus: &[FUZZER::Input],
+    mut total_feedback: FeedbackTracker,
+    input_corpus: &Vec<Arc<InputWithMetadata<FUZZER::Input>>>,
     coverage_breakpoints: Option<BTreeSet<VirtAddr>>,
     symbols: &Option<VecDeque<Symbol>>,
     mut coverage_analysis: Option<CoverageAnalysis>,
@@ -939,14 +948,14 @@ pub fn worker<FUZZER: Fuzzer>(
     }
 
     // Get the filenames for the various output files
-    let lighthouse_file = project_dir.join("coverage.lighthouse");
+    let coverage_all = project_dir.join("coverage.all");
+    let coverage_lighthouse = project_dir.join("coverage.lighthouse");
     let coverage_addrs = project_dir.join("coverage.addresses");
     let coverage_blockers_in_path_file = project_dir.join("coverage.blockers.in_path");
     let coverage_blockers_total_file = project_dir.join("coverage.blockers.total");
     // let coverage_src = project_dir.join("coverage.src");
     let coverage_lcov = project_dir.join("coverage.lcov");
     let coverage_in_order = project_dir.join("coverage.in_order");
-    let coverage_redqueen_in_order = project_dir.join("coverage.redqueen.in_order");
     #[cfg(feature = "redqueen")]
     let coverage_redqueen = project_dir.join("coverage.redqueen");
     #[cfg(feature = "custom_feedback")]
@@ -963,7 +972,7 @@ pub fn worker<FUZZER: Fuzzer>(
 
     // Average stats used for the stats TUI
     let mut exec_per_sec;
-    let mut rq_exec_per_sec;
+    let mut rq_exec_per_sec = 0;
     let mut dirty_pages = 0;
     let mut dirty_pages_kvm = 0;
     let mut dirty_pages_custom = 0;
@@ -971,14 +980,10 @@ pub fn worker<FUZZER: Fuzzer>(
 
     // Init the coverage time to sync coverage between the cores
     let mut coverage_timer = std::time::Instant::now();
+    let mut corpus_timer = std::time::Instant::now();
 
     let mut merge_coverage = false;
-
-    let mut total_feedback = FeedbackTracker::from_prev(prev_coverage);
-
-    #[cfg(feature = "redqueen")]
-    let mut total_redqueen_coverage = prev_redqueen_coverage;
-    // let mut total_redqueen_rules = redqueen_rules;
+    let mut merge_corpus = false;
 
     let mut last_best_coverage = 0;
     let mut last_coverage = std::time::Instant::now();
@@ -1006,7 +1011,8 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut graph_dirty_pages_per_sec = vec![[0u64, 0, 0]];
 
     // Init the total corpus across all cores
-    let mut total_corpus = ahash::AHashSet::with_capacity(input_corpus.len() * 2);
+    // let mut total_corpus: AHashSet<Arc<InputWithMetadata<FUZZER::Input>>> = AHashSet::with_capacity(input_corpus.len() * 2);
+    let mut total_corpus = AHashSet::with_capacity(input_corpus.len() * 2);
     total_corpus.extend(input_corpus.iter().cloned());
 
     let mut rng = Rng::new();
@@ -1089,7 +1095,7 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut curr_tui_perf_stats = Vec::new();
     let mut vmexit_stats = Vec::new();
     let mut diffs: Vec<VirtAddr> = Vec::new();
-    let mut redqueen_diffs: Vec<_> = Vec::new();
+    // let mut redqueen_diffs: Vec<_> = Vec::new();
 
     /// Time the $expr and return the result of $expr
     macro_rules! time {
@@ -1111,10 +1117,13 @@ pub fn worker<FUZZER: Fuzzer>(
         tui_start = std::time::Instant::now();
 
         if iter == 0
-            || coverage_timer.elapsed() > config.stats.merge_coverage_timer
+            || coverage_timer.elapsed() > config.stats.coverage_sync_timer
                 && !total_corpus.len() > 1
         {
             merge_coverage = true;
+            if corpus_timer.elapsed() > config.stats.merge_corpus_timer {
+                merge_corpus = true;
+            }
         }
 
         // Reset the time window stats for this iteration window
@@ -1189,16 +1198,6 @@ pub fn worker<FUZZER: Fuzzer>(
             }
         );
 
-        // Clear the differences accumulator
-        time!(ClearTimeline, {
-            diffs.clear();
-        });
-
-        // Clear the differences accumulator
-        time!(RQClearTimeline, {
-            redqueen_diffs.clear();
-        });
-
         // Calculate the current statistics
         for (core_id, core_stats) in stats.iter().enumerate() {
             // Attempt to get this core's stats. If it fails, continue the next core
@@ -1207,35 +1206,6 @@ pub fn worker<FUZZER: Fuzzer>(
                 // log::info!("Core {core_id} holding stats lock");
                 continue;
             };
-
-            // Gather the differences while holding the lock, and then process
-            // the difference after releasing the lock
-            time!(AccumulateTimeline, {
-                for addr in stats.feedback.code_cov.keys() {
-                    if !total_feedback.code_cov.contains_key(addr) {
-                        diffs.push(*addr);
-                    }
-                }
-            });
-
-            // Gather the differences while holding the lock, and then process
-            // the difference after releasing the lock
-            time!(RQAccumulateTimeline, {
-                for cov in stats.redqueen_coverage.difference(&total_redqueen_coverage) {
-                    redqueen_diffs.push(*cov);
-                }
-            });
-
-            // Collect the coverage for this core to the total coverage
-            time!(AccumulateAppendCoverage, {
-                // total_coverage.code_cov.append(&mut stats.coverage.code_cov);
-                total_feedback.merge(&stats.feedback);
-            });
-
-            // Collect the redqueen coverage for this core to the total coverage
-            time!(RQAccumulateAppendCoverage, {
-                total_redqueen_coverage.append(&mut stats.redqueen_coverage);
-            });
 
             // Add this core's stats to the display table
             stats.perf_stats.elapsed[PerfMark::Total as usize] =
@@ -1247,71 +1217,6 @@ pub fn worker<FUZZER: Fuzzer>(
                 vmexits[i] += val;
             }
         }
-
-        // Add any new coverage to the timeline
-        time!(AccumulateTimeline, {
-            for addr in &diffs {
-                let addr = addr.0;
-
-                if let Some(sym_data) = symbols {
-                    if let Some(symbol) = crate::symbols::get_symbol(addr, sym_data) {
-                        let mut found = false;
-
-                        for context in &contexts {
-                            // Try to get the addr2line information for the current address
-                            if let Some(loc) = context.find_location(addr)? {
-                                let src = format!(
-                                    "{addr:#x} {symbol} -- {}:{}:{}",
-                                    loc.file.unwrap_or("??unknownfile??"),
-                                    loc.line.unwrap_or(0),
-                                    loc.column.unwrap_or(0)
-                                );
-
-                                coverage_timeline.push(src);
-                                found = true;
-                            } else if let Some(module_start) =
-                                modules.get_module_start_containing(addr)
-                            {
-                                // If not found, check if the module that contains this address
-                                // is compiled with Position Independent code (PIE) and subtract
-                                // the module start address to check for
-                                if let Some(loc) =
-                                    context.find_location(addr.saturating_sub(module_start))?
-                                {
-                                    let src = format!(
-                                        "{addr:#x} {symbol} -- {}:{}:{}",
-                                        loc.file.unwrap_or("??unknownfile??"),
-                                        loc.line.unwrap_or(0),
-                                        loc.column.unwrap_or(0)
-                                    );
-
-                                    coverage_timeline.push(src);
-                                    found = true;
-                                }
-                            }
-                        }
-
-                        // If the source code wasn't found, add the raw symbol instead
-                        if !found {
-                            // Add the found symbol the symbol timeline
-                            coverage_timeline.push(format!("{addr:#x} {symbol}"));
-                        }
-                    } else {
-                        // Symbol not found, add the address
-                        coverage_timeline.push(format!("{addr:#x}"));
-                    }
-                } else {
-                    // Symbol not found, add the address
-                    coverage_timeline.push(format!("{addr:#x}"));
-                }
-            }
-        });
-
-        time!(RQAccumulateTimeline, {
-            for rq_diff in &redqueen_diffs {
-                coverage_timeline.push(format!("{rq_diff:x?}"));
-            }
-        });
 
         let time_window = ITERS_WINDOW_SIZE as u64 * PRINT_SLEEP.as_secs();
 
@@ -1569,7 +1474,60 @@ pub fn worker<FUZZER: Fuzzer>(
                         // Check if any input in the current corpus is new by calculating the
                         // hash of each input
                         for input in corpus {
-                            total_corpus.insert(input);
+                            let curr_metadata = input.metadata.read().unwrap();
+                            if !curr_metadata.new_coverage.is_empty() {
+                                let new_entries = total_feedback.take_log();
+                                let is_new =
+                                    total_feedback.merge_from_log(&*curr_metadata.new_coverage);
+
+                                let new_entries = total_feedback.take_log();
+
+                                if is_new {
+                                    for entry in new_entries {
+                                        match entry {
+                                            FeedbackLog::VAddr((addr, hitcount)) => {
+                                                let addr = *addr;
+
+                                                let symbol = get_symbol_str(
+                                                    addr, &symbols, &modules, &contexts,
+                                                )?;
+
+                                                coverage_timeline.push(format!(
+                                                    "Covbp | {addr:#x} | hits {hitcount:03} | {symbol}"
+                                                ));
+                                            }
+                                            #[cfg(feature = "redqueen")]
+                                            FeedbackLog::Redqueen(RedqueenCoverage {
+                                                virt_addr,
+                                                rflags,
+                                                hit_count,
+                                            }) => {
+                                                let virt_addr = *virt_addr;
+
+                                                let symbol = get_symbol_str(
+                                                    virt_addr, &symbols, &modules, &contexts,
+                                                )?;
+
+                                                coverage_timeline.push(format!(
+                                                    "RQ    | {virt_addr:#x} | hits {hit_count:03} | {symbol}"
+                                                ));
+                                            }
+                                            #[cfg(feature = "custom_feedback")]
+                                            FeedbackLog::Custom(val) => {
+                                                coverage_timeline.push(format!("Custom {val:#x}"));
+                                            }
+                                            #[cfg(feature = "custom_feedback")]
+                                            FeedbackLog::CustomMax((tag, val)) => {
+                                                coverage_timeline.push(format!(
+                                                    "Custom Max - Tag {tag:#x} Value {val:#x}"
+                                                ));
+                                            }
+                                        }
+                                    }
+
+                                    total_corpus.insert(input.clone());
+                                }
+                            }
                         }
                     }
                 }
@@ -1582,70 +1540,68 @@ pub fn worker<FUZZER: Fuzzer>(
                     };
 
                     // Update the total coverage for this core
-                    curr_stats.feedback = total_feedback.clone();
+                    curr_stats.feedback.merge(&total_feedback);
 
-                    // Update the redqueen rules and coverage for this core
-                    total_redqueen_coverage.append(&mut curr_stats.redqueen_coverage);
-                    curr_stats.redqueen_coverage = total_redqueen_coverage.clone();
+                    if merge_corpus {
+                        let corpus_len = total_corpus.len();
 
-                    let corpus_len = total_corpus.len();
+                        // Give each new core a small percentage (between 10% and 50%) of the total corpus
+                        let mut new_corpus_len = corpus_len;
+                        if corpus_len > 100 {
+                            // Get the minimum number of files to add for this new corpus
+                            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                            let min = ((corpus_len as f64
+                                * (config.stats.minimum_total_corpus_percentage_sync as f64 / 100.))
+                                as usize)
+                                .min(config.stats.maximum_new_corpus_size);
 
-                    // Give each new core a small percentage (between 10% and 50%) of the total corpus
-                    let mut new_corpus_len = corpus_len;
-                    if corpus_len > 100 {
-                        // Get the minimum number of files to add for this new corpus
-                        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                        let min = ((corpus_len as f64
-                            * (config.stats.minimum_total_corpus_percentage_sync as f64 / 100.))
-                            as usize)
-                            .min(config.stats.maximum_new_corpus_size);
+                            // Get the maximum number of files to add for this new corpus
+                            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                            let max = ((corpus_len as f64
+                                * (config.stats.maximum_total_corpus_percentage_sync as f64 / 100.))
+                                as usize)
+                                .min(config.stats.maximum_new_corpus_size + 1);
 
-                        // Get the maximum number of files to add for this new corpus
-                        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                        let max = ((corpus_len as f64
-                            * (config.stats.maximum_total_corpus_percentage_sync as f64 / 100.))
-                            as usize)
-                            .min(config.stats.maximum_new_corpus_size + 1);
-
-                        // Get a random number of files for this corpus from min to max
-                        if min < max {
-                            new_corpus_len = rng.gen_range(min..max);
-                        }
-                    }
-
-                    // New corpus defaults to None. Set the Option to Some to start adding to
-                    // the new corpus
-                    if curr_stats.new_corpus.is_none() {
-                        curr_stats.new_corpus = Some(Vec::with_capacity(new_corpus_len));
-                    }
-
-                    assert!(corpus_len > 0);
-
-                    // Give the core worker a new corpus if it hasn't picked up the existing
-                    // corpus already.
-                    let in_redqueen = curr_stats.in_redqueen;
-
-                    if let Some(ref mut new_corpus) = &mut curr_stats.new_corpus {
-                        if !new_corpus.is_empty() && !in_redqueen {
-                            log::info!("{core_id} hasn't picked up old corpus");
-
-                            // Core hasn't yet picked up the old corpus
-                            continue;
+                            // Get a random number of files for this corpus from min to max
+                            if min < max {
+                                new_corpus_len = rng.gen_range(min..max);
+                            }
                         }
 
-                        let cap = new_corpus.capacity();
-                        if cap < new_corpus_len {
-                            new_corpus.reserve_exact(new_corpus_len - cap);
+                        // New corpus defaults to None. Set the Option to Some to start adding to
+                        // the new corpus
+                        if curr_stats.new_corpus.is_none() {
+                            curr_stats.new_corpus = Some(Vec::with_capacity(new_corpus_len));
                         }
 
-                        // Add the new corpus to the core, this should be O(n)
-                        new_corpus.extend(
-                            total_corpus
-                                .iter()
-                                .choose_multiple(&mut rng, new_corpus_len)
-                                .into_iter()
-                                .cloned(),
-                        );
+                        assert!(corpus_len > 0);
+
+                        // Give the core worker a new corpus if it hasn't picked up the existing
+                        // corpus already.
+                        let in_redqueen = curr_stats.in_redqueen;
+
+                        if let Some(ref mut new_corpus) = &mut curr_stats.new_corpus {
+                            if !new_corpus.is_empty() && !in_redqueen {
+                                // log::info!("{core_id} hasn't picked up old corpus");
+
+                                // Core hasn't yet picked up the old corpus
+                                continue;
+                            }
+
+                            let cap = new_corpus.capacity();
+                            if cap < new_corpus_len {
+                                new_corpus.reserve_exact(new_corpus_len - cap);
+                            }
+
+                            // Add the new corpus to the core, this should be O(n)
+                            new_corpus.extend(
+                                total_corpus
+                                    .iter()
+                                    .choose_multiple(&mut rng, new_corpus_len)
+                                    .into_iter()
+                                    .cloned(),
+                            );
+                        }
                     }
                 }
 
@@ -1654,6 +1610,11 @@ pub fn worker<FUZZER: Fuzzer>(
 
                 // Reset the merge coverage flag
                 merge_coverage = false;
+
+                if merge_corpus {
+                    corpus_timer = std::time::Instant::now();
+                    merge_corpus = false;
+                }
             }
         });
 
@@ -1673,7 +1634,7 @@ pub fn worker<FUZZER: Fuzzer>(
 
                 // Write the lighthouse coverage data
                 #[allow(clippy::needless_borrow)]
-                std::fs::write(&lighthouse_file, &lighthouse_data)
+                std::fs::write(&coverage_lighthouse, &lighthouse_data)
                     .expect("Failed to write lighthouse file");
             });
 
@@ -1714,9 +1675,17 @@ pub fn worker<FUZZER: Fuzzer>(
                 .expect("Failed to write coverage addresses");
             });
 
+            time!(WriteCoverageAll, {
+                // No need to write the current log to disk
+                total_feedback.ensure_clean();
+                std::fs::write(&coverage_all, serde_json::to_string(&total_feedback)?)
+                    .expect("Failed to write all coverage");
+            });
+
             #[cfg(feature = "redqueen")]
             {
-                let redqueen_cov = total_redqueen_coverage
+                let redqueen_cov = total_feedback
+                    .redqueen
                     .iter()
                     .map(
                         |RedqueenCoverage {
@@ -1829,15 +1798,6 @@ pub fn worker<FUZZER: Fuzzer>(
             std::fs::write(&coverage_lcov, &lcov_res)?;
         });
 
-        /*
-        let (_, _write_corpus_elapsed) = time!(
-            // Write the current corpus to disk
-            for input in &total_corpus {
-                save_input_in_dir(input, &corpus_dir)?;
-            }
-        );
-        */
-
         // Check for a new file dropped into `current_corpus`
         /*
         let (_, _newinput_elapsed) = time!(for entry in corpus_dir.read_dir()? {
@@ -1904,10 +1864,8 @@ pub fn worker<FUZZER: Fuzzer>(
             time: format!("{hours:02}:{minutes:02}:{seconds:02}"),
             iterations: total_iters,
             coverage: total_feedback.code_cov.len(),
-            rq_coverage: total_redqueen_coverage.len(),
             last_coverage: last_coverage.elapsed().as_secs(),
             exec_per_sec,
-            rq_exec_per_sec,
             timeouts: sum_timeouts,
             coverage_left,
             dirty_pages,
@@ -1921,6 +1879,10 @@ pub fn worker<FUZZER: Fuzzer>(
             perfs: (PerfMarks { timers: totals }, total, remaining),
             vmexits,
             vmexits_per_iter,
+            #[cfg(feature = "redqueen")]
+            rq_coverage: total_feedback.redqueen.len(),
+            #[cfg(feature = "redqueen")]
+            rq_exec_per_sec,
         };
 
         time!(WriteStatsData, {
@@ -2119,7 +2081,7 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut corpus_len = 0;
 
     for input in &total_corpus {
-        corpus_len += save_input_in_dir(input, &corpus_dir)?;
+        corpus_len += save_input_in_project(input, &project_dir)?;
     }
 
     std::fs::write(
@@ -2127,23 +2089,29 @@ pub fn worker<FUZZER: Fuzzer>(
         coverage_blockers_in_path.join("\n"),
     )
     .expect("Failed to write coverage addresses");
-    std::fs::write(&lighthouse_file, &lighthouse_data).expect("Failed to write lighthouse file");
+    std::fs::write(&coverage_lighthouse, &lighthouse_data)
+        .expect("Failed to write lighthouse file");
     std::fs::write(&coverage_addrs, &cov_addrs).expect("Failed to write coverage addresses");
     std::fs::write(&coverage_in_order, coverage_timeline.join("\n"))
         .expect("Failed to write coverage in order file");
 
-    let redqueen_cov = total_redqueen_coverage
-        .iter()
-        .map(
-            |RedqueenCoverage {
-                 virt_addr,
-                 rflags,
-                 hit_count,
-             }| { format!("{:#x} {rflags:#x} {hit_count:#x}", virt_addr.0) },
-        )
-        .collect::<Vec<_>>()
-        .join("\n");
-    std::fs::write(&coverage_redqueen, redqueen_cov).expect("Failed to write redqueen cov file");
+    #[cfg(feature = "redqueen")]
+    {
+        let redqueen_cov = total_feedback
+            .redqueen
+            .iter()
+            .map(
+                |RedqueenCoverage {
+                     virt_addr,
+                     rflags,
+                     hit_count,
+                 }| { format!("{:#x} {rflags:#x} {hit_count:#x}", virt_addr.0) },
+            )
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&coverage_redqueen, redqueen_cov)
+            .expect("Failed to write redqueen cov file");
+    }
 
     time!(Lcov, {
         // Write the lcov output format
@@ -2228,3 +2196,47 @@ pub fn source_from_address(
     }
 }
 */
+
+/// Get the `str` for the given address using the symbols and modules of this project
+fn get_symbol_str(
+    addr: u64,
+    symbols: &Option<VecDeque<Symbol>>,
+    modules: &Modules,
+    contexts: &Vec<Context<EndianReader<RunTimeEndian, Rc<[u8]>>>>,
+) -> Result<String> {
+    if let Some(sym_data) = symbols {
+        if let Some(symbol) = crate::symbols::get_symbol(addr, sym_data) {
+            let mut found = false;
+
+            for context in contexts {
+                // try to get the addr2line information for the current address
+                if let Some(loc) = context.find_location(addr)? {
+                    return Ok(format!(
+                        "{symbol} -- {}:{}:{}",
+                        loc.file.unwrap_or("??unknownfile??"),
+                        loc.line.unwrap_or(0),
+                        loc.column.unwrap_or(0)
+                    ));
+                } else if let Some(module_start) = modules.get_module_start_containing(addr) {
+                    // if not found, check if the module that contains this address
+                    // is compiled with position independent code (pie) and subtract
+                    // the module start address to check for
+                    if let Some(loc) = context.find_location(addr.saturating_sub(module_start))? {
+                        return Ok(format!(
+                            "{symbol} -- {}:{}:{}",
+                            loc.file.unwrap_or("??unknownfile??"),
+                            loc.line.unwrap_or(0),
+                            loc.column.unwrap_or(0)
+                        ));
+                    }
+                }
+            }
+
+            // if the source code wasn't found, add the raw symbol instead
+            return Ok(format!("{symbol}"));
+        }
+    }
+
+    // Default return just return the address
+    Ok(String::new())
+}

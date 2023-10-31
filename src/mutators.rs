@@ -4,10 +4,13 @@
 use crate::rng::Rng;
 use rand::Rng as _;
 
+use crate::fuzz_input::InputWithMetadata;
+use std::sync::Arc;
+
 /// Flip a random bit in the input
 pub fn bit_flip(
     input: &mut Vec<u8>,
-    _corpus: &[Vec<u8>],
+    _corpus: &[Arc<InputWithMetadata<Vec<u8>>>],
     rng: &mut Rng,
     _dictionary: &Option<Vec<Vec<u8>>>,
 ) -> Option<String> {
@@ -38,7 +41,7 @@ pub fn bit_flip(
 /// Replace a random byte in the input with a new byte
 pub fn byte_flip(
     input: &mut Vec<u8>,
-    _corpus: &[Vec<u8>],
+    _corpus: &[Arc<InputWithMetadata<Vec<u8>>>],
     rng: &mut Rng,
     _dictionary: &Option<Vec<Vec<u8>>>,
 ) -> Option<String> {
@@ -60,7 +63,7 @@ pub fn byte_flip(
 /// Insert a random byte into the input with a new byte
 pub fn byte_insert(
     input: &mut Vec<u8>,
-    _corpus: &[Vec<u8>],
+    _corpus: &[Arc<InputWithMetadata<Vec<u8>>>],
     rng: &mut Rng,
     _dictionary: &Option<Vec<Vec<u8>>>,
 ) -> Option<String> {
@@ -82,7 +85,7 @@ pub fn byte_insert(
 /// Delete a random byte in the input
 pub fn byte_delete(
     input: &mut Vec<u8>,
-    _corpus: &[Vec<u8>],
+    _corpus: &[Arc<InputWithMetadata<Vec<u8>>>],
     rng: &mut Rng,
     _dictionary: &Option<Vec<Vec<u8>>>,
 ) -> Option<String> {
@@ -106,7 +109,7 @@ macro_rules! set_random {
         /// Replace a random u8 into the input with a new word
         pub fn $name(
             input: &mut Vec<u8>,
-            _corpus: &[Vec<u8>],
+            _corpus: &[Arc<InputWithMetadata<Vec<u8>>>],
             rng: &mut Rng,
             _dictionary: &Option<Vec<Vec<u8>>>,
         ) -> Option<String> {
@@ -141,7 +144,7 @@ set_random!(set_random_u64, u64);
 /// Copy a random slice from the corpus into the input
 pub fn splice_corpus(
     input: &mut Vec<u8>,
-    corpus: &[Vec<u8>],
+    corpus: &[Arc<InputWithMetadata<Vec<u8>>>],
     rng: &mut Rng,
     _dictionary: &Option<Vec<Vec<u8>>>,
 ) -> Option<String> {
@@ -158,20 +161,20 @@ pub fn splice_corpus(
     // Get the input which the comes will come from from the corpus
     let splice_from = &corpus[rand_num1 % corpus.len()];
 
-    let max_splice_len = std::cmp::min(splice_from.len(), input.len());
+    let max_splice_len = std::cmp::min(splice_from.input.len(), input.len());
 
     // Assume the length will be larger than 4 bytes
-    if max_splice_len < 4 || input.len() < 4 || splice_from.len() < 4 {
+    if max_splice_len < 4 || input.len() < 4 || splice_from.input.len() < 4 {
         return None;
     }
 
     let splice_len = rand_num2 % max_splice_len;
-    let splice_offset = rand_num3 % (splice_from.len() - splice_len);
+    let splice_offset = rand_num3 % (splice_from.input.len() - splice_len);
     let input_offset = rand_num4 % (input.len() - splice_len);
 
     // Splice the found
     input[input_offset..input_offset + splice_len]
-        .copy_from_slice(&splice_from[splice_offset..splice_offset + splice_len]);
+        .copy_from_slice(&splice_from.input[splice_offset..splice_offset + splice_len]);
 
     // Output mutation
     Some(format!("SpliceCorpus_offset_{input_offset:#x}"))
@@ -180,7 +183,7 @@ pub fn splice_corpus(
 /// Increment a random byte
 pub fn byte_inc(
     input: &mut Vec<u8>,
-    _corpus: &[Vec<u8>],
+    _corpus: &[Arc<InputWithMetadata<Vec<u8>>>],
     rng: &mut Rng,
     _dictionary: &Option<Vec<Vec<u8>>>,
 ) -> Option<String> {
@@ -201,7 +204,7 @@ pub fn byte_inc(
 /// Decrement a random byte
 pub fn byte_dec(
     input: &mut Vec<u8>,
-    _corpus: &[Vec<u8>],
+    _corpus: &[Arc<InputWithMetadata<Vec<u8>>>],
     rng: &mut Rng,
     _dictionary: &Option<Vec<Vec<u8>>>,
 ) -> Option<String> {
@@ -222,7 +225,7 @@ pub fn byte_dec(
 /// Copy a random slice from the current input into itself
 pub fn splice_input(
     input: &mut Vec<u8>,
-    _corpus: &[Vec<u8>],
+    _corpus: &[Arc<InputWithMetadata<Vec<u8>>>],
     rng: &mut Rng,
     _dictionary: &Option<Vec<Vec<u8>>>,
 ) -> Option<String> {
@@ -382,7 +385,7 @@ const INTERESTING_U64: [u64; 40] = [
 /// off by one
 pub fn replace_with_interesting(
     input: &mut Vec<u8>,
-    _corpus: &[Vec<u8>],
+    _corpus: &[Arc<InputWithMetadata<Vec<u8>>>],
     rng: &mut Rng,
     _dictionary: &Option<Vec<Vec<u8>>>,
 ) -> Option<String> {
@@ -432,7 +435,7 @@ pub fn replace_with_interesting(
 /// Sets a random slice in the input to a random byte (ala memset)
 pub fn set_input_slice(
     input: &mut Vec<u8>,
-    _corpus: &[Vec<u8>],
+    _corpus: &[Arc<InputWithMetadata<Vec<u8>>>],
     rng: &mut Rng,
     _dictionary: &Option<Vec<Vec<u8>>>,
 ) -> Option<String> {
@@ -465,7 +468,7 @@ pub fn set_input_slice(
 /// Insert an element from the dictionary into the input
 pub fn insert_from_dictionary(
     input: &mut Vec<u8>,
-    _corpus: &[Vec<u8>],
+    _corpus: &[Arc<InputWithMetadata<Vec<u8>>>],
     rng: &mut Rng,
     dictionary: &Option<Vec<Vec<u8>>>,
 ) -> Option<String> {

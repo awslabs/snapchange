@@ -8,6 +8,7 @@ use anyhow::Result;
 
 use crate::constants;
 use snapchange::addrs::{Cr3, VirtAddr};
+use snapchange::fuzz_input::InputWithMetadata;
 use snapchange::fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer};
 use snapchange::fuzzvm::FuzzVm;
 use snapchange::{Execution, FuzzInput};
@@ -22,12 +23,19 @@ pub struct Example05Fuzzer;
 impl Fuzzer for Example05Fuzzer {
     type Input = Vec<u8>; // [0]
     const START_ADDRESS: u64 = constants::RIP;
-    const MAX_INPUT_LENGTH: usize = 0x4000; // [1]
+    const MAX_INPUT_LENGTH: usize = 0x400; // [1]
     const MAX_MUTATIONS: u64 = 3;
 
-    fn set_input(&mut self, input: &Self::Input, fuzzvm: &mut FuzzVm<Self>) -> Result<()> {
+    fn set_input(
+        &mut self,
+        input: &InputWithMetadata<Self::Input>,
+        fuzzvm: &mut FuzzVm<Self>,
+    ) -> Result<()> {
         // Write the mutated input
-        fuzzvm.write_bytes_dirty(VirtAddr(constants::INPUT), CR3, input)?; // [2]
+        fuzzvm.write_bytes_dirty(VirtAddr(constants::INPUT), CR3, &input)?; // [2]
+
+        // Make the constanttime a bit faster (0x4 iters vs 0x10)
+        fuzzvm.write_bytes_dirty(VirtAddr(0x5555_5555_7290), CR3, &[0x4])?; // [2]
 
         Ok(())
     }

@@ -7,10 +7,13 @@ use crate::try_isize;
 
 use rand::Rng as _;
 
+use crate::fuzz_input::InputWithMetadata;
+use std::sync::Arc;
+
 /// Insert a random slice from the corpus into the `input`, expanding the `input`
 pub(crate) fn splice_corpus_extend(
     input: &mut Vec<u8>,
-    corpus: &[Vec<u8>],
+    corpus: &[Arc<InputWithMetadata<Vec<u8>>>],
     rng: &mut Rng,
     _dictionary: &Option<Vec<Vec<u8>>>,
 ) -> Option<String> {
@@ -25,7 +28,7 @@ pub(crate) fn splice_corpus_extend(
     let rand_num4 = rng.gen::<usize>();
 
     // Get the input which the comes will come from from the corpus
-    let splice_from = &corpus[rand_num1 % corpus.len()];
+    let splice_from = &corpus[rand_num1 % corpus.len()].input;
     let splice_from_hash = splice_from.fuzz_hash();
 
     let max_splice_len = std::cmp::min(splice_from.len(), input.len());

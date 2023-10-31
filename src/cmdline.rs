@@ -15,6 +15,7 @@ use std::time::Duration;
 use crate::addrs::{Cr3, VirtAddr};
 use crate::cmp_analysis::{Conditional, Operand, RedqueenArguments, RedqueenCoverage, Size};
 use crate::config::Config;
+use crate::feedback::FeedbackTracker;
 use crate::fuzzer::ResetBreakpointType;
 use crate::stack_unwinder::StackUnwinders;
 use crate::symbols::{Symbol, LINUX_KERNEL_SYMBOLS, LINUX_USERLAND_SYMBOLS};
@@ -111,104 +112,58 @@ pub struct ProjectState {
 #[derive(Default)]
 pub struct ProjectCoverage {
     /// Previously seen coverage by the fuzzer
-    pub prev_coverage: BTreeSet<VirtAddr>,
+    pub prev_coverage: FeedbackTracker,
 
     /// Coverage left to be seen by the fuzzer
     pub coverage_left: BTreeSet<VirtAddr>,
-
-    /// Previously seen redqueen coverage by the fuzzer
-    pub prev_redqueen_coverage: BTreeSet<RedqueenCoverage>,
 }
 
 impl ProjectState {
     /// Return the coverage remaining from the original coverage and the previously found
-    /// coverage along with the previously found coverage itself. Also adds breakpoints
-    /// for basic blocks as seen in SanitiverCoverage when compiling a target with
-    /// `-fsanitize-coverage=trace-pc-guard,pc-table`.
+    /// coverage along with the previously found coverage itself.
     ///
     /// # Errors
     ///
-    /// Can error during parsing the coverage.addresses project file
+    /// Can error during parsing the coverage.all project file
     #[allow(clippy::missing_panics_doc)]
-    pub fn coverage_left(&self) -> Result<ProjectCoverage> {
-        // If there was previous coverage seen, remove that from the total coverage
-        // breakpoints
-        let mut prev_coverage = BTreeSet::new();
-        let prev_coverage_file = self.path.join("coverage.addresses");
-        if prev_coverage_file.exists() {
-            prev_coverage = std::fs::read_to_string(prev_coverage_file)
-                .context("Failed to read coverage.addresses file")?
-                .split('\n')
-                .filter_map(|x| u64::from_str_radix(x.trim_start_matches("0x"), 16).ok())
-                .map(VirtAddr)
-                .collect();
-        }
-
-        let mut prev_redqueen_coverage = BTreeSet::new();
-        let prev_rq_coverage_file = self.path.join("coverage.redqueen");
-        if prev_rq_coverage_file.exists() {
-            prev_redqueen_coverage = std::fs::read_to_string(prev_rq_coverage_file)
-                .context("Failed to read coverage.redqueen file")?
-                .split('\n')
-                .filter_map(|line| {
-                    let mut iter = line.split(' ');
-                    let Some(addr) = iter.next() else {
-                        return None;
-                    };
-                    let Some(rflags) = iter.next() else {
-                        return None;
-                    };
-                    let hit_count = iter.next().unwrap_or("0x");
-
-                    let virt_addr = u64::from_str_radix(addr.trim_start_matches("0x"), 16);
-                    let rflags = u64::from_str_radix(rflags.trim_start_matches("0x"), 16);
-                    let hit_count = u32::from_str_radix(hit_count.trim_start_matches("0x"), 16);
-                    if let (Ok(addr), Ok(rflags), Ok(hit_count)) = (virt_addr, rflags, hit_count) {
-                        Some(RedqueenCoverage {
-                            virt_addr: VirtAddr(addr),
-                            rflags,
-                            hit_count,
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+    pub fn feedback(&self) -> Result<ProjectCoverage> {
+        let prev_coverage_file = self.path.join("coverage.all");
+        let mut prev_coverage: FeedbackTracker = FeedbackTracker::default();
+        if let Ok(data) = std::fs::read_to_string(&prev_coverage_file) {
+            prev_coverage = serde_json::from_str(&data)?;
         }
 
         if self.coverage_breakpoints.is_none() {
             return Ok(ProjectCoverage {
                 prev_coverage,
-                prev_redqueen_coverage,
                 coverage_left: BTreeSet::new(),
             });
         }
 
-        log::info!(
-            "Total coverage: {} Coverage seen: {} Redqueen coverage: {}",
-            self.coverage_breakpoints.as_ref().unwrap().len(),
-            prev_coverage.len(),
-            prev_redqueen_coverage.len()
-        );
+        let hits = prev_coverage
+            .code_cov
+            .iter()
+            .map(|x| *x.0)
+            .collect::<BTreeSet<VirtAddr>>();
 
         // The coverage left to hit
         let coverage_left = self
             .coverage_breakpoints
             .as_ref()
             .unwrap()
-            .difference(&prev_coverage)
+            .difference(&hits)
             .copied()
             .collect();
 
         // Get the current coverage not yet seen across previous runs
         Ok(ProjectCoverage {
-            prev_coverage,
             coverage_left,
-            prev_redqueen_coverage,
+            prev_coverage,
         })
     }
 
-    /// Parse sancov coverage breakpoints if they are available in this target
+    /// Parse sancov coverage breakpoints if they are available in this target. Use
+    /// -fsanitize-coverage=pc-table to enable this.
     pub fn parse_sancov_breakpoints(&mut self) -> Result<Option<BTreeSet<VirtAddr>>> {
         if let Some(symbol_path) = &self.symbols {
             let mut new_covbps = BTreeSet::new();
@@ -690,11 +645,12 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     let mut binaries = Vec::new();
     let mut config = Config::default();
     let mut update_config = true;
+    let mut covbps_paths = Vec::new();
 
     #[cfg(feature = "redqueen")]
     let mut redqueen_available = false;
 
-    let mut covbps_paths = Vec::new();
+    #[cfg(feature = "redqueen")]
     let mut cmps_paths = Vec::new();
 
     // Read the snapshot directory looking for the specific file extensions
@@ -809,6 +765,8 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     // coverage breakpoints
     let mut redqueen_breakpoints = None;
     let mut redqueen_bp_addrs: BTreeSet<u64> = BTreeSet::new();
+
+    #[cfg(feature = "redqueen")]
     if !cmps_paths.is_empty() {
         let mut result = Vec::new();
         for cmps_path in &cmps_paths {

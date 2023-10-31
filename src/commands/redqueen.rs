@@ -31,7 +31,7 @@ use crate::{
     config::Config,
     feedback::FeedbackLog,
     feedback::FeedbackTracker,
-    fuzz_input::FuzzInput,
+    fuzz_input::{FuzzInput, InputWithMetadata},
     fuzzer::Fuzzer,
     fuzzvm,
     fuzzvm::FuzzVm,
@@ -85,9 +85,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         symbol_breakpoints,
         covbp_bytes,
         &args.path,
-        &project_state.binaries,
-        project_state.config.clone(),
-        project_state.redqueen_breakpoints.clone(),
+        &project_state,
     )?;
 
     // Success
@@ -106,10 +104,8 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     symbols: &Option<VecDeque<Symbol>>,
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
     coverage_breakpoints: BTreeMap<VirtAddr, u8>,
-    input_case: &Path,
-    binaries: &[PathBuf],
-    config: Config,
-    redqueen_breakpoints: Option<Vec<(u64, RedqueenArguments)>>,
+    input_case: &PathBuf,
+    project_state: &ProjectState,
 ) -> Result<()> {
     // Store the thread ID of this thread used for passing the SIGALRM to this thread
     let thread_id = unsafe { libc::pthread_self() };
@@ -120,6 +116,14 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
 
     // Set the core affinity for this core
     core_affinity::set_for_current(core_id);
+
+    let ProjectState {
+        binaries,
+        config,
+        redqueen_breakpoints,
+        path: project_dir,
+        ..
+    } = project_state;
 
     // Use the current fuzzer
     let mut fuzzer = FUZZER::default();
@@ -154,13 +158,13 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         Some(coverage_breakpoints),
         symbol_breakpoints,
         symbols,
-        config,
+        config.clone(),
         StackUnwinders::default(),
-        redqueen_breakpoints,
+        redqueen_breakpoints.clone(),
     )?;
 
     // Get the input to trace
-    let input = FUZZER::Input::from_bytes(&std::fs::read(input_case)?)?;
+    let input = InputWithMetadata::from_path(input_case, &project_dir)?;
 
     // Run the guest until reset
     let vm_timeout = Duration::from_secs(1);

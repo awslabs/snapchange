@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::io::AsRawFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -21,14 +21,14 @@ use crate::cmdline::ProjectCoverage;
 use crate::config::Config;
 use crate::coverage_analysis::CoverageAnalysis;
 use crate::enable_manual_dirty_log_protect;
-use crate::fuzz_input::{CoverageType, FuzzInput, InputMetadata};
+use crate::fuzz_input::{CoverageType, FuzzInput, InputMetadata, InputWithMetadata};
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::FuzzVm;
 use crate::rng::Rng;
 use crate::stats::PerfStatTimer;
 use crate::stats::{self, PerfMark};
 use crate::try_u64;
-use crate::utils::save_input_in_dir;
+use crate::utils::save_input_in_project;
 use crate::{block_sigalrm, kick_cores, Stats, FINISHED};
 
 use crate::memory::Memory;
@@ -113,7 +113,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
     log::warn!("Starting all {} worker threads", cores);
 
     // Read the input corpus from the given input directory
-    let mut input_corpus = Vec::new();
+    let mut input_corpus: Vec<Arc<InputWithMetadata<FUZZER::Input>>> = Vec::new();
 
     // Use the user given input directory or default to <PROJECT_DIR>/input
     let input_dir = if let Some(input_dir) = &args.input_dir {
@@ -165,7 +165,24 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
             }
 
             // Add the input to the input corpus
-            input_corpus.push(FUZZER::Input::from_bytes(&std::fs::read(filepath)?)?);
+            let input = FUZZER::Input::from_bytes(&std::fs::read(filepath)?)?;
+            let metadata_path = project_state
+                .path
+                .join("metadata")
+                .join(crate::utils::hexdigest(&input));
+
+            let input = if let Ok(data) = std::fs::read_to_string(metadata_path) {
+                let metadata = serde_json::from_str(&data)?;
+                InputWithMetadata {
+                    input,
+                    metadata: RwLock::new(metadata),
+                }
+            } else {
+                InputWithMetadata::from_input(input)
+            };
+
+            let input = Arc::new(input);
+            input_corpus.push(input);
         }
     } else {
         log::warn!("No input directory found: {input_dir:?}, starting with an empty corpus!");
@@ -211,11 +228,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
     let ProjectCoverage {
         coverage_left,
         prev_coverage,
-        prev_redqueen_coverage,
-    } = project_state.coverage_left()?;
-
-    log::info!("Coverage left: {}", coverage_left.len());
-    log::info!("Redqueen coverage: {}", prev_redqueen_coverage.len());
+    } = project_state.feedback()?;
 
     // Init the coverage breakpoints mapping to byte
     let mut covbp_bytes = BTreeMap::new();
@@ -287,20 +300,6 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         prev_coverage.len(),
         start.elapsed()
     );
-
-    #[cfg(feature = "redqueen")]
-    let mut starting_prev_redqueen_coverage = {
-        let start = std::time::Instant::now();
-        let result = (0..=cores)
-            .map(|_| prev_redqueen_coverage.clone())
-            .collect::<Vec<_>>();
-        log::info!(
-            "Cloned {} previous redqueen coverage in {:?}",
-            cores,
-            start.elapsed()
-        );
-        result
-    };
 
     #[cfg(feature = "redqueen")]
     let mut starting_redqueen_breakpoints = {
@@ -375,6 +374,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         if corpus.is_empty() {
             let mut rng = Rng::new();
             let input = FUZZER::Input::generate(&[], &mut rng, &dict, FUZZER::MAX_INPUT_LENGTH);
+            let input = Arc::new(input);
             input_corpus.push(input.clone());
             corpus.push(input);
         }
@@ -390,9 +390,6 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         let config = std::mem::take(&mut starting_configs[id]);
 
         let unwinders = std::mem::take(&mut starting_unwinders[id]);
-
-        #[cfg(feature = "redqueen")]
-        let prev_redqueen_coverage = std::mem::take(&mut starting_prev_redqueen_coverage[id]);
 
         #[cfg(feature = "redqueen")]
         let redqueen_breakpoints = std::mem::take(&mut starting_redqueen_breakpoints[id]);
@@ -433,8 +430,6 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
                     stop_after_time,
                     stop_after_first_crash,
                     unwinders,
-                    #[cfg(feature = "redqueen")]
-                    prev_redqueen_coverage,
                     #[cfg(feature = "redqueen")]
                     redqueen_breakpoints,
                 )
@@ -553,22 +548,12 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         // Set the core affinity for this core to always be 0
         core_affinity::set_for_current(first_core);
 
-        let mut tmp = BTreeSet::new();
-        for x in prev_coverage.iter() {
-            // TODO: handle other previous coverage?
-            // if let FeedbackLog::VAddr(addr) = *x {
-            tmp.insert(*x);
-            // }
-        }
-        let prev_coverage = tmp;
-
         // Start the stats worker
         let res = stats::worker(
             curr_stats,
             &project_state.modules,
             &project_dir,
             prev_coverage,
-            prev_redqueen_coverage,
             &input_corpus,
             project_state.coverage_breakpoints,
             &symbols,
@@ -662,16 +647,15 @@ fn start_core<FUZZER: Fuzzer>(
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
     coverage_breakpoints: Option<BTreeMap<VirtAddr, u8>>,
     core_stats: &Arc<Mutex<Stats<FUZZER>>>,
-    project_dir: &Path,
+    project_dir: &PathBuf,
     vm_timeout: Duration,
-    mut corpus: Vec<FUZZER::Input>,
+    mut corpus: Vec<Arc<InputWithMetadata<FUZZER::Input>>>,
     dictionary: &Option<Vec<Vec<u8>>>,
-    prev_coverage: BTreeSet<VirtAddr>,
+    mut feedback: FeedbackTracker,
     config: &Config,
     stop_after_time: Option<Duration>,
     stop_after_first_crash: bool,
     unwinders: StackUnwinders,
-    #[cfg(feature = "redqueen")] prev_redqueen_coverage: RedqueenFeedback,
     #[cfg(feature = "redqueen")] redqueen_breakpoints: Option<Vec<(u64, RedqueenArguments)>>,
 ) -> Result<()> {
     /// Helper macro to time the individual components of resetting the guest state
@@ -732,15 +716,6 @@ fn start_core<FUZZER: Fuzzer>(
 
     fuzzvm.core_stats = Some(core_stats.clone());
 
-    log::info!("Starting with {} coverage", prev_coverage.len());
-
-    let mut feedback: FeedbackTracker = FeedbackTracker::from_prev(prev_coverage);
-
-    #[cfg(feature = "redqueen")]
-    {
-        feedback.redqueen = prev_redqueen_coverage;
-    }
-
     // Addresses covered by the current input
     // let mut new_coverage_for_input = BTreeSet::new();
 
@@ -772,6 +747,7 @@ fn start_core<FUZZER: Fuzzer>(
     core_stats.lock().unwrap().perf_stats.start_time = crate::utils::rdtsc();
 
     // Cache the shared redqueen seen state to avoid having to shared lock as much as possible
+    #[cfg(feature = "redqueen")]
     let mut local_redqueen_seen = BTreeSet::new();
 
     'finish: for _iter in 0usize.. {
@@ -781,17 +757,33 @@ fn start_core<FUZZER: Fuzzer>(
         // Signal that this core is alive
         core_stats.lock().unwrap().alive = true;
 
+        if coverage_sync.elapsed() >= config.stats.coverage_sync_timer {
+            time!(SyncCov1, {
+                // Append the current coverage
+                core_stats.lock().unwrap().feedback.merge(&feedback);
+            });
+
+            time!(SyncCov2, {
+                feedback.merge(&core_stats.lock().unwrap().feedback);
+            });
+
+            time!(SyncCov3, {
+                // Send the current corpus to the main corpus collection
+                core_stats.lock().unwrap().old_corpus = Some(corpus.clone());
+            });
+
+            // Reset the last sync counter
+            coverage_sync = Instant::now();
+        }
+
         // Sync the corpus with the main stats
-        if last_corpus_sync.elapsed() >= config.stats.merge_coverage_timer {
+        if last_corpus_sync.elapsed() >= config.stats.merge_corpus_timer {
             time!(MergeCoverageSync, {
                 // Replace the fuzzer corpus
                 let mut curr_stats = core_stats.lock().unwrap();
 
                 if let Some(new_corp) = curr_stats.new_corpus.take() {
                     if !new_corp.is_empty() {
-                        // Send the current corpus to the main corpus collection
-                        curr_stats.old_corpus = Some(corpus);
-
                         corpus = new_corp;
                     }
                 }
@@ -813,26 +805,6 @@ fn start_core<FUZZER: Fuzzer>(
                 // Reset the last sync counter
                 last_sync = Instant::now();
             });
-        }
-
-        if coverage_sync.elapsed() >= config.stats.coverage_sync_timer {
-            time!(SyncCov1, {
-                // Append the current coverage
-                core_stats.lock().unwrap().feedback.merge(&feedback);
-            });
-
-            time!(SyncCov2, {
-                // Reset the local coverage to match the global coverage set in stats
-                // for addr in &core_stats.lock().unwrap().coverage {
-                //     // coverage.insert(*addr);
-                //     feedback.record_codecov(*addr);
-                // }
-                let global = &core_stats.lock().unwrap().feedback;
-                feedback.merge(global);
-            });
-
-            // Reset the last sync counter
-            coverage_sync = Instant::now();
         }
 
         iters += 1;
@@ -884,7 +856,7 @@ fn start_core<FUZZER: Fuzzer>(
                                     // If this file hash hasn't been seen yet by any other core,
                                     // take the input for this core.
                                     if lock.insert(hash) {
-                                        input = temp_input.clone();
+                                        input = temp_input.fork();
                                         new_input = true;
                                         should_redqueen = true;
                                         break 'next_input;
@@ -921,8 +893,6 @@ fn start_core<FUZZER: Fuzzer>(
                     vm_timeout,
                     &mut feedback,
                 )?;
-
-                core_stats.lock().unwrap().rq_iterations += 1;
             }
 
             // If this input has never been through redqueen or hit the small change to go through again,
@@ -945,21 +915,11 @@ fn start_core<FUZZER: Fuzzer>(
                         &mut corpus,
                         &mut feedback,
                         redqueen_time_spent,
-                        &project_dir.join("metadata"),
-                        0,
+                        project_dir,
                     )?;
 
                     // Signal this thread is in not in redqueen
                     core_stats.lock().unwrap().in_redqueen = false;
-
-                    // If redqueen found new inputs, write them to disk
-                    /*
-                    if corpus.len() > orig_corpus_len {
-                        for input in &corpus {
-                            save_input_in_dir(input, &corpus_dir)?;
-                        }
-                    }
-                    */
                 });
             }
 
@@ -976,7 +936,8 @@ fn start_core<FUZZER: Fuzzer>(
 
         // Mutate the input based on the fuzzer
         let input_hash = input.fuzz_hash();
-        let mutation = time!(
+
+        time!(
             InputMutate,
             fuzzer.mutate_input(
                 &mut input,
@@ -1067,11 +1028,9 @@ fn start_core<FUZZER: Fuzzer>(
             );
 
             // If we hit a coverage execution, add the RIP to
-            match execution {
-                Execution::CoverageContinue => {
-                    feedback.record_codecov(rip);
-                }
-                _ => {}
+            if matches!(execution, Execution::CoverageContinue) {
+                // log::info!("RIP: {rip:x?}");
+                feedback.record_codecov(rip);
             }
 
             // If we hit a coverage execution, add the RIP to
@@ -1139,8 +1098,7 @@ fn start_core<FUZZER: Fuzzer>(
             // Increment the timeouts count
             core_stats.lock().unwrap().timeouts += 1;
 
-            let mut input_bytes = Vec::new();
-            input.to_bytes(&mut input_bytes)?;
+            let input_bytes = input.input_as_bytes()?;
 
             // Attempt to write the crashing input and pass to fuzzer if it is a new input
             if let Some(crash_file) =
@@ -1159,8 +1117,7 @@ fn start_core<FUZZER: Fuzzer>(
 
         // Check if the input hit any kasan_report blocks
         if let Some(path) = fuzzvm.get_kasan_crash_path() {
-            let mut input_bytes = Vec::new();
-            input.to_bytes(&mut input_bytes)?;
+            let mut input_bytes = input.input_as_bytes()?;
 
             // Found a valid KASAN output, write out the crashing input
             if let Some(crash_file) =
@@ -1186,11 +1143,7 @@ fn start_core<FUZZER: Fuzzer>(
                 }
             }
 
-            // Get the new coverage for the metadata log
-            let new_coverage = feedback.take_log();
-
-            let mut input_bytes = Vec::new();
-            input.to_bytes(&mut input_bytes)?;
+            let input_bytes = input.input_as_bytes()?;
 
             // Attempt to write the crashing input and pass to fuzzer if it is a new input
             if let Some(crash_file) =
@@ -1205,22 +1158,7 @@ fn start_core<FUZZER: Fuzzer>(
                 // file from the input
                 fuzzer.handle_crash(&input, &mut fuzzvm, &crash_file)?;
 
-                let mutation_metadata = InputMetadata {
-                    original_file: original_file_hash,
-                    mutation: mutation.clone(),
-                    new_coverage,
-                };
-
-                // Write the metadata for this new input
-                let metadata_path = project_dir.join("metadata");
-                if !metadata_path.exists() {
-                    let _ = std::fs::create_dir(&metadata_path);
-                }
-
-                // Get the fuzz hash for this input
-                let hash = input.fuzz_hash();
-                let filepath = metadata_path.join(format!("crash_{hash:016x}"));
-                std::fs::write(filepath, serde_json::to_string(&mutation_metadata)?)?;
+                save_input_in_project(&input, project_dir);
             }
 
             if stop_after_first_crash {
@@ -1228,32 +1166,15 @@ fn start_core<FUZZER: Fuzzer>(
             }
         } else if feedback.has_new() {
             // If this input generated new coverage, add the input to the corpus
-
-            // Gather the mutation metadata for this iteration
             let new_coverage = feedback.take_log();
-
-            let mutation_metadata = InputMetadata {
-                original_file: original_file_hash,
-                mutation,
-                new_coverage,
-            };
-
-            // Write the metadata for this new input
-            let metadata_path = project_dir.join("metadata");
-            if !metadata_path.exists() {
-                std::fs::create_dir(&metadata_path)?;
-            }
-
-            // Get the fuzz hash for this input
-            let hash = input.fuzz_hash();
-            let filepath = metadata_path.join(format!("{hash:016x}"));
-            std::fs::write(filepath, serde_json::to_string(&mutation_metadata)?)?;
+            input.add_new_coverage(new_coverage);
+            assert!(!input.metadata.read().unwrap().new_coverage.is_empty());
 
             // Save this input in the corpus dir
-            save_input_in_dir(&input, &corpus_dir)?;
+            save_input_in_project(&input, &project_dir)?;
 
             // Add the input to the corpus
-            corpus.push(input);
+            corpus.push(Arc::new(input));
         }
 
         feedback.ensure_clean();
@@ -1306,7 +1227,7 @@ fn start_core<FUZZER: Fuzzer>(
 
     // Write this current corpus to disk
     for input in &corpus {
-        save_input_in_dir(input, &corpus_dir)?;
+        save_input_in_project(input, &project_dir)?;
     }
 
     // Save the corpus in old_corpus for stats to sync with
