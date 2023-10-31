@@ -1297,7 +1297,12 @@ def get_collapsed_rule(instr):
         # rax = strcmp(..)
         # rax = rax == 0
         if definition.operation == LowLevelILOperation.LLIL_CALL:
-            func_name = bv.get_symbol_at(definition.dest.constant)
+            if hasattr(definition.dest, 'constant'):
+                func_name = bv.get_symbol_at(definition.dest.constant)
+            else:
+                log_warn(f"Call with no constant? Possibly by register? {definition}")
+                func_name = 'unknown_func'
+
             func_alias = FUNCTION_ALIASES.get(func_name)
             if func_alias in (
                     FunctionAlias.MEMCMP, 
