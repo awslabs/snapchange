@@ -34,7 +34,7 @@ const DUMP_RAW_SCORES: Option<&'static str> = None;
 
 /// A basic block mode metadata. This data is read from the output of the
 /// [`bn_snapchange.py`] Binary Ninja plugin.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Node {
     /// Address of this basic block node
     address: u64,
@@ -97,7 +97,7 @@ pub struct CoverageAnalysis {
     called_func_indexes: Vec<Option<Vec<usize>>>,
 
     /// This node has been hit
-    hits: Vec<bool>,
+    pub hits: Vec<bool>,
 
     /// The dominator tree children indexes for this node
     dominator_tree_childrens: Vec<Vec<usize>>,
@@ -111,9 +111,27 @@ pub struct CoverageAnalysis {
     /// Only update the scores of the nodes after nodes have been hit
     update_needed: bool,
 
-    /// Currently cached results for the current best options. This is only updated once
+    /// Currently cached blocker results for the current best options. This is only updated once
     /// nodes have been hit
-    cached_results: Vec<(usize, VirtAddr)>,
+    cached_blocker_results: Vec<(usize, VirtAddr)>,
+
+    /// Currently cached total (in the fuzz path or not) results for the current best options.
+    /// This is only updated once nodes have been hit
+    cached_total_results: Vec<(usize, VirtAddr)>,
+}
+
+/// The found coverage blockers from the coverage analysis
+pub struct Blockers<'a> {
+    /// Coverage blockers that are currently in the fuzz path.
+    ///
+    /// These blockers currently have one of its parents hit
+    pub in_path: &'a Vec<(usize, VirtAddr)>,
+
+    /// Coverage blockers found in the entire target, regardless of if they
+    /// are in the fuzz path or not.
+    ///
+    /// These could give insight into missed harness opportunities.
+    pub total: &'a Vec<(usize, VirtAddr)>,
 }
 
 impl CoverageAnalysis {
@@ -153,6 +171,19 @@ impl CoverageAnalysis {
         // Serialize and write the data to the `save_path`
         let data = std::fs::read_to_string(load_path)?;
         let state: CoverageAnalysis = serde_json::from_str(&data)?;
+
+        let mut seen = BTreeMap::new();
+        for node in &state.nodes {
+            if seen.contains_key(&node.address) {
+                panic!(
+                    "Node already seen: {:x?} {:x?}",
+                    seen.get(&node.address),
+                    node
+                );
+            }
+
+            seen.insert(node.address, node);
+        }
 
         log::info!("Loading coverage analysis state took {:?}", start.elapsed());
 
@@ -290,7 +321,8 @@ impl CoverageAnalysis {
                         // Only add to the score for this node if the node has not been
                         // hit already
                         self.reachable_nodes[curr_node_index].insert(*child_index);
-                        work.push_back(*child_index);
+                        // work.push_back(*child_index);
+                        work.push_front(*child_index);
 
                         // Add this child node to the lookup table to remove if this
                         // child node is hit
@@ -327,13 +359,21 @@ impl CoverageAnalysis {
 
     /// Get the nodes sorted by best current score. The score for each node is the score
     /// of all of its unhit children nodes.
-    pub fn best_options(&mut self) -> &Vec<(usize, VirtAddr)> {
+    pub fn best_options(&mut self) -> Blockers {
         // If there are no updates needed, return the current cached results
-        if !self.update_needed && !self.cached_results.is_empty() {
-            return &self.cached_results;
+        if !self.update_needed && !self.cached_blocker_results.is_empty() {
+            return Blockers {
+                in_path: &self.cached_blocker_results,
+                total: &self.cached_total_results,
+            };
         }
 
-        let mut all_scores = Vec::new();
+        // Collection of scores of blocks currently in a fuzz path
+        let mut blocker_scores = Vec::new();
+
+        // Collection of scores of blocks not in a fuzz path, but found in
+        // the target nonetheless
+        let mut total_scores = Vec::new();
 
         let mut seen = BTreeSet::new();
 
@@ -358,21 +398,50 @@ impl CoverageAnalysis {
                 continue;
             }
 
-            // Add this score to the list of all current scores
-            all_scores.push((score, (VirtAddr(addr), node_index)));
+            // If this node hasn't been hit yet, ignore it for now. We only want to display
+            // nodes that have been hit and whose children haven't all been explored yet.
+            if !self.hits[node_index] {
+                // Add this score to the list of all current scores
+                blocker_scores.push((score, (VirtAddr(addr), node_index)));
+            } else {
+                total_scores.push((score, (VirtAddr(addr), node_index)));
+            }
         }
 
         // Sort the calculated scores by the score value
-        all_scores.sort();
-        all_scores.reverse();
+        blocker_scores.sort();
+        blocker_scores.reverse();
+
+        // Sort the calculated scores by the score value
+        total_scores.sort();
+        total_scores.reverse();
 
         // Reset the cached results to be re-populated
-        self.cached_results.clear();
+        self.cached_blocker_results.clear();
+        self.cached_total_results.clear();
 
-        // With all_scores being sorted by score, add each node and then remove all
+        // With blocker_scores being sorted by score, add each node and then remove all
         // nodes under the added node. This will prevent the results being populated by
         // all nodes from the same path.
-        for (score, (addr, node_index)) in &all_scores {
+        for (score, (addr, node_index)) in &blocker_scores {
+            /*
+            // Ignore nodes that have been seen before from other nodes
+            if !seen.insert(*node_index) {
+                continue;
+            }
+            */
+
+            // Found a good candidate! Add each of its reachable nodes to the seen
+            // set to ignore them later since this node's score contains those nodes
+            for node in &self.reachable_nodes[*node_index] {
+                seen.insert(*node);
+            }
+
+            // Found a new result, add it!
+            self.cached_blocker_results.push((*score, *addr));
+        }
+
+        for (score, (addr, node_index)) in &total_scores {
             // Ignore nodes that have been seen before from other nodes
             if !seen.insert(*node_index) {
                 continue;
@@ -385,13 +454,20 @@ impl CoverageAnalysis {
             }
 
             // Found a new result, add it!
-            self.cached_results.push((*score, *addr));
+            self.cached_total_results.push((*score, *addr));
         }
 
         if let Some(outfile) = DUMP_RAW_SCORES {
             let mut res = String::new();
             let mut dot = "digraph nodes {\n".to_string();
-            for (score, (addr, _node_index)) in &all_scores {
+            for (score, (addr, _node_index)) in &blocker_scores {
+                let addr = addr.0;
+                res.push_str(&format!("{addr:#x} {score}\n"));
+                dot.push_str(&format!(
+                    "\"{addr:x}\" [label=\"{addr:#x} Scores {score}\"];\n"
+                ));
+            }
+            for (score, (addr, _node_index)) in &total_scores {
                 let addr = addr.0;
                 res.push_str(&format!("{addr:#x} {score}\n"));
                 dot.push_str(&format!(
@@ -422,6 +498,9 @@ impl CoverageAnalysis {
         self.update_needed = false;
 
         // Return the best scores
-        &self.cached_results
+        Blockers {
+            in_path: &self.cached_blocker_results,
+            total: &self.cached_total_results,
+        }
     }
 }
