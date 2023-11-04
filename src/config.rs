@@ -100,6 +100,7 @@ const fn default_guest_memory_size() -> u64 {
     5 * 1024 * 1024 * 1024
 }
 
+#[cfg(feature = "redqueen")]
 const fn default_mutate_by_redqueen_rules() -> bool {
     false
 }
@@ -134,7 +135,7 @@ impl std::default::Default for Redqueen {
         Self {
             entropy_threshold: 10,
             cores: 4,
-            mutate_by_redqueen_rules: false,
+            mutate_by_redqueen_rules: default_mutate_by_redqueen_rules(),
         }
     }
 }

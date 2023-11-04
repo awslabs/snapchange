@@ -269,7 +269,7 @@ impl Execution {
 }
 
 /// Maximum number of cores supported
-pub(crate) static MAX_CORES: usize = 200;
+pub(crate) const MAX_CORES: usize = 200;
 
 lazy_static::lazy_static! {
      /// List of Thread IDs created for the fuzz workers used to send signals to forcibly
@@ -464,7 +464,7 @@ fn handle_vmexit<FUZZER: Fuzzer>(
                 let _bp = fuzzvm.rdx();
                 let crashing_addr = fuzzvm.rcx();
                 let is_write = fuzzvm.r8b();
-                let size = fuzzvm.r9b();
+                let _size = fuzzvm.r9b();
                 fatal = fuzzvm.read::<bool>(VirtAddr(fuzzvm.rsp() + 0x10), fuzzvm.cr3())?;
 
                 let symbol = fuzzvm.get_symbol(pc).unwrap_or_default();
@@ -508,7 +508,7 @@ fn handle_vmexit<FUZZER: Fuzzer>(
                 Execution::Continue
             };
 
-            let mut input_bytes = input.input_as_bytes()?;
+            let input_bytes = input.input_as_bytes()?;
 
             if let Some(crash_file) =
                 write_crash_input(&crash_dir, &dirname, &input_bytes, &fuzzvm.console_output)?

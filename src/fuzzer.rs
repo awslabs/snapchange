@@ -173,7 +173,7 @@ pub trait Fuzzer: Default + Sized {
     fn schedule_next_input(
         &mut self,
         corpus: &[Arc<InputWithMetadata<Self::Input>>],
-        feedback: &mut FeedbackTracker,
+        _feedback: &mut FeedbackTracker,
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
     ) -> InputWithMetadata<Self::Input> {

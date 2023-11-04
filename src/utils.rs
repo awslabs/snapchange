@@ -143,7 +143,7 @@ pub fn save_input_in_project<T: FuzzInput>(
 
     // Write the metadata to the metadata folder
     let filepath = metadata_dir.join(filename);
-    std::fs::write(filepath, input.serialized_metadata()?);
+    std::fs::write(filepath, input.serialized_metadata()?)?;
 
     Ok(length)
 }

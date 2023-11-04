@@ -2,7 +2,6 @@
 
 use crate::fuzzer::Fuzzer;
 use crate::FuzzVm;
-use crate::VirtAddr;
 use iced_x86::Register;
 
 /// Implement getter/setters for register accesses in the VM
@@ -477,6 +476,7 @@ impl<FUZZER: Fuzzer> FuzzVm<'_, FUZZER> {
             Register::YMM14 => 0xdead_000e,
             Register::YMM15 => 0xdead_000f,
 
+            #[allow(deprecated)]
             Register::DontUseFA => self.fsbase() as i128,
 
             _ => unimplemented!("Unimpl reg: {:?}", reg),

@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::io::AsRawFd;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -21,13 +21,12 @@ use crate::cmdline::ProjectCoverage;
 use crate::config::Config;
 use crate::coverage_analysis::CoverageAnalysis;
 use crate::enable_manual_dirty_log_protect;
-use crate::fuzz_input::{CoverageType, FuzzInput, InputMetadata, InputWithMetadata};
+use crate::fuzz_input::{FuzzInput, InputWithMetadata};
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::FuzzVm;
 use crate::rng::Rng;
 use crate::stats::PerfStatTimer;
 use crate::stats::{self, PerfMark};
-use crate::try_u64;
 use crate::utils::save_input_in_project;
 use crate::{block_sigalrm, kick_cores, Stats, FINISHED};
 
@@ -36,14 +35,10 @@ use crate::{fuzzvm, unblock_sigalrm, write_crash_input, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
 use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
 
-use crate::feedback::{FeedbackLog, FeedbackTracker};
+use crate::feedback::FeedbackTracker;
 
 #[cfg(feature = "redqueen")]
-use crate::cmp_analysis::{RedqueenArguments, RedqueenCoverage, RedqueenRule};
-#[cfg(feature = "redqueen")]
-use crate::feedback::RedqueenFeedback;
-#[cfg(feature = "redqueen")]
-use x86_64::registers::rflags::RFlags;
+use crate::cmp_analysis::RedqueenArguments;
 
 use crate::stack_unwinder::StackUnwinders;
 
@@ -60,7 +55,7 @@ pub static SINGLE_STEP_DEBUG: AtomicBool = AtomicBool::new(false);
 
 /// Execute the fuzz subcommand to fuzz the given project
 pub(crate) fn run<FUZZER: Fuzzer + 'static>(
-    mut project_state: ProjectState,
+    project_state: ProjectState,
     args: &cmdline::Fuzz,
 ) -> Result<()> {
     log::info!("{:x?}", project_state.config);
@@ -209,7 +204,6 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
     let max_new_corpus_size = project_state.config.stats.maximum_new_corpus_size;
     let starting_corp_len = input_corpus_len.min(max_new_corpus_size);
     log::info!("Starting corp len: {starting_corp_len}");
-    let mut corp_counter = 0;
 
     log::info!(
         "Starting corpus: Total {} Per core {}",
@@ -259,9 +253,6 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         covbp_bytes.len(),
         f64::from(count) / start.elapsed().as_secs_f64()
     );
-
-    #[cfg(feature = "redqueen")]
-    let redqueen_rules: BTreeMap<u64, BTreeSet<RedqueenRule>> = BTreeMap::new();
 
     // Due to the time it takes to clone large corpi, symbols, or coverage breakpoints,
     // we bulk clone as many as we need for all the cores at once and then `.take` them
@@ -716,9 +707,6 @@ fn start_core<FUZZER: Fuzzer>(
 
     fuzzvm.core_stats = Some(core_stats.clone());
 
-    // Addresses covered by the current input
-    // let mut new_coverage_for_input = BTreeSet::new();
-
     // Number of iterations before syncing stats
     let mut coverage_sync = std::time::Instant::now();
     let mut last_sync = std::time::Instant::now();
@@ -740,15 +728,12 @@ fn start_core<FUZZER: Fuzzer>(
     // Get the crash dir for this project
     let crash_dir = project_dir.join("crashes");
 
-    // Get the corpus dir for this project
-    let corpus_dir = project_dir.join("current_corpus");
-
     let fuzz_start_time = std::time::Instant::now();
     core_stats.lock().unwrap().perf_stats.start_time = crate::utils::rdtsc();
 
     // Cache the shared redqueen seen state to avoid having to shared lock as much as possible
     #[cfg(feature = "redqueen")]
-    let mut local_redqueen_seen = BTreeSet::new();
+    let mut local_redqueen_seen: BTreeSet<u64> = BTreeSet::new();
 
     'finish: for _iter in 0usize.. {
         // Create the scoped timer
@@ -782,6 +767,9 @@ fn start_core<FUZZER: Fuzzer>(
                 // Replace the fuzzer corpus
                 let mut curr_stats = core_stats.lock().unwrap();
 
+                // Send the current corpus to the main corpus collection
+                curr_stats.old_corpus = Some(corpus.clone());
+
                 if let Some(new_corp) = curr_stats.new_corpus.take() {
                     if !new_corp.is_empty() {
                         corpus = new_corp;
@@ -809,9 +797,6 @@ fn start_core<FUZZER: Fuzzer>(
 
         iters += 1;
 
-        // Reset new coverage marker
-        // new_coverage_for_input.clear();
-
         // Reset the fuzzer state
         fuzzer.reset_fuzzer_state();
 
@@ -822,17 +807,14 @@ fn start_core<FUZZER: Fuzzer>(
         );
 
         let original_file_hash = input.fuzz_hash();
-        let orig_corpus_len = corpus.len();
-        let orig_feedback_len = feedback.len();
 
         // Gather redqueen for this input if there aren't already replacement rules found
         #[cfg(feature = "redqueen")]
         if fuzzvm.redqueen_breakpoints.is_some() {
-            let input_hash = input.fuzz_hash();
             let mut new_input = !fuzzvm.redqueen_rules.contains_key(&original_file_hash);
             let mut should_redqueen = new_input;
 
-            // Currently, each RQ input will only be checked one by core globally. This is done
+            // Currently, each RQ input will only be checked once globally. This is done
             // with a shared Arc<Mutex<BTreeSet<FuzzInputHash>>>. The timing here is to ensure that
             // we aren't thrashing the shared lock.
             if fuzzvm.core_id <= config.redqueen.cores {
@@ -850,24 +832,21 @@ fn start_core<FUZZER: Fuzzer>(
 
                         // New input for this core, check if this input has already been
                         // redqueen'd by another core
-                        loop {
-                            match core_stats.lock().unwrap().redqueen_seen.try_lock() {
-                                Ok(mut lock) => {
-                                    // If this file hash hasn't been seen yet by any other core,
-                                    // take the input for this core.
-                                    if lock.insert(hash) {
-                                        input = temp_input.fork();
-                                        new_input = true;
-                                        should_redqueen = true;
-                                        break 'next_input;
-                                    } else {
-                                        continue 'next_input;
-                                    }
-                                }
-                                _ => {
-                                    counter += 1;
+                        match core_stats.lock().unwrap().redqueen_seen.try_lock() {
+                            Ok(mut lock) => {
+                                // If this file hash hasn't been seen yet by any other core,
+                                // take the input for this core.
+                                if lock.insert(hash) {
+                                    input = temp_input.fork();
+                                    new_input = true;
+                                    should_redqueen = true;
+                                } else {
                                     continue 'next_input;
                                 }
+                            }
+                            _ => {
+                                counter += 1;
+                                continue 'next_input;
                             }
                         }
                     }
@@ -899,13 +878,9 @@ fn start_core<FUZZER: Fuzzer>(
             // execute redqueen on this input
             if fuzzvm.core_id <= config.redqueen.cores && should_redqueen {
                 time!(Redqueen, {
-                    let redqueen_time_spent = Duration::from_secs(0);
-
                     // Signal this thread is in redqueen
                     core_stats.lock().unwrap().in_redqueen = true;
                     core_stats.lock().unwrap().iterations = 0;
-
-                    let orig_corpus_len = corpus.len();
 
                     // Execute redqueen for this input
                     fuzzvm.gather_redqueen(
@@ -914,8 +889,6 @@ fn start_core<FUZZER: Fuzzer>(
                         vm_timeout,
                         &mut corpus,
                         &mut feedback,
-                        redqueen_time_spent,
-                        project_dir,
                     )?;
 
                     // Signal this thread is in not in redqueen
@@ -1117,7 +1090,7 @@ fn start_core<FUZZER: Fuzzer>(
 
         // Check if the input hit any kasan_report blocks
         if let Some(path) = fuzzvm.get_kasan_crash_path() {
-            let mut input_bytes = input.input_as_bytes()?;
+            let input_bytes = input.input_as_bytes()?;
 
             // Found a valid KASAN output, write out the crashing input
             if let Some(crash_file) =
@@ -1158,7 +1131,7 @@ fn start_core<FUZZER: Fuzzer>(
                 // file from the input
                 fuzzer.handle_crash(&input, &mut fuzzvm, &crash_file)?;
 
-                save_input_in_project(&input, project_dir);
+                save_input_in_project(&input, project_dir)?;
             }
 
             if stop_after_first_crash {
@@ -1171,7 +1144,7 @@ fn start_core<FUZZER: Fuzzer>(
             assert!(!input.metadata.read().unwrap().new_coverage.is_empty());
 
             // Save this input in the corpus dir
-            save_input_in_project(&input, &project_dir)?;
+            save_input_in_project(&input, project_dir)?;
 
             // Add the input to the corpus
             corpus.push(Arc::new(input));
@@ -1190,26 +1163,7 @@ fn start_core<FUZZER: Fuzzer>(
         }
 
         // Reset the guest state
-        let guest_reset_perf = fuzzvm.reset_guest_state(&mut fuzzer)?;
-
-        // core_stats.lock().unwrap().dirty_pages_kvm += try_u64!(guest_reset_perf.restored_kvm_pages);
-        // core_stats.lock().unwrap().dirty_pages_custom += try_u64!(guest_reset_perf.restored_custom_pages);
-
-        /*
-        if guest_reset_perf.restored_pages > 60000 {
-            let path = format!("dirty_pages_{}", guest_reset_perf.restored_pages);
-
-            // Attempt to write the crashing input and pass to fuzzer if it is a new input
-            if let Some(crash_file) = write_crash_input(crash_dir, &path, &input,
-                &fuzzvm.console_output)? {
-
-                if SINGLE_STEP_DEBUG.load(Ordering::SeqCst) {
-                    std::fs::write(crash_file.with_extension("single_step"),
-                        instrs.join("\n"))?;
-                }
-            }
-        }
-        */
+        fuzzvm.reset_guest_state(&mut fuzzer)?;
 
         if let Some(t) = stop_after_time {
             if fuzz_start_time.elapsed() >= t {

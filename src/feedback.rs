@@ -319,13 +319,13 @@ impl FeedbackTracker {
                     let _new = self.record(*val);
                 }
 
-                /// observed new max value for given tag.
+                // Observed new max value for given tag.
                 #[cfg(feature = "custom_feedback")]
                 FeedbackLog::CustomMax((tag, val)) => {
                     let _new = self.record_max(*tag, *val);
                 }
 
-                /// while performing redqueen, observed new rflags for a given comparison address.
+                // while performing redqueen, observed new rflags for a given comparison address.
                 #[cfg(feature = "redqueen")]
                 FeedbackLog::Redqueen(rq_cov) => {
                     if self.redqueen.insert(*rq_cov) {

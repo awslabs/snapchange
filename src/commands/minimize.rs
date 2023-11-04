@@ -4,7 +4,7 @@ use rustc_hash::FxHashSet;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::os::unix::io::AsRawFd;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -85,12 +85,10 @@ fn start_core<FUZZER: Fuzzer>(
     #[cfg(feature = "redqueen")]
     let redqueen_breakpoints = None;
 
-    if min_params.codecov_level == MinimizeCodeCovLevel::Hitcounts
-        || min_params.codecov_level == MinimizeCodeCovLevel::BasicBlock
+    use MinimizeCodeCovLevel::{BasicBlock, Hitcounts};
+    if matches!(min_params.codecov_level, Hitcounts | BasicBlock) && !coverage_breakpoints.is_some()
     {
-        if !coverage_breakpoints.is_some() {
-            anyhow::bail!("code coverage level requires breakpoint addresses!");
-        }
+        anyhow::bail!("code coverage level requires breakpoint addresses!");
     }
 
     let bp_type = if min_params.codecov_level == MinimizeCodeCovLevel::Hitcounts {
@@ -337,7 +335,7 @@ fn start_core<FUZZER: Fuzzer>(
         return Ok(());
     }
 
-    let mut result_bytes = input.input_as_bytes()?;
+    let result_bytes = input.input_as_bytes()?;
 
     // Write the minimized file
     log::info!(

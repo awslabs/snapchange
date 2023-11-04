@@ -4,7 +4,6 @@ use anyhow::{anyhow, ensure, Context, Result};
 use clap::Parser;
 use log::debug;
 use thiserror::Error;
-use x86_64::registers::rflags::RFlags;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::File;
@@ -13,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::addrs::{Cr3, VirtAddr};
-use crate::cmp_analysis::{Conditional, Operand, RedqueenArguments, RedqueenCoverage, Size};
+use crate::cmp_analysis::{Conditional, Operand, RedqueenArguments, Size};
 use crate::config::Config;
 use crate::feedback::FeedbackTracker;
 use crate::fuzzer::ResetBreakpointType;
@@ -129,7 +128,7 @@ impl ProjectState {
     pub fn feedback(&self) -> Result<ProjectCoverage> {
         let prev_coverage_file = self.path.join("coverage.all");
         let mut prev_coverage: FeedbackTracker = FeedbackTracker::default();
-        if let Ok(data) = std::fs::read_to_string(&prev_coverage_file) {
+        if let Ok(data) = std::fs::read_to_string(prev_coverage_file) {
             prev_coverage = serde_json::from_str(&data)?;
         }
 
@@ -648,9 +647,6 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     let mut covbps_paths = Vec::new();
 
     #[cfg(feature = "redqueen")]
-    let mut redqueen_available = false;
-
-    #[cfg(feature = "redqueen")]
     let mut cmps_paths = Vec::new();
 
     // Read the snapshot directory looking for the specific file extensions
@@ -699,7 +695,6 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
                 }
                 #[cfg(feature = "redqueen")]
                 Some("cmps") => {
-                    redqueen_available = true;
                     cmps_paths.push(file.path());
                 }
                 Some("physmem") => physical_memory = Some(file.path()),
@@ -787,15 +782,12 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     for covbps_path in &covbps_paths {
         let covbps = coverage_breakpoints.get_or_insert(BTreeSet::new());
 
-        let mut bps = parse_coverage_breakpoints(&covbps_path)?;
+        let mut bps = parse_coverage_breakpoints(covbps_path)?;
 
         // Ensure no coverage breakpoints are redqueen breakpoints as the
         // redqueen breakpoints are not one-shot and will be reapplied
         // even when they are hit
-        bps = bps
-            .into_iter()
-            .filter(|addr| !redqueen_bp_addrs.contains(&addr.0))
-            .collect();
+        bps.retain(|addr| !redqueen_bp_addrs.contains(&addr.0));
 
         let module = covbps_path
             .file_prefix()
@@ -1587,14 +1579,15 @@ pub fn parse_timeout(input: &str) -> anyhow::Result<Duration> {
 }
 
 fn parse_cores(str: &str) -> Result<usize, anyhow::Error> {
-    let ncores = core_affinity::get_core_ids().unwrap().len();
-    let cores = if str.starts_with('/') {
-        let i = str[1..].parse::<usize>()?;
-        ncores / i
+    let num_cores = core_affinity::get_core_ids().unwrap().len();
+
+    let cores = if let Some(cores) = str.strip_prefix('/') {
+        let i = cores.parse::<usize>()?;
+        num_cores / i
     } else {
         let i = str.parse::<i64>()?;
         if i < 0 {
-            ((ncores as i64) + i) as usize
+            ((num_cores as i64) + i) as usize
         } else {
             i as usize
         }
@@ -1632,8 +1625,8 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
     let mut index = 0;
     let mut invalid = 0;
 
-    'done: while index < lines.len() {
-        let mut line = lines[index].to_string();
+    while index < lines.len() {
+        let line = lines[index].to_string();
         index += 1;
 
         // Ignore empty lines
@@ -1691,8 +1684,8 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
 
             let next_line = lines[index];
             let Some(
-                [next_line_addr, next_line_cmp_size, next_line_left, next_line_op, next_line_right],
-            ) = next_line.split(",").array_chunks().next()
+                [next_line_addr, _next_line_cmp_size, _next_line_left, _next_line_op, _next_line_right],
+            ) = next_line.split(',').array_chunks().next()
             else {
                 println!("ERROR: invalid cmp analysis rule found: {next_line:?}");
                 invalid += 1;
@@ -1759,6 +1752,15 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
 
                 Conditional::Memcmp
             }
+            "memchr" => {
+                size = if let Some(reg) = cmp_size.strip_prefix("reg ") {
+                    Size::Register(try_parse_register(reg)?)
+                } else {
+                    Size::Bytes(usize::from_str_radix(&cmp_size.replace("0x", ""), 16)?)
+                };
+
+                Conditional::Memchr
+            }
             _ => {
                 println!("[CMP] skipping unknown operation: {operation}");
                 continue;
@@ -1791,7 +1793,7 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
             parse_cmp_operand(left_op_str),
             parse_cmp_operand(right_op_str),
         ) {
-            (Ok((left_op, left_remaining)), Ok((right_op, right_remaining))) => {
+            (Ok((left_op, _left_remaining)), Ok((right_op, _right_remaining))) => {
                 let arg = RedqueenArguments {
                     size,
                     operation,
@@ -1828,20 +1830,11 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
 
 /// Parse a number string and return the parsed value
 fn parse_number(num: &str) -> Result<i64> {
-    // Keep negative number if original string was negative
-    let is_negative = num.starts_with("-");
-
     // Remove 0x or -0x prefixes
     let without_prefix = num.trim_start_matches("0x").trim_start_matches("-0x");
 
     // Return parsed number
-    Ok(u64::from_str_radix(without_prefix, 16).map(|n| {
-        if is_negative {
-            n as i64
-        } else {
-            n as i64
-        }
-    })?)
+    Ok(u64::from_str_radix(without_prefix, 16).map(|n| n as i64)?)
 }
 
 /// Parse the cmp line given by the binja plugin and return how to retrieve
@@ -2005,7 +1998,7 @@ fn parse_cmp_operand(input: &str) -> Result<(Operand, &str)> {
     } else if let Ok(float_num) = input.parse::<f64>() {
         // Parses <f64>
         Ok((Operand::ConstF64(float_num), "NOTHERE_f64"))
-    } else if let Some([num, remaining]) = input.splitn(2, " ").array_chunks().next() {
+    } else if let Some([num, remaining]) = input.splitn(2, ' ').array_chunks().next() {
         if let Ok(num_u64) = num.parse::<u64>() {
             // Parses <u64>
             Ok((Operand::ConstU64(num_u64), remaining))
@@ -2271,11 +2264,9 @@ fn try_parse_register(reg: &str) -> Result<iced_x86::Register> {
         "tmm5" => Register::TMM5,
         "tmm6" => Register::TMM6,
         "tmm7" => Register::TMM7,
+
+        #[allow(deprecated)]
         "fsbase" => Register::DontUseFA,
         x => anyhow::bail!("Unknown register value: {x:?}"),
     })
-}
-
-fn parse_register(reg: &str) -> iced_x86::Register {
-    try_parse_register(reg).unwrap()
 }

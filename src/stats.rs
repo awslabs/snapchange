@@ -16,10 +16,10 @@ use serde::{Deserialize, Serialize};
 use tui::text::Span;
 use tui::widgets::ListItem;
 use tui_logger::{TuiWidgetEvent, TuiWidgetState};
-use x86_64::registers::rflags::RFlags;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs::{DirEntry, File};
+use std::fs::File;
+use std::mem::variant_count;
 use std::path::Path;
 
 use std::path::PathBuf;
@@ -111,13 +111,13 @@ pub struct Stats<FUZZER: Fuzzer> {
     pub perf_stats: PerfStats,
 
     /// Number of [`FuzzVmExit`] seen
-    pub vmexits: [u64; std::mem::variant_count::<FuzzVmExit>()],
+    pub vmexits: [u64; variant_count::<FuzzVmExit>()],
 
     /// Toal number of [`FuzzVmExit`] seen
     pub total_vmexits: u64,
 
     /// Performance metrics for the stats loop itself
-    pub tui_perf_stats: [f64; std::mem::variant_count::<TuiPerfStats>()],
+    pub tui_perf_stats: [f64; variant_count::<TuiPerfStats>()],
 
     /// Total input hashes that have been seen by redqueen cores
     pub redqueen_seen: Arc<Mutex<BTreeSet<u64>>>,
@@ -186,7 +186,7 @@ pub struct GlobalStats {
     pub perfs: (PerfMarks, u64, u64),
 
     /// Number of vmexits found across all cores
-    pub vmexits: [u64; std::mem::variant_count::<FuzzVmExit>()],
+    pub vmexits: [u64; variant_count::<FuzzVmExit>()],
 
     /// Number of vmexits per iteration on average
     pub vmexits_per_iter: u64,
@@ -200,45 +200,17 @@ pub struct GlobalStats {
     pub rq_exec_per_sec: u64,
 }
 
-struct PerfMarks {
-    timers: [u64; PerfMark::Count as usize],
+pub struct PerfMarks {
+    timers: [u64; variant_count::<PerfMark>()],
 }
 
 impl std::default::Default for PerfMarks {
     fn default() -> Self {
         Self {
-            timers: [0; PerfMark::Count as usize],
+            timers: [0; variant_count::<PerfMark>()],
         }
     }
 }
-
-/*
-impl std::default::Default for GlobalStats {
-    fn default() -> GlobalStats {
-        GlobalStats {
-            time: "".to_string(),
-            iterations: 0,
-            coverage: 0,
-            rq_coverage: 0,
-            last_coverage: 0,
-            exec_per_sec: 0,
-            rq_exec_per_sec: 0,
-            timeouts: 0,
-            coverage_left: 0,
-            dirty_pages: 0,
-            dirty_pages_kvm: 0,
-            dirty_pages_custom: 0,
-            corpus: 0,
-            alive: 0,
-            crashes: 0,
-            dead: Vec::new(),
-            in_redqueen: Vec::new(),
-            perfs: (PerfMarks::defulat(), 0, 0),
-            vmexits: [0; std::mem::variant_count::<FuzzVmExit>()],
-        }
-    }
-}
-*/
 
 /// Performance statistics
 #[derive(Clone)]
@@ -248,16 +220,16 @@ pub struct PerfStats {
     pub start_time: u64,
 
     /// Start times for the performance marks available
-    starts: [u64; PerfMark::Count as usize],
+    starts: [u64; variant_count::<PerfMark>()],
 
     /// Time spent during child timers
-    child_time: [u64; PerfMark::Count as usize],
+    child_time: [u64; variant_count::<PerfMark>()],
 
     /// Elapsed times for the performance marks
-    elapsed: [u64; PerfMark::Count as usize],
+    elapsed: [u64; variant_count::<PerfMark>()],
 
     /// Hit count for this timer
-    hits: [u64; PerfMark::Count as usize],
+    hits: [u64; variant_count::<PerfMark>()],
 
     /// The current timer
     current: Option<PerfMark>,
@@ -267,10 +239,10 @@ impl std::default::Default for PerfStats {
     fn default() -> PerfStats {
         PerfStats {
             start_time: 0,
-            starts: [0_u64; PerfMark::Count as usize],
-            child_time: [0_u64; PerfMark::Count as usize],
-            elapsed: [0_u64; PerfMark::Count as usize],
-            hits: [0_u64; PerfMark::Count as usize],
+            starts: [0_u64; variant_count::<PerfMark>()],
+            child_time: [0_u64; variant_count::<PerfMark>()],
+            elapsed: [0_u64; variant_count::<PerfMark>()],
+            hits: [0_u64; variant_count::<PerfMark>()],
             current: None,
         }
     }
@@ -323,10 +295,12 @@ impl<FUZZER: Fuzzer> Drop for PerfStatTimer<FUZZER> {
         stats.elapsed[self.timer as usize] = stats.elapsed[self.timer as usize]
             .wrapping_add(elapsed)
             .checked_sub(child_time)
-            .expect(&format!(
-                "Failed on drop: {:?} curr elapsed {:#x} elapsed {:#x} child time {:#x}",
-                self.timer, stats.elapsed[self.timer as usize], elapsed, child_time
-            ));
+            .unwrap_or_else(|| {
+                panic!(
+                    "Failed on drop: {:?} curr elapsed {:#x} elapsed {:#x} child time {:#x}",
+                    self.timer, stats.elapsed[self.timer as usize], elapsed, child_time
+                )
+            });
 
         // Update hit counts
         stats.hits[self.timer as usize] += 1;
@@ -389,8 +363,6 @@ macro_rules! impl_enum {
                 $(#[$inner $($args)*])*
                 $field $var_name,
             )*
-
-            Count
         }
 
         /// Get all of the current elements
@@ -525,6 +497,7 @@ impl_enum!(
         ApplyFuzzerBreakpoints,
         RQSyncCov,
         RqInVm,
+        GatherRedqueen,
         RqRecordCodeCov,
         RqRecordBreakpoint,
         RqHandleVmexit,
@@ -802,9 +775,9 @@ impl GlobalStats {
         line.clear();
         line.push_str("| ");
 
-        for i in 0..std::mem::variant_count::<FuzzVmExit>() {
-            let name = FuzzVmExit::name(i as usize);
-            let val = self.vmexits[i as usize];
+        for i in 0..variant_count::<FuzzVmExit>() {
+            let name = FuzzVmExit::name(i);
+            let val = self.vmexits[i];
 
             // Print the percentage of time this marker was executed
             let segment = format!("{name:>30}: {val:18}");
@@ -873,17 +846,15 @@ fn get_subdirs(path: &PathBuf, crashes: &mut Vec<String>) -> bool {
     let mut has_file_children = false;
 
     if let Ok(crash_entries) = std::fs::read_dir(path) {
-        for file in crash_entries {
-            if let Ok(file) = file {
-                if !file.path().is_dir() {
-                    has_file_children = true;
-                    continue;
-                }
+        for file in crash_entries.into_iter().flatten() {
+            if !file.path().is_dir() {
+                has_file_children = true;
+                continue;
+            }
 
-                let has_files = get_subdirs(&file.path(), crashes);
-                if has_files {
-                    crashes.push(file.path().to_str().unwrap().to_string());
-                }
+            let has_files = get_subdirs(&file.path(), crashes);
+            if has_files {
+                crashes.push(file.path().to_str().unwrap().to_string());
             }
         }
     }
@@ -927,15 +898,13 @@ pub fn worker<FUZZER: Fuzzer>(
     // Populate the current corpus filenames for monitoring when a new file is dropped
     // into `current_corpus`
     let mut corpus_filenames = ahash::AHashSet::with_capacity(input_corpus.len() * 2);
-    for entry in corpus_dir.read_dir()? {
-        if let Ok(entry) = entry {
-            if entry.file_type()?.is_dir() {
-                continue;
-            }
+    for entry in corpus_dir.read_dir()?.flatten() {
+        if entry.file_type()?.is_dir() {
+            continue;
+        }
 
-            if let Some(filename) = entry.path().file_name() {
-                corpus_filenames.insert(filename.to_string_lossy().into_owned());
-            }
+        if let Some(filename) = entry.path().file_name() {
+            corpus_filenames.insert(filename.to_string_lossy().into_owned());
         }
     }
 
@@ -972,7 +941,7 @@ pub fn worker<FUZZER: Fuzzer>(
 
     // Average stats used for the stats TUI
     let mut exec_per_sec;
-    let mut rq_exec_per_sec = 0;
+    let mut rq_exec_per_sec;
     let mut dirty_pages = 0;
     let mut dirty_pages_kvm = 0;
     let mut dirty_pages_custom = 0;
@@ -989,7 +958,6 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut last_coverage = std::time::Instant::now();
 
     let mut total_iters: u64 = 0;
-    let mut total_rq_iters: u64 = 0;
 
     // Rolling window to calculate most recent iterations
     let mut sum_iters = [0_u64; ITERS_WINDOW_SIZE];
@@ -1020,7 +988,7 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut dead = Vec::new();
     let mut in_redqueen = Vec::new();
     let mut perfs = vec![None; crate::MAX_CORES];
-    let mut vmexits = [0_u64; std::mem::variant_count::<FuzzVmExit>()];
+    let mut vmexits = [0_u64; variant_count::<FuzzVmExit>()];
     let mut lcov = BTreeMap::new();
 
     // TUI log state
@@ -1075,7 +1043,6 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut coverage_timeline = Vec::new();
     let mut tab_index = 0_u8;
 
-    let mut crashes: Vec<DirEntry> = Vec::new();
     let mut crash_path_strs: Vec<String> = Vec::new();
     let mut crash_paths: Vec<_> = Vec::new();
     let mut num_crashes = 0_u32;
@@ -1087,15 +1054,12 @@ pub fn worker<FUZZER: Fuzzer>(
 
     let mut scratch_string = String::new();
 
-    let mut tui_perf_stats = [0_f64; std::mem::variant_count::<TuiPerfStats>()];
+    let mut tui_perf_stats = [0_f64; variant_count::<TuiPerfStats>()];
 
-    let mut poll_start = std::time::Instant::now();
-    let mut tui_start = std::time::Instant::now();
+    let mut tui_start;
     let mut perf_stats = Vec::new();
     let mut curr_tui_perf_stats = Vec::new();
     let mut vmexit_stats = Vec::new();
-    let mut diffs: Vec<VirtAddr> = Vec::new();
-    // let mut redqueen_diffs: Vec<_> = Vec::new();
 
     /// Time the $expr and return the result of $expr
     macro_rules! time {
@@ -1171,7 +1135,6 @@ pub fn worker<FUZZER: Fuzzer>(
 
                 // Add the core stats to the total stats across all cores
                 total_iters += stats.iterations;
-                total_rq_iters += stats.rq_iterations;
                 total_iters += stats.rq_iterations;
                 sum_iters[iters_index] += stats.iterations;
                 sum_rq_iters[iters_index] += stats.rq_iterations;
@@ -1243,7 +1206,7 @@ pub fn worker<FUZZER: Fuzzer>(
 
         // Accumulate the performance metrics
         let mut total = 0;
-        let mut totals = [0_u64; PerfMark::Count as usize];
+        let mut totals = [0_u64; variant_count::<PerfMark>()];
         let mut remaining = 0;
 
         // Accumulate the stats for all cores
@@ -1271,7 +1234,7 @@ pub fn worker<FUZZER: Fuzzer>(
                     // Add the stat for this core for this element into the totals
                     totals[*elem as usize] = totals[*elem as usize]
                         .checked_add(curr_stat)
-                        .expect(&format!("FAILED {elem:?}"));
+                        .unwrap_or_else(|| panic!("FAILED {elem:?}"));
 
                     // Remove this stat from the total to display the percentage of work
                     // that hasn't been accomodated for
@@ -1343,7 +1306,6 @@ pub fn worker<FUZZER: Fuzzer>(
         curr_tui_perf_stats.clear();
         let tui_total = tui_perf_stats[TuiPerfStats::Total as usize];
         let mut other = 100.0;
-        let avg_tui_iter = tui_total / iter as f64;
         for (index, &val) in tui_perf_stats.iter().enumerate() {
             if index == TuiPerfStats::Total as usize {
                 continue;
@@ -1362,7 +1324,7 @@ pub fn worker<FUZZER: Fuzzer>(
 
             // '_' denote a subcategory in a stat, don't subtract the subcategory
             // from the entire missing time
-            if !TuiPerfStats::names()[index].contains(&"_") {
+            if !TuiPerfStats::names()[index].contains('_') {
                 other -= res;
             }
 
@@ -1416,7 +1378,7 @@ pub fn worker<FUZZER: Fuzzer>(
 
                 let Blockers { in_path, total } = cov_analysis.best_options();
 
-                for (blockers, mut curr_collection) in [
+                for (blockers, curr_collection) in [
                     (in_path, &mut coverage_blockers_in_path),
                     (total, &mut coverage_blockers_total),
                 ] {
@@ -1464,9 +1426,12 @@ pub fn worker<FUZZER: Fuzzer>(
         // and give each core a new corpus to fuzz with
         time!(MergeCoverage, {
             if merge_coverage {
+                let mut locked_cores = [false; crate::MAX_CORES];
+
                 // First, gather all the corpi from all cores
                 for (core_id, core_stats) in stats.iter().enumerate() {
                     let Ok(mut curr_stats) = core_stats.try_lock() else {
+                        locked_cores[core_id] = true;
                         continue;
                     };
 
@@ -1476,10 +1441,9 @@ pub fn worker<FUZZER: Fuzzer>(
                         for input in corpus {
                             let curr_metadata = input.metadata.read().unwrap();
                             if !curr_metadata.new_coverage.is_empty() {
-                                let new_entries = total_feedback.take_log();
+                                total_feedback.ensure_clean();
                                 let is_new =
-                                    total_feedback.merge_from_log(&*curr_metadata.new_coverage);
-
+                                    total_feedback.merge_from_log(&curr_metadata.new_coverage);
                                 let new_entries = total_feedback.take_log();
 
                                 if is_new {
@@ -1489,7 +1453,7 @@ pub fn worker<FUZZER: Fuzzer>(
                                                 let addr = *addr;
 
                                                 let symbol = get_symbol_str(
-                                                    addr, &symbols, &modules, &contexts,
+                                                    addr, symbols, modules, &contexts,
                                                 )?;
 
                                                 coverage_timeline.push(format!(
@@ -1499,13 +1463,13 @@ pub fn worker<FUZZER: Fuzzer>(
                                             #[cfg(feature = "redqueen")]
                                             FeedbackLog::Redqueen(RedqueenCoverage {
                                                 virt_addr,
-                                                rflags,
+                                                rflags: _,
                                                 hit_count,
                                             }) => {
                                                 let virt_addr = *virt_addr;
 
                                                 let symbol = get_symbol_str(
-                                                    virt_addr, &symbols, &modules, &contexts,
+                                                    virt_addr, symbols, modules, &contexts,
                                                 )?;
 
                                                 coverage_timeline.push(format!(
@@ -1533,6 +1497,10 @@ pub fn worker<FUZZER: Fuzzer>(
                 }
 
                 for (core_id, core_stats) in stats.iter().enumerate() {
+                    // Do not reset the corpus for any cores that were locked before
+                    if locked_cores[core_id] {
+                        continue;
+                    }
                     // Attempt to lock this core's stats for updating. If the lock is taken,
                     // skip it and update the core on the next iteration
                     let Ok(mut curr_stats) = core_stats.try_lock() else {
@@ -1969,7 +1937,17 @@ pub fn worker<FUZZER: Fuzzer>(
                     // Add this core's corpus to the total corpus
                     if let Some(corpus) = stats.old_corpus.take() {
                         for input in corpus {
-                            total_corpus.insert(input);
+                            let curr_metadata = input.metadata.read().unwrap();
+                            if !curr_metadata.new_coverage.is_empty() {
+                                total_feedback.ensure_clean();
+                                let is_new =
+                                    total_feedback.merge_from_log(&curr_metadata.new_coverage);
+
+                                if is_new {
+                                    drop(curr_metadata);
+                                    total_corpus.insert(input);
+                                }
+                            }
                         }
                     }
 
@@ -2007,7 +1985,6 @@ pub fn worker<FUZZER: Fuzzer>(
                 &coverage_blockers_total,
                 &mut tui_log_state,
                 &curr_tui_perf_stats,
-                avg_tui_iter,
             );
 
             if let Some(ref mut term) = terminal {
@@ -2081,7 +2058,7 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut corpus_len = 0;
 
     for input in &total_corpus {
-        corpus_len += save_input_in_project(input, &project_dir)?;
+        corpus_len += save_input_in_project(input, project_dir)?;
     }
 
     std::fs::write(
@@ -2206,8 +2183,6 @@ fn get_symbol_str(
 ) -> Result<String> {
     if let Some(sym_data) = symbols {
         if let Some(symbol) = crate::symbols::get_symbol(addr, sym_data) {
-            let mut found = false;
-
             for context in contexts {
                 // try to get the addr2line information for the current address
                 if let Some(loc) = context.find_location(addr)? {
@@ -2233,7 +2208,7 @@ fn get_symbol_str(
             }
 
             // if the source code wasn't found, add the raw symbol instead
-            return Ok(format!("{symbol}"));
+            return Ok(symbol.to_string());
         }
     }
 

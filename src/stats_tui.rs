@@ -24,7 +24,6 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 use tui_logger::TuiWidgetState;
 
 use std::io::{self, Stdout};
-use std::path::PathBuf;
 
 use crate::stats::GlobalStats;
 use crate::try_u64;
@@ -78,9 +77,6 @@ pub struct StatsApp<'a> {
 
     /// Performance stats for the TUI itself
     tui_perf_stats: &'a [(&'a str, u64)],
-
-    /// Average time spent in the stats iteration loop
-    avg_tui_iter: f64,
 }
 
 impl<'a> StatsApp<'a> {
@@ -97,7 +93,6 @@ impl<'a> StatsApp<'a> {
         coverage_blockers_total: &'a [String],
         log_state: &'a mut TuiWidgetState,
         tui_perf_stats: &'a [(&'a str, u64)],
-        avg_tui_iter: f64,
     ) -> StatsApp<'a> {
         StatsApp {
             perf_stats,
@@ -111,7 +106,6 @@ impl<'a> StatsApp<'a> {
             tab_index: usize::from(tab_index) % TAB_TITLES.len(),
             log_state,
             tui_perf_stats,
-            avg_tui_iter,
         }
     }
 }
@@ -357,8 +351,6 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
         let last_cov_seconds = last_cov_elapsed % 60;
         let last_cov_minutes = (last_cov_elapsed / 60) % 60;
         let last_cov_hours = last_cov_elapsed / (60 * 60);
-
-        let rq_stats = format!("{:37} | {:37}", "", "");
 
         #[cfg(feature = "redqueen")]
         let rq_stats = format!(

@@ -13,14 +13,13 @@ use core_affinity::CoreId;
 use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
 
-use crate::config::Config;
-use crate::fuzz_input::{FuzzInput, InputWithMetadata};
+use crate::fuzz_input::InputWithMetadata;
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::{FuzzVm, FuzzVmExit};
 use crate::memory::Memory;
-use crate::{cmdline, fuzzvm, unblock_sigalrm, Modules, THREAD_IDS};
+use crate::{cmdline, fuzzvm, unblock_sigalrm, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
-use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
+use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VirtAddr};
 
 /// Execute the Coverage subcommand to gather coverage for a particular input
 pub(crate) fn run<FUZZER: Fuzzer>(
@@ -63,7 +62,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
     // Small scope to drop the clean snapshot lock after populating the
     // coverage bytes
     {
-        let mut curr_clean_snapshot = clean_snapshot.read().unwrap();
+        let curr_clean_snapshot = clean_snapshot.read().unwrap();
         for addr in project_state.coverage_breakpoints.as_ref().unwrap() {
             if let Ok(orig_byte) = curr_clean_snapshot.read_byte(*addr, cr3) {
                 covbp_bytes.insert(*addr, orig_byte);
@@ -85,7 +84,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         covbp_bytes,
         &args.path,
         args.timeout,
-        &project_state,
+        project_state,
         args.context,
     )?;
 
@@ -126,12 +125,6 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         path: project_dir,
         ..
     } = project_state;
-
-    let vbcpu = project_state.vbcpu;
-    let modules = &project_state.modules;
-    let binaries = &project_state.binaries;
-    let config = &project_state.config;
-    let project_dir = &project_state.path;
 
     // Use the current fuzzer
     let mut fuzzer = FUZZER::default();

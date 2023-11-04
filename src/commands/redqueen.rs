@@ -6,9 +6,6 @@ use std::sync::{Arc, RwLock};
 use anyhow::{anyhow, ensure, Context, Result};
 
 #[cfg(feature = "redqueen")]
-use x86_64::registers::rflags::RFlags;
-
-#[cfg(feature = "redqueen")]
 use core_affinity::CoreId;
 #[cfg(feature = "redqueen")]
 use kvm_bindings::CpuId;
@@ -17,18 +14,17 @@ use kvm_ioctls::VmFd;
 
 #[cfg(feature = "redqueen")]
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     fs::File,
     os::unix::io::AsRawFd,
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::Duration,
 };
 
 #[cfg(feature = "redqueen")]
 use crate::{
     cmdline,
-    cmp_analysis::{RedqueenArguments, RedqueenCoverage},
-    config::Config,
+    cmp_analysis::RedqueenCoverage,
     feedback::FeedbackLog,
     feedback::FeedbackTracker,
     fuzz_input::{FuzzInput, InputWithMetadata},
@@ -85,7 +81,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         symbol_breakpoints,
         covbp_bytes,
         &args.path,
-        &project_state,
+        project_state,
     )?;
 
     // Success
@@ -164,7 +160,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     )?;
 
     // Get the input to trace
-    let input = InputWithMetadata::from_path(input_case, &project_dir)?;
+    let input = InputWithMetadata::from_path(input_case, project_dir)?;
 
     // Run the guest until reset
     let vm_timeout = Duration::from_secs(1);
@@ -189,6 +185,11 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
             let virt_addr = virt_addr.0;
             println!("{virt_addr:#x} {rflags:#x} {hit_count:#x}");
         }
+    }
+
+    if fuzzvm.redqueen_rules.is_empty() {
+        let entropy_input =
+            fuzzvm.increase_input_entropy(&input, &feedback, &mut fuzzer, vm_timeout)?;
     }
 
     for (id, rules) in fuzzvm.redqueen_rules {

@@ -4,7 +4,7 @@ use anyhow::{anyhow, ensure, Context, Result};
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::os::unix::io::AsRawFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -14,7 +14,7 @@ use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
 
 use crate::config::Config;
-use crate::fuzz_input::{FuzzInput, InputWithMetadata};
+use crate::fuzz_input::InputWithMetadata;
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::{FuzzVm, FuzzVmExit};
 use crate::memory::Memory;
@@ -41,7 +41,7 @@ fn start_core<FUZZER: Fuzzer>(
     files: Arc<Vec<PathBuf>>,
     finished: Arc<AtomicBool>,
     wanted_virt_addr: VirtAddr,
-    project_dir: &PathBuf,
+    project_dir: &Path,
 ) -> Result<Vec<PathBuf>> {
     // Store the thread ID of this thread used for passing the SIGALRM to this thread
     let thread_id = unsafe { libc::pthread_self() };
@@ -96,12 +96,10 @@ fn start_core<FUZZER: Fuzzer>(
         let input_path = &files[file_index];
 
         // If we are tracing an input, set that input in the guest
-        let input = <FUZZER::Input as FuzzInput>::from_bytes(&std::fs::read(input_path)?)?;
-
-        let input = InputWithMetadata::from_path(input_path, &project_dir)?;
+        let input = InputWithMetadata::from_path(input_path, project_dir)?;
 
         // Reset the guest state
-        let _guest_reset_perf = fuzzvm.reset_guest_state(&mut fuzzer)?;
+        fuzzvm.reset_guest_state(&mut fuzzer)?;
 
         // Reset the fuzzer state
         fuzzer.reset_fuzzer_state();

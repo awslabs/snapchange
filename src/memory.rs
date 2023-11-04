@@ -804,7 +804,9 @@ impl Memory {
                 translation
                     .phys_addr()
                     .context(Error::WriteToUnmappedVirtualAddress(
-                        virt_addr, cr3, 0xdeadbeef,
+                        virt_addr,
+                        cr3,
+                        0xdead_beef,
                     ))?;
 
             if matches!(dirty, WriteMem::Dirty) {

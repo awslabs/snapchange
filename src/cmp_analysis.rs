@@ -2,18 +2,16 @@
 
 use std::ops::Add;
 use std::ops::Sub;
-use std::sync::Arc;
 
-use ahash::HashSetExt;
 use anyhow::Result;
+use extended::Extended;
 use iced_x86::Register as IcedRegister;
-use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::addrs::VirtAddr;
-use crate::fuzz_input::{FuzzInput, InputWithMetadata};
+use crate::fuzz_input::InputWithMetadata;
 use crate::fuzzer::Fuzzer;
-use crate::regs::x86;
+
 use crate::stats::PerfMark;
 use crate::Execution;
 use crate::FuzzVm;
@@ -54,6 +52,7 @@ pub enum RedqueenConst {
     U128([u8; 16]),
 }
 
+#[allow(clippy::len_without_is_empty)]
 impl RedqueenConst {
     /// Get the underlying byte slice for this RedqueenConst
     pub fn as_bytes(&self) -> &[u8] {
@@ -166,6 +165,9 @@ pub enum RedqueenRule {
     /// Replace one f64 with another
     SingleF64([u8; 8], [u8; 8]),
 
+    /// Replace one f80 with another
+    SingleF80([u8; 10], [u8; 10]),
+
     /// Replace one set of bytes for another
     Bytes(Vec<u8>, Vec<u8>),
 }
@@ -263,6 +265,9 @@ pub enum Conditional {
 
     /// Special case for memcmp
     Memcmp,
+
+    /// Special case for memchr
+    Memchr,
 }
 
 impl From<&str> for Conditional {
@@ -286,6 +291,7 @@ impl From<&str> for Conditional {
             "FCMP_GE" => Conditional::FloatingPointGreaterThanEqual,
             "strcmp" => Conditional::Strcmp,
             "memcmp" => Conditional::Memcmp,
+            "memchr" => Conditional::Memchr,
             _ => unimplemented!("Unknown operation: {val}"),
         }
     }
@@ -515,22 +521,22 @@ impl Operand {
             Operand::Sub { left, right } => Ok(left.read_f32(fuzzvm)? - right.read_f32(fuzzvm)?),
             Operand::Mul { left, right } => Ok(left.read_f32(fuzzvm)? * right.read_f32(fuzzvm)?),
             Operand::Neg { src } => Ok(-src.read_f32(fuzzvm)?),
-            Operand::LogicalShiftLeft { left, right } => {
+            Operand::LogicalShiftLeft { .. } => {
                 unimplemented!("Cannot LSL f32 values")
             }
-            Operand::And { left, right } => {
+            Operand::And { .. } => {
                 unimplemented!("Cannot AND f32 values")
             }
-            Operand::Or { left, right } => {
+            Operand::Or { .. } => {
                 unimplemented!("Cannot OR f32 values")
             }
-            Operand::Not { src } => {
+            Operand::Not { .. } => {
                 unimplemented!("Cannot NOT f32 values")
             }
-            Operand::ArithmeticShiftRight { left, right } => {
+            Operand::ArithmeticShiftRight { .. } => {
                 unimplemented!("Cannot ASR f32 values")
             }
-            Operand::SignExtend { src } => {
+            Operand::SignExtend { .. } => {
                 unimplemented!("Cannot sign extend f32 values")
             }
         }
@@ -566,7 +572,7 @@ impl Operand {
             Operand::ConstU32(val) => Ok(*val as f64),
             Operand::ConstU64(val) => Ok(*val as f64),
             Operand::ConstU128(val) => Ok(*val as f64),
-            Operand::ConstF64(val) => Ok(*val as f64),
+            Operand::ConstF64(val) => Ok(*val),
             Operand::Load { address } => {
                 let addr = address.read_u64(fuzzvm)?;
                 let addr = VirtAddr(addr);
@@ -578,42 +584,44 @@ impl Operand {
             Operand::Sub { left, right } => Ok(left.read_f64(fuzzvm)? - right.read_f64(fuzzvm)?),
             Operand::Mul { left, right } => Ok(left.read_f64(fuzzvm)? * right.read_f64(fuzzvm)?),
             Operand::Neg { src } => Ok(-src.read_f64(fuzzvm)?),
-            Operand::LogicalShiftLeft { left, right } => {
+            Operand::LogicalShiftLeft { .. } => {
                 unimplemented!("Cannot LSL f64 values")
             }
-            Operand::And { left, right } => {
+            Operand::And { .. } => {
                 unimplemented!("Cannot AND f64 values")
             }
-            Operand::Or { left, right } => {
+            Operand::Or { .. } => {
                 unimplemented!("Cannot OR f64 values")
             }
-            Operand::Not { src } => {
+            Operand::Not { .. } => {
                 unimplemented!("Cannot NOT f64 values")
             }
-            Operand::ArithmeticShiftRight { left, right } => {
+            Operand::ArithmeticShiftRight { .. } => {
                 unimplemented!("Cannot ASR f32 values")
             }
-            Operand::SignExtend { src } => {
+            Operand::SignExtend { .. } => {
                 unimplemented!("Cannot sign extend f32 values")
             }
         }
     }
 
     /// Read the given x87 register
-    pub fn read_x87<FUZZER: Fuzzer>(&self, fuzzvm: &mut FuzzVm<FUZZER>) -> Result<Vec<u8>> {
+    pub fn read_x87<FUZZER: Fuzzer>(&self, fuzzvm: &mut FuzzVm<FUZZER>) -> Result<Extended> {
         let _timer = fuzzvm.scoped_timer(crate::stats::PerfMark::RQReadX87);
 
-        match self {
-            Operand::Register(IcedRegister::ST0) => Ok(fuzzvm.fpu()?.fpr[0][..10].to_vec()),
-            Operand::Register(IcedRegister::ST1) => Ok(fuzzvm.fpu()?.fpr[1][..10].to_vec()),
-            Operand::Register(IcedRegister::ST2) => Ok(fuzzvm.fpu()?.fpr[2][..10].to_vec()),
-            Operand::Register(IcedRegister::ST3) => Ok(fuzzvm.fpu()?.fpr[3][..10].to_vec()),
-            Operand::Register(IcedRegister::ST4) => Ok(fuzzvm.fpu()?.fpr[4][..10].to_vec()),
-            Operand::Register(IcedRegister::ST5) => Ok(fuzzvm.fpu()?.fpr[5][..10].to_vec()),
-            Operand::Register(IcedRegister::ST6) => Ok(fuzzvm.fpu()?.fpr[6][..10].to_vec()),
-            Operand::Register(IcedRegister::ST7) => Ok(fuzzvm.fpu()?.fpr[7][..10].to_vec()),
+        let bytes = match self {
+            Operand::Register(IcedRegister::ST0) => fuzzvm.fpu()?.fpr[0],
+            Operand::Register(IcedRegister::ST1) => fuzzvm.fpu()?.fpr[1],
+            Operand::Register(IcedRegister::ST2) => fuzzvm.fpu()?.fpr[2],
+            Operand::Register(IcedRegister::ST3) => fuzzvm.fpu()?.fpr[3],
+            Operand::Register(IcedRegister::ST4) => fuzzvm.fpu()?.fpr[4],
+            Operand::Register(IcedRegister::ST5) => fuzzvm.fpu()?.fpr[5],
+            Operand::Register(IcedRegister::ST6) => fuzzvm.fpu()?.fpr[6],
+            Operand::Register(IcedRegister::ST7) => fuzzvm.fpu()?.fpr[7],
             _ => unimplemented!("Cannot read bytes for {self:?}"),
-        }
+        };
+
+        Ok(Extended::from_le_bytes(bytes[..10].try_into().unwrap()))
     }
 }
 
@@ -641,8 +649,6 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
     if *size == Size::U8 {
         return Ok(Execution::Continue);
     }
-
-    let input_hash = input.fuzz_hash();
 
     macro_rules! impl_primitive_sizes {
         ($($size:ident, $ty:ty, $func:ident),*) => {
@@ -781,110 +787,251 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                             _ => panic!("Unknown operation for primatives: {operation:?} {size:?} {args:x?}"),
                         }
                     }
-                    Size::Bytes(_) | Size::Register(_) => {
-                        let len = match size {
-                            Size::Bytes(len) => *len,
-                            Size::Register(reg) => fuzzvm.get_iced_reg(*reg) as usize,
-                            _ => { unreachable!() }
-                        };
-
-                        // Read the address from each of the operands
-                        let left_val = left_op.read_u64(fuzzvm)?;
-                        let right_val = right_op.read_u64(fuzzvm)?;
-
-                        match operation {
-                            Conditional::Strcmp => {
-                                let mut left_bytes = fuzzvm.read_bytes_until(VirtAddr(left_val as u64), fuzzvm.cr3(), 0, 64 * 1024);
-                                let mut right_bytes = fuzzvm.read_bytes_until(VirtAddr(right_val as u64), fuzzvm.cr3(), 0, 64 * 1024);
-
-                                let mut left_bytes = left_bytes?;
-                                let mut right_bytes = right_bytes?;
-
-                                if left_bytes != right_bytes {
-                                    // Strings are not equal. Force them to be equal
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
-                                    let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
-                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
-                                    let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
-                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
-
-                                    // Also add a rule specifically changing just the bytes for the smaller string
-                                    let min_size = left_bytes.len().min(right_bytes.len());
-                                    left_bytes.truncate(min_size);
-                                    right_bytes.truncate(min_size);
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
-                                    let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
-                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
-                                    let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
-                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                } else {
-                                    // Strings are equal. Force them to not be equal.
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
-                                    left_bytes[0] = left_bytes[0].wrapping_add(1);
-                                    let rule =  RedqueenRule::Bytes(left_bytes, right_bytes);
-                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                }
-
-                            }
-                            Conditional::Memcmp => {
-                                let mut left_bytes = vec![0_u8; len];
-                                let mut right_bytes = vec![0_u8; len];
-
-                                fuzzvm.read_bytes(VirtAddr(left_val as u64), fuzzvm.cr3(), &mut left_bytes)?;
-                                fuzzvm.read_bytes(VirtAddr(right_val as u64), fuzzvm.cr3(), &mut right_bytes)?;
-                                if left_bytes != right_bytes {
-                                    // bytes are not equal, force them to be equal
-                                    let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
-                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
-
-                                    let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
-                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                } else {
-                                    // bytes are equal. Force them to not be equal.
-
-                                    // Only add this rule to the redqueen rules if the left operand
-                                    // is actually in the input
-                                    left_bytes[0] = left_bytes[0].wrapping_add(1);
-                                    let rule =  RedqueenRule::Bytes(left_bytes, right_bytes);
-                                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                                }
-                            }
-                            _ => panic!("Unknown BYTES operation: {operation:?}")
-                        }
-                    }
-                    Size::X87 => {
-                        let mut left_bytes = left_op.read_x87(fuzzvm)?;
-                        let right_bytes = right_op.read_x87(fuzzvm)?;
-
-                        if left_bytes != right_bytes {
-                            // bytes are not equal, force them to be equal
-                            let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
-                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
-
-                            let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
-                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                        } else {
-                            // bytes are equal. Force them to not be equal.
-
-                            left_bytes[0] = left_bytes[0].wrapping_add(1);
-                            let rule =  RedqueenRule::Bytes(left_bytes, right_bytes);
-                            fuzzvm.set_redqueen_rule_candidates(&input, rule);
-                        }
-
-                    }
                 )*
+                Size::Bytes(_) | Size::Register(_) => {
+                    let len = match size {
+                        Size::Bytes(len) => *len,
+                        Size::Register(reg) => fuzzvm.get_iced_reg(*reg) as usize,
+                        _ => { unreachable!() }
+                    };
+
+                    // Read the address from each of the operands
+                    let left_val = left_op.read_u64(fuzzvm)?;
+                    let right_val = right_op.read_u64(fuzzvm)?;
+
+                    match operation {
+                        Conditional::Strcmp => {
+                            let left_bytes = fuzzvm.read_bytes_until(VirtAddr(left_val as u64), fuzzvm.cr3(), 0, 64 * 1024);
+                            let right_bytes = fuzzvm.read_bytes_until(VirtAddr(right_val as u64), fuzzvm.cr3(), 0, 64 * 1024);
+
+                            let mut left_bytes = left_bytes?;
+                            let mut right_bytes = right_bytes?;
+
+                            if left_bytes != right_bytes {
+                                // Strings are not equal. Force them to be equal
+
+                                // Only add this rule to the redqueen rules if the left operand
+                                // is actually in the input
+                                let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+
+                                // Only add this rule to the redqueen rules if the left operand
+                                // is actually in the input
+                                let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+
+                                // Also add a rule specifically changing just the bytes for the smaller string
+                                let min_size = left_bytes.len().min(right_bytes.len());
+                                left_bytes.truncate(min_size);
+                                right_bytes.truncate(min_size);
+
+                                // Only add this rule to the redqueen rules if the left operand
+                                // is actually in the input
+                                let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+
+                                // Only add this rule to the redqueen rules if the left operand
+                                // is actually in the input
+                                let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                            } else {
+                                // Strings are equal. Force them to not be equal.
+
+                                // Only add this rule to the redqueen rules if the left operand
+                                // is actually in the input
+                                left_bytes[0] = left_bytes[0].wrapping_add(1);
+                                let rule =  RedqueenRule::Bytes(left_bytes, right_bytes);
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                            }
+
+                        }
+                        Conditional::Memcmp => {
+                            let mut left_bytes = vec![0_u8; len];
+                            let mut right_bytes = vec![0_u8; len];
+
+                            fuzzvm.read_bytes(VirtAddr(left_val as u64), fuzzvm.cr3(), &mut left_bytes)?;
+                            fuzzvm.read_bytes(VirtAddr(right_val as u64), fuzzvm.cr3(), &mut right_bytes)?;
+                            if left_bytes != right_bytes {
+                                // bytes are not equal, force them to be equal
+                                let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+
+                                let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                            } else {
+                                // bytes are equal. Force them to not be equal.
+
+                                // Only add this rule to the redqueen rules if the left operand
+                                // is actually in the input
+                                left_bytes[0] = left_bytes[0].wrapping_add(1);
+                                let rule =  RedqueenRule::Bytes(left_bytes, right_bytes);
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                            }
+                        }
+                        Conditional::Memchr => {
+                            let mut left_bytes = vec![0_u8; len];
+                            fuzzvm.read_bytes(VirtAddr(left_val as u64), fuzzvm.cr3(), &mut left_bytes)?;
+
+                            let checked_val = right_val as u8;
+
+                            if left_bytes.contains(&checked_val) {
+                                // Already contain the checked val, remove all instances of the checked value
+                                let mut new_bytes = left_bytes.clone();
+                                for byte in new_bytes.iter_mut() {
+                                    if *byte == checked_val {
+                                        *byte = byte.wrapping_add(1);
+                                    }
+                                }
+
+                                // bytes are not equal, force them to be equal
+                                let rule =  RedqueenRule::Bytes(left_bytes.clone(), new_bytes);
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                            } else {
+                                // We do not contain the checked value, add one to the string
+                                let mut new_bytes = left_bytes.clone();
+                                new_bytes[0] = checked_val;
+                                let rule =  RedqueenRule::Bytes(left_bytes, new_bytes);
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                            }
+                        }
+                        _ => panic!("Unknown BYTES operation: {operation:?}")
+                    }
+                }
+                Size::X87 => {
+                    let left_val = left_op.read_x87(fuzzvm)?;
+                    let right_val = right_op.read_x87(fuzzvm)?;
+
+                    match operation {
+                        Conditional::FloatingPointEqual | Conditional::FloatingPointNotEqual => {
+                            let condition = left_val.eq(&right_val);
+                            if condition {
+                                // OP - ax == bx (true)
+                                // AX - 3
+                                // BX - 3
+                                // Wanted !=
+                                // Replace 3 -> 4
+
+                                // Generate the rule to satisfy this comparison
+                                let new_val: Extended = right_val.to_f64().add(0.001).into();
+                                let rule =  RedqueenRule::SingleF80(left_val.to_le_bytes(), new_val.to_le_bytes());
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                            } else {
+                                // OP - ax == bx (false)
+                                // AX - 3
+                                // BX - 5
+                                // Wanted ==
+                                // Replace 3 -> 5
+                                // Replace 5 -> 3
+
+                                // Generate the rule to satisfy this comparison
+                                let rule =  RedqueenRule::SingleF80(left_val.to_le_bytes(), right_val.to_le_bytes());
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+
+                                // Generate the rule to satisfy this comparison
+                                let rule = RedqueenRule::SingleF80(right_val.to_le_bytes(), left_val.to_le_bytes());
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                            }
+                        }
+                        Conditional::FloatingPointLessThan | Conditional::FloatingPointGreaterThanEqual => {
+                            let condition = left_val.to_f64().lt(&right_val.to_f64());
+                            if condition {
+                                // OP - ax < bx (true)
+                                // AX - 0
+                               // Wanted >=
+                                // Replace 0 -> (128 + 1)
+                                // Replace 4 -> (0 - 1 = -1)
+
+                               let new_val: Extended = right_val.to_f64().add(0.001).into();
+                                let rule =  RedqueenRule::SingleF80(left_val.to_le_bytes(), new_val.to_le_bytes());
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+
+                                // Generate the rule to satisfy this comparison
+                                let new_val: Extended = left_val.to_f64().sub(0.001).into();
+                                let rule = RedqueenRule::SingleF80(right_val.to_le_bytes(), new_val.to_le_bytes());
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                            } else {
+                                // OP - ax < bx (false)
+                                // AX - 4
+                               // Wanted <
+                                // Replace 4 -> 2
+                                // Replace 3 -> 5
+
+                               let new_val: Extended = right_val.to_f64().sub(0.001).into();
+                                let rule =  RedqueenRule::SingleF80(left_val.to_le_bytes(), new_val.to_le_bytes());
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+
+                                // Generate the rule to satisfy this comparison
+                                let new_val: Extended = left_val.to_f64().add(0.001).into();
+                                let rule =  RedqueenRule::SingleF80(right_val.to_le_bytes(), new_val.to_le_bytes());
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                            }
+                        }
+                        Conditional::FloatingPointLessThanEqual | Conditional::FloatingPointGreaterThan => {
+                            let condition = left_val.to_f64().le(&right_val.to_f64());
+                            if condition {
+                                // OP - ax <= bx (true)
+                                // AX - 127_u8
+                               // Wanted >
+                                // Replace 127 -> (128 + 1)
+                                // Replace 128 -> (127 - 1 = 126)
+                               // Generate the rule to satisfy this comparison
+                                let new_val: Extended = right_val.to_f64().add(0.001).into();
+                                let rule =  RedqueenRule::SingleF80(left_val.to_le_bytes(), new_val.to_le_bytes());
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+
+                                let new_val: Extended = left_val.to_f64().sub(0.001).into();
+                                let rule = RedqueenRule::SingleF80(right_val.to_le_bytes(), new_val.to_le_bytes());
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                            } else {
+                                // OP - ax <= bx (false)
+                                // AX - 4
+                               // Wanted >
+                                // Replace 4 -> 2
+                                // Replace 3 -> 5
+
+                               let new_val: Extended = right_val.to_f64().sub(0.001).into();
+                                let rule =  RedqueenRule::SingleF80(left_val.to_le_bytes(), new_val.to_le_bytes());
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+
+                                // Generate the rule to satisfy this comparison
+                                let new_val: Extended = left_val.to_f64().add(0.001).into();
+                                let rule = RedqueenRule::SingleF80(right_val.to_le_bytes(), new_val.to_le_bytes());
+                                fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                            }
+                        }
+                        _ => panic!("Unknown operation for primatives: {operation:?} {size:?} {args:x?}"),
+                    }
+
+
+                    /*
+                    // bytes are not equal, force them to be equal
+                    let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes.clone());
+                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
+
+                    let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes.clone());
+                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
+
+                    let mut left_bytes1 = left_bytes.clone();
+                    left_bytes1[5] = left_bytes1[5].wrapping_add(1);
+                    let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes1);
+                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
+
+                    let mut left_bytes2 = left_bytes.clone();
+                    left_bytes2[5] = left_bytes2[5].wrapping_sub(1);
+                    let rule =  RedqueenRule::Bytes(right_bytes.clone(), left_bytes2);
+                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
+
+                    let mut right_bytes1 = right_bytes.clone();
+                    right_bytes1[5] = right_bytes1[5].wrapping_add(1);
+                    let rule =  RedqueenRule::Bytes(left_bytes.clone(), right_bytes1);
+                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
+
+                    let mut right_bytes2 = right_bytes;
+                    right_bytes2[5] = right_bytes2[5].wrapping_add(1);
+                    let rule =  RedqueenRule::Bytes(left_bytes, right_byts2);
+                    fuzzvm.set_redqueen_rule_candidates(&input, rule);
+                    */
+                }
                 _ => {
                     // Pass down to the float impls
                 }
@@ -905,13 +1052,12 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                 let condition = left_val.eq(&right_val);
                                 if condition {
                                     // OP - ax == bx (true)
-                                    // AX - 3
-                                    // BX - 3
+                                   // BX - 3
                                     // Wanted !=
                                     // Replace 3 -> 4
 
                                     // Generate the rule to satisfy this comparison
-                                    let new_val = right_val.add(1.0);
+                                    let new_val = right_val.add(0.001);
                                     let rule =  RedqueenRule::$rule(left_val.to_le_bytes(), new_val.to_le_bytes());
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
                                 } else {
@@ -945,35 +1091,31 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                 if condition {
                                     // OP - ax < bx (true)
                                     // AX - 0
-                                    // BX - 128_u8
-                                    // Wanted >=
+                                   // Wanted >=
                                     // Replace 0 -> (128 + 1)
                                     // Replace 4 -> (0 - 1 = -1)
 
-                                    // Generate the rule to satisfy this comparison
-                                    let new_val = right_val.add(1.0);
+                                   let new_val = right_val.add(0.001);
                                     let rule =  RedqueenRule::$rule(left_val.to_le_bytes(), new_val.to_le_bytes());
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
 
                                     // Generate the rule to satisfy this comparison
-                                    let new_val = left_val.sub(1.0);
+                                    let new_val = left_val.sub(0.001);
                                     let rule = RedqueenRule::$rule(right_val.to_le_bytes(), new_val.to_le_bytes());
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
                                 } else {
                                     // OP - ax < bx (false)
                                     // AX - 4
-                                    // BX - 3
-                                    // Wanted <
+                                   // Wanted <
                                     // Replace 4 -> 2
                                     // Replace 3 -> 5
 
-                                    // Generate the rule to satisfy this comparison
-                                    let new_val = right_val.sub(1.0);
+                                   let new_val = right_val.sub(0.001);
                                     let rule =  RedqueenRule::$rule(left_val.to_le_bytes(), new_val.to_le_bytes());
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
 
                                     // Generate the rule to satisfy this comparison
-                                    let new_val = left_val.add(1.0);
+                                    let new_val = left_val.add(0.001);
                                     let rule =  RedqueenRule::$rule(right_val.to_le_bytes(), new_val.to_le_bytes());
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
                                 }
@@ -992,34 +1134,30 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                 if condition {
                                     // OP - ax <= bx (true)
                                     // AX - 127_u8
-                                    // BX - 128_u8
-                                    // Wanted >
+                                   // Wanted >
                                     // Replace 127 -> (128 + 1)
                                     // Replace 128 -> (127 - 1 = 126)
-
-                                    // Generate the rule to satisfy this comparison
-                                    let new_val = right_val.add(1.0);
+                                   // Generate the rule to satisfy this comparison
+                                    let new_val = right_val.add(0.001);
                                     let rule =  RedqueenRule::$rule(left_val.to_le_bytes(), new_val.to_le_bytes());
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
 
-                                    let new_val = left_val.sub(1.0);
+                                    let new_val = left_val.sub(0.001);
                                     let rule = RedqueenRule::$rule(right_val.to_le_bytes(), new_val.to_le_bytes());
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
                                 } else {
                                     // OP - ax <= bx (false)
                                     // AX - 4
-                                    // BX - 3
-                                    // Wanted >
+                                   // Wanted >
                                     // Replace 4 -> 2
                                     // Replace 3 -> 5
 
-                                    // Generate the rule to satisfy this comparison
-                                    let new_val = right_val.sub(1.0);
+                                   let new_val = right_val.sub(0.001);
 
                                     let rule =  RedqueenRule::$rule(left_val.to_le_bytes(), new_val.to_le_bytes());
                                     fuzzvm.set_redqueen_rule_candidates(&input, rule);
 
-                                    let new_val = left_val.add(1.0);
+                                    let new_val = left_val.add(0.001);
 
                                     // Generate the rule to satisfy this comparison
                                     let rule = RedqueenRule::$rule(right_val.to_le_bytes(), new_val.to_le_bytes());

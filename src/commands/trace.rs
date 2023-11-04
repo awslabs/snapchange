@@ -13,7 +13,7 @@ use core_affinity::CoreId;
 use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
 
-use crate::fuzz_input::{FuzzInput, InputWithMetadata};
+use crate::fuzz_input::InputWithMetadata;
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::{FuzzVm, FuzzVmExit};
 use crate::interrupts::IdtEntry;
@@ -170,9 +170,6 @@ fn start_core<FUZZER: Fuzzer>(
             contexts.push(tmp);
         }
 
-        // Initialize the performance counters for executing a VM
-        let mut perf = crate::fuzzvm::VmRunPerf::default();
-
         let mut at_call = false;
         let mut indent = 4;
         let mut func_indexes = Vec::new();
@@ -202,11 +199,7 @@ fn start_core<FUZZER: Fuzzer>(
             // Write the current line to the trace
             result.push_str(&format!(
                 "INSTRUCTION {:03} {:#018x} {:#010x} | {:60} \n    {}\n",
-                index,
-                rip,
-                u64::try_from(cr3.0).unwrap(),
-                symbol,
-                instr,
+                index, rip, cr3.0, symbol, instr,
             ));
 
             let mut source_line = None;
@@ -588,7 +581,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         .first()
         .ok_or_else(|| anyhow!("No valid cores"))?;
 
-    let mut covbp_bytes = BTreeMap::new();
+    let covbp_bytes = BTreeMap::new();
 
     /*
     // Apply coverage breakpoints or not

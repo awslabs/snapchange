@@ -7,7 +7,6 @@
 
 use iced_x86::Code::*;
 
-use ahash::HashSetExt;
 use anyhow::{ensure, Context, Result};
 use iced_x86::{Instruction, MemorySize, OpKind};
 use kvm_bindings::{
@@ -16,19 +15,22 @@ use kvm_bindings::{
     KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP, KVM_GUESTDBG_USE_SW_BP, KVM_MAX_CPUID_ENTRIES,
 };
 use kvm_ioctls::{SyncReg, VcpuExit, VcpuFd, VmFd};
-use rand::Rng as _;
-use rustc_hash::FxHashSet;
 use thiserror::Error;
 use x86_64::registers::control::{Cr0Flags, Cr4Flags, EferFlags};
 use x86_64::registers::rflags::RFlags;
+
+#[cfg(feature = "redqueen")]
+use ahash::HashSetExt;
+#[cfg(feature = "redqueen")]
+use rustc_hash::FxHashSet;
 
 use crate::addrs::{Cr3, PhysAddr, VirtAddr};
 use crate::colors::Colorized;
 use crate::config::Config;
 use crate::exception::Exception;
-use crate::feedback::{FeedbackLog, FeedbackTracker};
+use crate::feedback::FeedbackTracker;
 use crate::filesystem::FileSystem;
-use crate::fuzz_input::{InputMetadata, InputWithMetadata};
+use crate::fuzz_input::InputWithMetadata;
 use crate::fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer, ResetBreakpointType};
 use crate::interrupts::IdtEntry;
 use crate::linux::{PtRegs, Signal};
@@ -39,26 +41,25 @@ use crate::rng::Rng;
 use crate::stack_unwinder::{StackUnwinders, UnwindInfo};
 use crate::stats::{PerfMark, PerfStatTimer, Stats};
 use crate::symbols::Symbol;
-use crate::utils::rdtsc;
+
 use crate::vbcpu::VbCpu;
 use crate::{handle_vmexit, Execution, DIRTY_BITMAPS};
 use crate::{try_u32, try_u64, try_u8, try_usize};
 
 #[cfg(feature = "redqueen")]
 use crate::{
-    cmp_analysis,
-    cmp_analysis::{RedqueenArguments, RedqueenCoverage, RedqueenRule},
-    fuzz_input::{CoverageType, FuzzInput},
+    cmp_analysis::{RedqueenArguments, RedqueenRule},
+    fuzz_input::FuzzInput,
 };
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::convert::TryInto;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "redqueen")]
-use std::{collections::BTreeSet, path::PathBuf};
+use std::collections::BTreeSet;
 
 /// APIC base we are expecting the guest to adhere to. Primarily comes into play when
 /// mapping guest memory regions in KVM as we need to leave to leave a gap in the guest
@@ -439,65 +440,6 @@ impl std::ops::AddAssign for VmRunPerf {
     }
 }
 
-/// Cycle counts while resetting guest state
-#[derive(Default, Debug, Copy, Clone)]
-pub struct GuestResetPerf {
-    /// Amount of time spent during restoring guest memory found by KVM
-    pub reset_guest_memory_restore: u64,
-
-    /// Amount of time spent during resetting dirty pages set by a fuzzer
-    pub reset_guest_memory_custom: u64,
-
-    /// Amount of time spent clearing the dirty page bits
-    pub reset_guest_memory_clear: u64,
-
-    /// Amount of time spent during gathering dirty logs from KVM
-    pub get_dirty_logs: u64,
-
-    /// Number of pages restored from kvm dirty log
-    pub restored_kvm_pages: u32,
-
-    /// Number of pages restored from custom dirty log
-    pub restored_custom_pages: u32,
-
-    /// Amount of time during running `fuzzvm.init_guest`
-    pub init_guest: InitGuestPerf,
-
-    /// Amount of time during running `fuzzer.apply_fuzzer_breakpoint`
-    pub apply_fuzzer_breakpoints: u64,
-
-    /// Amount of time during running `fuzzer.apply_reset_breakpoint`
-    pub apply_reset_breakpoints: u64,
-
-    /// Amount of time during running `fuzzer.apply_coverage_breakpoint`
-    pub apply_coverage_breakpoints: u64,
-
-    /// Amount of time during running `fuzzer.init_vm`
-    pub init_vm: u64,
-
-    /// Amount of time during running the initial `fuzzer.init_snapshot`
-    pub init_snapshot: u64,
-}
-
-/// Cycle counts while initialzing the guest
-#[derive(Default, Debug, Copy, Clone)]
-pub struct InitGuestPerf {
-    /// Amount of time during running `fuzzvm.init_guest` restoring registers
-    pub regs: u64,
-
-    /// Amount of time during running `fuzzvm.init_guest` restoring sregs
-    pub sregs: u64,
-
-    /// Amount of time during running `fuzzvm.init_guest` restoring fpu
-    pub fpu: u64,
-
-    /// Amount of time during running `fuzzvm.init_guest` restoring MSRs
-    pub msrs: u64,
-
-    /// Amount of time during running `fuzzvm.init_guest` restoring debug registers
-    pub debug_regs: u64,
-}
-
 /// Lightweight VM used for fuzzing a memory snapshot
 #[allow(clippy::struct_excessive_bools)]
 pub struct FuzzVm<'a, FUZZER: Fuzzer> {
@@ -787,9 +729,9 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         #[cfg(feature = "redqueen")]
         if let Some(ref redqueen_bps) = redqueen_breakpoints {
             let mut result = BTreeSet::new();
-            redqueen_bps.iter().for_each(|(addr, _)| {
+            for (addr, _) in redqueen_bps.iter() {
                 result.insert(*addr);
-            });
+            }
             redqueen_breakpoint_addresses = Some(result);
         }
 
@@ -1459,7 +1401,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         clean_snapshot.write_bytes(virt_addr, cr3, new_bytes)?;
         drop(clean_snapshot);
 
-        /// Patch the bytes of the current memory
+        // Patch the bytes of the current memory
         self.write_bytes(virt_addr, cr3, new_bytes)
     }
 
@@ -2242,7 +2184,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         }
         */
 
-        print!("{:-^120}\n", " INSTRUCTION ".blue());
+        println!("{:-^120}", " INSTRUCTION ".blue());
         let mut rip_symbol = String::new();
         let curr_symbol = self.get_symbol(self.rip());
         rip_symbol.push_str(&curr_symbol.unwrap_or_else(|| "UnknownSym".to_string()));
@@ -2255,7 +2197,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
         // Attempt read variable length stacks. Repeat trying to read decreasing amounts
         // of stack values until we can read them all
-        print!("{:-^120}\n", " STACK ".blue());
+        println!("{:-^120}", " STACK ".blue());
         let mut found = false;
         for size in (0..0x14).rev() {
             let mut bytes = vec![0_u64; size];
@@ -2264,8 +2206,8 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 .is_ok()
             {
                 for (offset, val) in bytes.iter().enumerate() {
-                    print!(
-                        "+{:#04x}|{:#x}: ({:#018x}) {}\n",
+                    println!(
+                        "+{:#04x}|{:#x}: ({:#018x}) {}",
                         offset * STACK_TYPE_SIZE,
                         self.regs().rsp + (offset * STACK_TYPE_SIZE) as u64,
                         *val,
@@ -3309,7 +3251,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
     /// Apply the Redqueen breakpoints from a [`Fuzzer`] to the VM. Additionally
     #[cfg(feature = "redqueen")]
-    pub fn apply_redqueen_breakpoints(&mut self, fuzzer: &FUZZER) -> Result<()> {
+    pub fn apply_redqueen_breakpoints(&mut self) -> Result<()> {
         let _timer = self.scoped_timer(PerfMark::ApplyRedqueenBreakpoints);
 
         let mut bps_set = 0;
@@ -3327,6 +3269,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 )?;
             }
 
+            bps_set = redqueen_bps.len() as u32;
             self.redqueen_breakpoints = Some(redqueen_bps);
         }
 
@@ -3842,11 +3785,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     /// Pass execution to the VM. Returns the `FuzzVmExit` along with the number of
     /// cycles in the KVM VM itself.
     pub fn run(&mut self) -> Result<FuzzVmExit> {
-        let start = rdtsc();
-
         let mut rflags = RFlags::from_bits_truncate(self.regs.rflags);
-        let rip_before = self.rip();
-        let byte_before = self.read::<u8>(VirtAddr(self.rip()), self.cr3());
 
         // Enable TRAP flag if guest is single stepping
         if self.single_step || self.restore_breakpoint.is_some() {
@@ -3877,7 +3816,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         self.vcpu.set_sync_valid_reg(SyncReg::VcpuEvents);
 
         // Restore the FPU
-        // self.vcpu.set_fpu(&self.vcpu.get_fpu()?)?;
+        self.vcpu.set_fpu(&self.vcpu.get_fpu()?)?;
 
         // Execute the CPU
         let test_res = {
@@ -4243,7 +4182,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         fuzzer: &mut FUZZER,
         input: &InputWithMetadata<FUZZER::Input>,
         vm_timeout: Duration,
-        coverage: &mut FeedbackTracker,
+        feedback: &mut FeedbackTracker,
     ) -> Result<()> {
         let _timer = self.scoped_timer(PerfMark::RunUntilResetRedqueen);
 
@@ -4251,7 +4190,6 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
         // Initialize the output coverage
         let mut rq_hitcounts = BTreeMap::new();
-        let mut added_input = false;
 
         // Top of the run iteration loop for the current fuzz case
         loop {
@@ -4269,7 +4207,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             {
                 let _timer = self.scoped_timer(PerfMark::RqRecordCodeCov);
                 if let FuzzVmExit::CoverageBreakpoint(rip) = &ret {
-                    coverage.record_codecov(VirtAddr(*rip));
+                    feedback.record_codecov(VirtAddr(*rip));
                 }
             }
 
@@ -4290,12 +4228,12 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                             let rflags = self.rflags() & flag_mask.bits();
 
                             // Increment the hit count for this breakpoint by one
-                            let mut hit_count =
+                            let hit_count =
                                 rq_hitcounts.entry((VirtAddr(rip), rflags)).or_insert(0);
                             *hit_count += 1;
 
                             let rflags = RFlags::from_bits_truncate(rflags);
-                            coverage.record_redqueen(VirtAddr(rip), rflags, *hit_count);
+                            feedback.record_redqueen(VirtAddr(rip), rflags, *hit_count);
                         }
                     }
                 }
@@ -4304,7 +4242,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             // Handle the FuzzVmExit to determine
             let ret = {
                 let _timer = self.scoped_timer(PerfMark::RqHandleVmexit);
-                handle_vmexit(&ret, self, fuzzer, None, input, Some(coverage))
+                handle_vmexit(&ret, self, fuzzer, None, input, Some(feedback))
             };
 
             execution = match ret {
@@ -4348,7 +4286,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         vm_timeout: Duration,
     ) -> Result<Vec<u64>> {
         // Reset the guest state
-        let _perf = self.reset_guest_state(fuzzer)?;
+        self.reset_guest_state(fuzzer)?;
 
         // Reset the fuzzer state
         fuzzer.reset_fuzzer_state();
@@ -4545,7 +4483,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         let _timer = self.scoped_timer(PerfMark::ResetAndRunWithRedqueen);
 
         // Reset the guest state in preparation for redqueen
-        let _perf = self.reset_guest_state(fuzzer)?;
+        self.reset_guest_state(fuzzer)?;
 
         // Reset the fuzzer state
         fuzzer.reset_fuzzer_state();
@@ -4554,13 +4492,13 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         fuzzer.set_input(input, self)?;
 
         // Apply redqueen breakpoints
-        self.apply_redqueen_breakpoints(fuzzer)?;
+        self.apply_redqueen_breakpoints()?;
 
         // Run the guest until reset, gathering redqueen redqueen rules
         self.run_until_reset_redqueen(fuzzer, input, vm_timeout, feedback)?;
 
         // Reset the guest state in preparation for redqueen
-        let _perf = self.reset_guest_state(fuzzer)?;
+        self.reset_guest_state(fuzzer)?;
 
         // Reset the fuzzer state
         fuzzer.reset_fuzzer_state();
@@ -4581,18 +4519,12 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         fuzzer: &mut FUZZER,
         vm_timeout: Duration,
         corpus: &mut Vec<Arc<InputWithMetadata<FUZZER::Input>>>,
-        feedback: &mut FeedbackTracker,
-        time_spent: Duration,
-        project_dir: &PathBuf,
+        total_feedback: &mut FeedbackTracker,
     ) -> Result<()> {
-        // Init an rng for this gathering of redqueen
-        let mut rng = Rng::new();
+        let _timer = self.scoped_timer(PerfMark::GatherRedqueen);
 
         // Get the found redqueen rules for this input
         let fuzz_hash = orig_input.fuzz_hash();
-
-        // Begin the timer for this iteration of redqueen
-        let start_time = std::time::Instant::now();
 
         // Start with a fresh feedback tracker to gather ALL of the RQ coverage
         // (not just the new RQ coverage for this first iteration). There shouldn't be any
@@ -4602,16 +4534,14 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         // Gather then original redqueen rules for this input
         self.reset_and_run_with_redqueen(orig_input, fuzzer, vm_timeout, &mut original_feedback)?;
 
-        let mut bad_rules = Vec::new();
-
-        if let Some(mut rules) = self.redqueen_rules.remove(&fuzz_hash) {
+        if let Some(rules) = self.redqueen_rules.remove(&fuzz_hash) {
             // If there are no rules at all for this input, start with increasing the entropy
             if rules.is_empty() {
                 if orig_input.metadata.read().unwrap().entropy {
                     panic!("No rules still after increased entropy 1");
                 }
 
-                let mut entropy_input = self.increase_input_entropy(
+                let entropy_input = self.increase_input_entropy(
                     orig_input,
                     &original_feedback,
                     fuzzer,
@@ -4621,27 +4551,19 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 entropy_input.metadata.write().unwrap().entropy = true;
 
                 // Restart redqueen with the increased entropy input
-                self.gather_redqueen(
-                    &entropy_input,
-                    fuzzer,
-                    vm_timeout,
-                    corpus,
-                    feedback,
-                    time_spent,
-                    project_dir,
-                )?;
+                self.gather_redqueen(&entropy_input, fuzzer, vm_timeout, corpus, total_feedback)?;
+
+                // Restore the original input redqueen rules
+                self.redqueen_rules.insert(fuzz_hash, rules);
 
                 // No need to continue with this input since it was re-run with
                 // increased entropy
                 return Ok(());
             }
 
-            for (i, rule) in rules.iter().enumerate() {
-                let mut input = orig_input.fork();
-                let orig_hash = input.fuzz_hash();
-
-                let mut candidates = orig_input.get_redqueen_rule_candidates(rule);
-                let mut orig_candidates = orig_input.get_redqueen_rule_candidates(rule);
+            for rule in rules.iter() {
+                let input = orig_input.fork();
+                let candidates = input.get_redqueen_rule_candidates(rule);
 
                 // If there are no candidates for this rule, and this input hasn't
                 // been increased entropy ("colorization" from the redqueen paper),
@@ -4652,7 +4574,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                         panic!("No rules still after increased entropy 2");
                     }
 
-                    let mut entropy_input = self.increase_input_entropy(
+                    let entropy_input = self.increase_input_entropy(
                         orig_input,
                         &original_feedback,
                         fuzzer,
@@ -4667,52 +4589,51 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                         fuzzer,
                         vm_timeout,
                         corpus,
-                        feedback,
-                        time_spent,
-                        project_dir,
+                        total_feedback,
                     )?;
+
+                    // Restore the original input redqueen rules
+                    self.redqueen_rules.insert(fuzz_hash, rules);
 
                     return Ok(());
                 }
 
                 for candidate in &candidates {
                     let mut new_input = orig_input.fork();
-                    let original_file = input.fuzz_hash();
 
                     // Apply the given rule with the candidate
                     let mutation = new_input.apply_redqueen_rule(rule, candidate);
 
                     // Clear the feedback log
-                    feedback.ensure_clean();
+                    total_feedback.ensure_clean();
 
                     // Get the coverage of this mutated input, only using the specific redqueen
                     // breakpoint for this targetted rule
-                    self.reset_and_run_with_redqueen(&new_input, fuzzer, vm_timeout, feedback)?;
+                    self.reset_and_run_with_redqueen(
+                        &new_input,
+                        fuzzer,
+                        vm_timeout,
+                        total_feedback,
+                    )?;
 
                     // If this input found new coverage, add it to the corpus
                     // and execute Redqueen on this new input
-                    if feedback.has_new() {
+                    if total_feedback.has_new() {
                         // If we've found new coverage, add the new input to the corpus
-                        let new_coverage = feedback.take_log();
+                        let new_coverage = total_feedback.take_log();
                         new_input.add_new_coverage(new_coverage);
-
-                        // Get the fuzz hash for this input
-                        let hash = new_input.fuzz_hash();
 
                         // Add this redqueen mutation to the mutations metadata
                         let mutation = format!(
                             "RQ_ONESHOT_{}_",
                             mutation.unwrap_or_else(|| String::from("rq_unknown"))
                         );
-                        new_input.metadata.write().unwrap().mutations.push(mutation);
-
-                        // Save this input to the project
-                        // crate::utils::save_input_in_project(&new_input, project_dir);
+                        new_input.add_mutation(mutation);
 
                         // Add the new input to the corpus
                         let input = Arc::new(new_input);
                         assert!(!input.metadata.read().unwrap().new_coverage.is_empty());
-                        corpus.push(input.clone());
+                        corpus.push(input);
 
                         // Immediately send this input out to be sync'd
                         if let Some(stats) = self.core_stats.as_mut() {
@@ -4724,17 +4645,12 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 }
             }
 
-            // Remove rules that generated nothing useful when attempted to increase entropy
-            for rule in bad_rules {
-                rules.remove(&rule);
-            }
-
             // Restore the original input redqueen rules
             self.redqueen_rules.insert(fuzz_hash, rules);
         }
 
         // Reset the guest state to remove redqueen breakpoints
-        let _perf = self.reset_guest_state(fuzzer)?;
+        self.reset_guest_state(fuzzer)?;
 
         // Reset the fuzzer state
         fuzzer.reset_fuzzer_state();
@@ -4791,7 +4707,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     pub(crate) fn scoped_timer(&self, marker: PerfMark) -> Option<PerfStatTimer<FUZZER>> {
         self.core_stats
             .as_ref()
-            .and_then(|stats| Some(PerfStatTimer::new(stats.clone(), marker)))
+            .map(|stats| PerfStatTimer::new(stats.clone(), marker))
     }
 
     /// Set the possible candidates for the `input` using the `rule`
@@ -4826,8 +4742,6 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     }
 
     /// Increase the entropy of the given input
-    ///
-    /// Used by redqueen to
     #[cfg(feature = "redqueen")]
     pub(crate) fn increase_input_entropy(
         &mut self,
@@ -4838,16 +4752,14 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     ) -> Result<InputWithMetadata<FUZZER::Input>> {
         let _timer = self.scoped_timer(PerfMark::IncreaseInputEntropy);
 
-        let original_input_hash = orig_input.fuzz_hash();
-
-        let mut results = Vec::new();
-
         let mut queue = Vec::new();
         queue.push([0, orig_input.entropy_limit()]);
 
+        let mut best_input = orig_input.fork();
+
         while let Some([start, end]) = queue.pop() {
             // Get a fresh input copy for this iteration
-            let mut curr_input = orig_input.fork();
+            let mut curr_input = best_input.fork();
 
             // Increase entropy of this input
             curr_input
@@ -4858,37 +4770,26 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             let mut temp_feedback = FeedbackTracker::default();
             self.reset_and_run_with_redqueen(&curr_input, fuzzer, vm_timeout, &mut temp_feedback)?;
 
+            let equal_redqueen = temp_feedback.eq_redqueen(orig_feedback);
+
             // If the entropy input has the same redqueen feedback, this is a safe region to mutate.
             // Add it to the results and continue
-            if temp_feedback.eq_redqueen(&orig_feedback) {
-                results.push((start, end));
+            if equal_redqueen {
+                best_input = curr_input;
             } else if end - start > 1 {
                 // If unsuccessful, go to the next step of the binary search
                 let mid = (end - start) / 2 + start;
                 queue.push([start, mid]);
                 queue.push([mid, end]);
+                self.redqueen_rules.remove(&curr_input.fuzz_hash());
             }
-
-            self.redqueen_rules.remove(&curr_input.fuzz_hash());
         }
 
-        if results.is_empty() {
+        if best_input.fuzz_hash() != orig_input.fuzz_hash() {
             panic!("Entropy failed..");
         }
 
-        // If successful, apply entropy to all of the found regions
-        let mut new_input = orig_input.fork();
-        for (start, end) in results {
-            new_input
-                .input
-                .increase_entropy(&mut self.rng, start, end)?;
-        }
-
-        // One more run through to gather the rules for this input
-        let mut temp_feedback = FeedbackTracker::default();
-        self.reset_and_run_with_redqueen(&new_input, fuzzer, vm_timeout, &mut temp_feedback)?;
-
-        Ok(new_input)
+        Ok(best_input)
     }
 }
 

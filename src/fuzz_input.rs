@@ -7,24 +7,22 @@ use crate::cmp_analysis::RedqueenRule;
 use crate::cmp_analysis::RedqueenCoverage;
 
 use crate::expensive_mutators;
-use crate::feedback::{FeedbackLog, FeedbackTracker};
-use crate::fuzzvm::FuzzVm;
+use crate::feedback::FeedbackLog;
+
 use crate::mutators;
 use crate::rng::Rng;
-use crate::{Fuzzer, VirtAddr};
 
 use anyhow::Result;
 use rand::{Fill, Rng as _, RngCore};
 use rustc_hash::FxHashSet;
-use serde::ser::SerializeSeq;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use serde::{Deserialize, Serialize};
 use serde_hex::{CompactPfx, SerHex};
-use std::collections::BTreeSet;
+
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
 
 /// An abstract input used in fuzzing. This trait provides methods for mutating, generating, and
 /// minimizing an input. This trait also has required methods for enabling Redqueen analysis
@@ -208,7 +206,7 @@ impl FuzzInput for Vec<u8> {
                     let curr_candidate = &candidates[candidate_index];
 
                     // Apply the redqueen rule to the current input
-                    if let Some(mutation) = input.apply_redqueen_rule(&curr_rule, curr_candidate) {
+                    if let Some(mutation) = input.apply_redqueen_rule(curr_rule, curr_candidate) {
                         mutations.push(format!("RQ_MUTATE_{mutation}"));
                     }
 
@@ -247,7 +245,7 @@ impl FuzzInput for Vec<u8> {
         rule: &RedqueenRule,
         candidate: &Self::RuleCandidate,
     ) -> Option<String> {
-        let (index, endian) = candidate;
+        let (index, _endian) = candidate;
 
         match rule {
             RedqueenRule::Primitive(_from, to) => {
@@ -258,7 +256,7 @@ impl FuzzInput for Vec<u8> {
                     return None;
                 }
 
-                self[*index..*index + size].copy_from_slice(&to.as_bytes());
+                self[*index..*index + size].copy_from_slice(to.as_bytes());
                 Some(format!("{to:x?}_offset_{index:#x}"))
             }
             RedqueenRule::SingleF32(_from, to) => {
@@ -283,13 +281,26 @@ impl FuzzInput for Vec<u8> {
                 self[*index..*index + size].copy_from_slice(to);
                 Some(format!("f64_{to:x?}_offset_{index:#x}"))
             }
+            RedqueenRule::SingleF80(_from, to) => {
+                let size = to.len();
+
+                // Ensure we can actually fit the rule in the current input
+                if *index + size >= self.len() {
+                    return None;
+                }
+
+                let val = extended::Extended::from_le_bytes(*to).to_f64();
+
+                self[*index..*index + size].copy_from_slice(to);
+                Some(format!("f80_{to:x?}_{val}_offset_{index:#x}"))
+            }
             RedqueenRule::Bytes(from, to) => {
                 let index: usize = *index;
 
                 let len = if to.len() == from.len() {
                     // Both from and to are the same size, directly copy the bytes
                     let size = to.len();
-                    self[index..index + size].copy_from_slice(&to);
+                    self[index..index + size].copy_from_slice(to);
 
                     to.len()
                 } else {
@@ -305,7 +316,7 @@ impl FuzzInput for Vec<u8> {
 
                     let mut new_self = vec![0_u8; new_length];
                     new_self[..index].copy_from_slice(&self[..index]);
-                    new_self[index..index + to.len()].copy_from_slice(&to);
+                    new_self[index..index + to.len()].copy_from_slice(to);
                     new_self[index + to.len()..].copy_from_slice(&self[index + from.len()..]);
                     *self = new_self;
 
@@ -345,7 +356,7 @@ impl FuzzInput for Vec<u8> {
 
     #[cfg(feature = "redqueen")]
     fn has_redqueen_rule_candidates(&self, rule: &RedqueenRule) -> bool {
-        get_redqueen_rule_candidates_for_vec(self, rule, GetRuleMode::Fast).len() > 0
+        !get_redqueen_rule_candidates_for_vec(self, rule, GetRuleMode::Fast).is_empty()
     }
 
     /// Current mutators available for mutation
@@ -437,8 +448,7 @@ impl FuzzInput for Vec<u8> {
                     let offset = rng.gen::<usize>() % curr_input_len;
 
                     // Found a newly replaced byte, replace it
-                    // input[offset] = redqueen_byte;
-                    input[offset] = rng.gen::<u8>();
+                    input[offset] = redqueen_byte;
                 }
             }
         }
@@ -446,6 +456,7 @@ impl FuzzInput for Vec<u8> {
 }
 
 /// The mode to get redqueen rule candidates for Vec<u8>
+#[cfg(feature = "redqueen")]
 #[derive(Copy, Clone, Eq, PartialEq)]
 enum GetRuleMode {
     /// Return from the function after the first found candidate
@@ -455,7 +466,7 @@ enum GetRuleMode {
     All,
 }
 
-/// Get the rule candidates for a Vec<u8>. If fast, return the candidates on the first found
+/// Get the rule candidates for a Vec<u8>. If mode is Fast, return the candidates on the first found
 /// candidate.
 #[cfg(feature = "redqueen")]
 fn get_redqueen_rule_candidates_for_vec(
@@ -475,10 +486,8 @@ fn get_redqueen_rule_candidates_for_vec(
 
             let size = from_min_bytes.max(to_min_bytes);
             let from = &from.as_bytes()[..size];
-            let to = &to.as_bytes()[..size];
 
             let from_le_bytes = from;
-            let from_be_bytes = from.iter().rev();
 
             let same_big_endian = from_le_bytes
                 .iter()
@@ -507,7 +516,7 @@ fn get_redqueen_rule_candidates_for_vec(
                 }
             }
         }
-        RedqueenRule::SingleF32(from, to) => {
+        RedqueenRule::SingleF32(from, _to) => {
             if input.len() >= from.len() {
                 for i in 0..input.len().saturating_sub(from.len() - 1) {
                     if &input[i..i + from.len()] == from.as_slice() {
@@ -519,7 +528,7 @@ fn get_redqueen_rule_candidates_for_vec(
                 }
             }
         }
-        RedqueenRule::SingleF64(from, to) => {
+        RedqueenRule::SingleF64(from, _to) => {
             if input.len() >= from.len() {
                 for i in 0..input.len().saturating_sub(from.len() - 1) {
                     if &input[i..i + from.len()] == from {
@@ -530,21 +539,20 @@ fn get_redqueen_rule_candidates_for_vec(
                     }
                 }
             }
-
-            /*
-            assert!(from.len() == 8 && to.len() == 8);
-            let from_dword = from[..4].to_vec();
-            let to_dword = to[..4].to_vec();
-            if input.len() >= from_dword.len() {
-                for i in 0..input.len().saturating_sub(from_dword.len() - 1) {
-                    if &input[i..i + from_dword.len()] == from_dword.as_slice() {
+        }
+        RedqueenRule::SingleF80(from, _to) => {
+            if input.len() >= from.len() {
+                for i in 0..input.len().saturating_sub(from.len() - 1) {
+                    if &input[i..i + from.len()] == from {
                         candidates.push((i, Endian::Little));
+                        if fast {
+                            return candidates;
+                        }
                     }
                 }
             }
-            */
         }
-        RedqueenRule::Bytes(from, to) => {
+        RedqueenRule::Bytes(from, _to) => {
             if input.len() >= from.len() {
                 for i in 0..input.len().saturating_sub(from.len() - 1) {
                     if &input[i..i + from.len()] == from {
@@ -605,19 +613,19 @@ pub enum CoverageType {
 
 /// Metadata about a crashing input or a new input that found new coverage.
 #[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
-pub(crate) struct InputMetadata {
+pub struct InputMetadata {
     /// Fuzz hash of the original file used for mutation
     #[serde(with = "SerHex::<CompactPfx>")]
-    pub(crate) original_file: u64,
+    pub original_file: u64,
 
     /// Mutatation strategies used on this file
-    pub(crate) mutations: Vec<String>,
+    pub mutations: Vec<String>,
 
     /// New coverage blocks hit by this input
-    pub(crate) new_coverage: Vec<FeedbackLog>,
+    pub new_coverage: Vec<FeedbackLog>,
 
     /// Is this input the result of increased entropy
-    pub(crate) entropy: bool,
+    pub entropy: bool,
 }
 
 /*
@@ -749,7 +757,7 @@ impl<T: FuzzInput> InputWithMetadata<T> {
     }
 
     /// Read an input from an input's path
-    pub fn from_path(input_path: &PathBuf, project_dir: &PathBuf) -> Result<Self> {
+    pub fn from_path(input_path: &Path, project_dir: &Path) -> Result<Self> {
         let input = T::from_bytes(&std::fs::read(input_path)?)?;
         let filename = crate::utils::hexdigest(&input);
 
@@ -807,5 +815,14 @@ impl<T: FuzzInput> InputWithMetadata<T> {
             .unwrap()
             .new_coverage
             .append(&mut new_coverage);
+    }
+
+    /// Add the given mutation to this metadata
+    pub fn add_mutation(&self, new_mutation: impl Into<String>) {
+        self.metadata
+            .write()
+            .unwrap()
+            .mutations
+            .push(new_mutation.into());
     }
 }

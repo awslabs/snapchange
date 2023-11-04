@@ -16,7 +16,7 @@ use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
 
 use crate::config::Config;
-use crate::fuzz_input::{FuzzInput, InputWithMetadata};
+use crate::fuzz_input::InputWithMetadata;
 use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::{FuzzVm, FuzzVmExit};
 use crate::memory::Memory;
@@ -78,7 +78,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
 
     // Gather the total coverage for this project
     {
-        let mut curr_clean_snapshot = clean_snapshot.read().unwrap();
+        let curr_clean_snapshot = clean_snapshot.read().unwrap();
         for addr in project_state.coverage_breakpoints.as_ref().unwrap() {
             if let Ok(orig_byte) = curr_clean_snapshot.read_byte(*addr, cr3) {
                 covbp_bytes.insert(*addr, orig_byte);
@@ -479,14 +479,14 @@ impl CorpusMinimizer {
         let sum: usize = self
             .addr_to_inputs
             .iter()
-            .map(|(k, v)| std::mem::size_of::<u64>() + v.len() * size_of::<usize>())
+            .map(|(_k, v)| std::mem::size_of::<u64>() + v.len() * size_of::<usize>())
             .sum();
         log::info!("Size of addr_to_inputs: {}", get_byte_size(sum as u64));
 
         let sum: usize = self
             .input_coverage
             .iter()
-            .map(|(k, v)| std::mem::size_of::<u64>() + v.len() * size_of::<u64>())
+            .map(|(_k, v)| std::mem::size_of::<u64>() + v.len() * size_of::<u64>())
             .sum();
         log::info!("Size of input_coverage: {}", get_byte_size(sum as u64));
     }
