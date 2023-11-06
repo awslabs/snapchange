@@ -146,6 +146,16 @@ pub trait FuzzInput:
             "Redqueen not implemented for this type. Please impl `has_redqueen_rule_candidates`"
         );
     }
+    
+    /// return some kind of entropy metric (e.g., byte entropy), if applicable.
+    fn entropy_metric(&self) -> Option<f64> {
+        None
+    }
+    
+    /// return length of the input, if applicable.
+    fn len(&self) -> Option<usize> {
+        None
+    }
 }
 
 impl FuzzInput for Vec<u8> {
@@ -461,6 +471,16 @@ impl FuzzInput for Vec<u8> {
                 }
             }
         }
+    }
+
+    /// return shannon byte entropy for the bytes slice
+    fn entropy_metric(&self) -> Option<f64> {
+        Some(crate::utils::byte_entropy(self))
+    }
+
+    /// just return the length of the current byte buffer
+    fn len(&self) -> Option<usize> {
+        Some(self.len())
     }
 }
 
