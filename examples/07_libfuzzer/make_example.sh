@@ -19,7 +19,7 @@ python3 ../../docker/coverage_scripts/angr_snapchange.py \
     ./snapshot/example.bin 
 
 # Remove odd dictionary entries just to speed up the example
-find ./snapshot/dict | grep -v cafe | grep -v dead | xargs rm
+find ./snapshot/dict -type f | grep -v cafe | grep -v dead | xargs rm
 
 # Remove the unneeded angr covbps since we are using the sancov bps
 rm snapshot/*angr.covbps
