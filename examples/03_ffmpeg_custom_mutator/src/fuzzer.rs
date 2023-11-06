@@ -549,10 +549,19 @@ impl snapchange::FuzzInput for MovGenerator {
         corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
+        min_length: usize,
         max_length: usize,
     ) -> InputWithMetadata<Self> {
         let mut res = MovGenerator::default();
-        MovGenerator::mutate(&mut res, corpus, rng, &dictionary, max_length, 8);
+        MovGenerator::mutate(
+            &mut res,
+            corpus,
+            rng,
+            &dictionary,
+            min_length,
+            max_length,
+            8,
+        );
         InputWithMetadata::from_input(res)
     }
 
@@ -563,6 +572,7 @@ impl snapchange::FuzzInput for MovGenerator {
         _corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         _dictionary: &Option<Vec<Vec<u8>>>,
+        _min_length: usize,
         _max_length: usize,
         _max_mutations: u64,
     ) -> Vec<String> {
