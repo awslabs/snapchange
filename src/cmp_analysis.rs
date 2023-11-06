@@ -1,19 +1,16 @@
 //! Provides structs and procedures for this Redqueen implementation
 
-use std::ops::Add;
-use std::ops::Sub;
-
 use anyhow::Result;
 use extended::Extended;
 use iced_x86::Register as IcedRegister;
 use serde::{Deserialize, Serialize};
 
 use crate::addrs::VirtAddr;
-use crate::fuzz_input::InputWithMetadata;
 use crate::fuzzer::Fuzzer;
 
-use crate::stats::PerfMark;
-use crate::Execution;
+#[cfg(feature = "redqueen")]
+use crate::fuzz_input::InputWithMetadata;
+
 use crate::FuzzVm;
 
 /// Coverage found during redqueen
@@ -634,8 +631,10 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
     fuzzvm: &mut FuzzVm<FUZZER>,
     input: &InputWithMetadata<<FUZZER as Fuzzer>::Input>,
     args: &RedqueenArguments,
-) -> Result<Execution> {
-    let _timer = fuzzvm.scoped_timer(PerfMark::GatherComparison);
+) -> Result<crate::Execution> {
+    use std::ops::{Add, Sub};
+
+    let _timer = fuzzvm.scoped_timer(crate::stats::PerfMark::GatherComparison);
 
     // Get the arguments for this redqueen breakpoints
     let RedqueenArguments {
@@ -647,7 +646,7 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
     // Ignore U8 rules for now since we have the byte flipper as a normal mutator
     if *size == Size::U8 {
-        return Ok(Execution::Continue);
+        return Ok(crate::Execution::Continue);
     }
 
     macro_rules! impl_primitive_sizes {
@@ -1188,5 +1187,5 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
         F64,  f64,  read_f64, SingleF64
     );
 
-    Ok(Execution::Continue)
+    Ok(crate::Execution::Continue)
 }

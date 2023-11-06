@@ -1,11 +1,5 @@
 //! Provides an abstraction around various types of fuzz inputs
 
-#[cfg(feature = "redqueen")]
-use crate::cmp_analysis::RedqueenRule;
-
-#[cfg(feature = "redqueen")]
-use crate::cmp_analysis::RedqueenCoverage;
-
 use crate::expensive_mutators;
 use crate::feedback::FeedbackLog;
 
@@ -13,8 +7,7 @@ use crate::mutators;
 use crate::rng::Rng;
 
 use anyhow::Result;
-use rand::{Fill, Rng as _, RngCore};
-use rustc_hash::FxHashSet;
+use rand::{Rng as _, RngCore};
 
 use serde::{Deserialize, Serialize};
 use serde_hex::{CompactPfx, SerHex};
@@ -23,6 +16,15 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
+
+#[cfg(feature = "redqueen")]
+use crate::cmp_analysis::RedqueenRule;
+
+#[cfg(feature = "redqueen")]
+use crate::cmp_analysis::RedqueenCoverage;
+
+#[cfg(feature = "redqueen")]
+use rustc_hash::FxHashSet;
 
 /// An abstract input used in fuzzing. This trait provides methods for mutating, generating, and
 /// minimizing an input. This trait also has required methods for enabling Redqueen analysis
@@ -344,6 +346,8 @@ impl FuzzInput for Vec<u8> {
     #[allow(clippy::cast_possible_truncation, clippy::doc_markdown)]
     #[cfg(feature = "redqueen")]
     fn increase_entropy(&mut self, rng: &mut Rng, start: usize, end: usize) -> Result<()> {
+        use rand::Fill;
+
         // Randomize these bytes
         Ok(self[start..end].try_fill(rng)?)
     }

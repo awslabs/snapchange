@@ -1,5 +1,6 @@
 //! Execute the `redqueen` command to gather Redqueen coverage for a single input
 
+#[cfg(feature = "redqueen")]
 use std::sync::{Arc, RwLock};
 
 #[cfg(feature = "redqueen")]

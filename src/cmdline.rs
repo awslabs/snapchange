@@ -100,6 +100,7 @@ pub struct ProjectState {
     /// The configuration settings for this project
     pub(crate) config: Config,
 
+    #[cfg(feature = "redqueen")]
     /// The redqueen breakpoints used to capture comparison arguments during runtime
     pub(crate) redqueen_breakpoints: Option<Vec<(u64, RedqueenArguments)>>,
 
@@ -762,7 +763,10 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     // Parse the available redqueen cmps files
     // Also gather the redqueen breakpoint addresses to remove them from the
     // coverage breakpoints
+    #[cfg(feature = "redqueen")]
     let mut redqueen_breakpoints = None;
+
+    #[cfg(feature = "redqueen")]
     let mut redqueen_bp_addrs: BTreeSet<u64> = BTreeSet::new();
 
     #[cfg(feature = "redqueen")]
@@ -786,11 +790,13 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     for covbps_path in &covbps_paths {
         let covbps = coverage_breakpoints.get_or_insert(BTreeSet::new());
 
+        #[allow(unused_mut)]
         let mut bps = parse_coverage_breakpoints(covbps_path)?;
 
         // Ensure no coverage breakpoints are redqueen breakpoints as the
         // redqueen breakpoints are not one-shot and will be reapplied
         // even when they are hit
+        #[cfg(feature = "redqueen")]
         bps.retain(|addr| !redqueen_bp_addrs.contains(&addr.0));
 
         let module = covbps_path
@@ -918,6 +924,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         vmlinux,
         config,
         unwinders,
+        #[cfg(feature = "redqueen")]
         redqueen_breakpoints,
     };
 

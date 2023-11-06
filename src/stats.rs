@@ -941,7 +941,6 @@ pub fn worker<FUZZER: Fuzzer>(
 
     // Average stats used for the stats TUI
     let mut exec_per_sec;
-    let mut rq_exec_per_sec;
     let mut dirty_pages = 0;
     let mut dirty_pages_kvm = 0;
     let mut dirty_pages_custom = 0;
@@ -1189,7 +1188,6 @@ pub fn worker<FUZZER: Fuzzer>(
         let time_window = ITERS_WINDOW_SIZE as u64 * PRINT_SLEEP.as_secs();
 
         exec_per_sec = sum_iters.iter().sum::<u64>() / time_window;
-        rq_exec_per_sec = sum_rq_iters.iter().sum::<u64>() / time_window;
         if alive > 0 {
             dirty_pages = sum_dirty_pages.iter().sum::<u64>() / time_window / alive;
             dirty_pages_kvm = sum_dirty_pages_kvm.iter().sum::<u64>() / time_window / alive;
@@ -1855,7 +1853,7 @@ pub fn worker<FUZZER: Fuzzer>(
             #[cfg(feature = "redqueen")]
             rq_coverage: total_feedback.redqueen.len(),
             #[cfg(feature = "redqueen")]
-            rq_exec_per_sec,
+            rq_exec_per_sec: sum_rq_iters.iter().sum::<u64>() / time_window,
         };
 
         time!(WriteStatsData, {

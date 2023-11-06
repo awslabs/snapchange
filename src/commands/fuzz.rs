@@ -812,11 +812,10 @@ fn start_core<FUZZER: Fuzzer>(
             fuzzer.schedule_next_input(&corpus, &mut feedback, &mut rng, dictionary)
         );
 
-        let original_file_hash = input.fuzz_hash();
-
         // Gather redqueen for this input if there aren't already replacement rules found
         #[cfg(feature = "redqueen")]
         if fuzzvm.redqueen_breakpoints.is_some() {
+            let original_file_hash = input.fuzz_hash();
             let mut new_input = !fuzzvm.redqueen_rules.contains_key(&original_file_hash);
             let mut should_redqueen = new_input;
 
@@ -913,9 +912,10 @@ fn start_core<FUZZER: Fuzzer>(
             */
         }
 
-        // Mutate the input based on the fuzzer
-        let input_hash = input.fuzz_hash();
+        #[cfg(feature = "redqueen")]
+        let redqueen_rules = fuzzvm.redqueen_rules.get(&input.fuzz_hash());
 
+        // Mutate the input based on the fuzzer
         time!(
             InputMutate,
             fuzzer.mutate_input(
@@ -924,7 +924,7 @@ fn start_core<FUZZER: Fuzzer>(
                 &mut rng,
                 dictionary,
                 #[cfg(feature = "redqueen")]
-                fuzzvm.redqueen_rules.get(&input_hash)
+                redqueen_rules
             )
         );
 

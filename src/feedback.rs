@@ -21,8 +21,10 @@ use std::collections::BTreeSet;
 use std::default::Default;
 use std::hash::Hash;
 
-use crate::cmp_analysis::RedqueenCoverage;
 use crate::VirtAddr;
+
+#[cfg(feature = "redqueen")]
+use crate::cmp_analysis::RedqueenCoverage;
 
 // TODO: maybe we should use the https://crates.io/crates/nohash-hasher crate for the feedback
 // hashmaps?
@@ -268,6 +270,7 @@ impl FeedbackTracker {
     ///
     /// Note: Ususally you should use the [`Self::has_new()`] function to determine if new coverage was recorded.
     pub fn len(&self) -> usize {
+        #[allow(unused_mut)]
         let mut r = self.code_cov.len();
 
         #[cfg(feature = "redqueen")]

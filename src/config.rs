@@ -62,9 +62,11 @@ pub struct Stats {
 pub struct Redqueen {
     /// Redqueen max entropy occurs if the number of instances of a rule
     /// can be applied is more than this threshold
+    #[serde(default = "default_redqueen_entropy_threshold")]
     pub entropy_threshold: usize,
 
     /// Number of cores that can trigger redqueen
+    #[serde(default = "default_redqueen_cores")]
     pub cores: u64,
 
     /// Use redqueen rules during random mutations
@@ -105,6 +107,16 @@ const fn default_mutate_by_redqueen_rules() -> bool {
     false
 }
 
+#[cfg(feature = "redqueen")]
+const fn default_redqueen_entropy_threshold() -> usize {
+    8
+}
+
+#[cfg(feature = "redqueen")]
+const fn default_redqueen_cores() -> u64 {
+    8
+}
+
 impl std::default::Default for Config {
     fn default() -> Self {
         Self {
@@ -133,8 +145,8 @@ impl std::default::Default for Stats {
 impl std::default::Default for Redqueen {
     fn default() -> Self {
         Self {
-            entropy_threshold: 10,
-            cores: 4,
+            entropy_threshold: default_redqueen_entropy_threshold(),
+            cores: default_redqueen_cores(),
             mutate_by_redqueen_rules: default_mutate_by_redqueen_rules(),
         }
     }
