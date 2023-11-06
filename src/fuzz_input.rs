@@ -61,6 +61,7 @@ pub trait FuzzInput:
         corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
+        min_length: usize,
         max_length: usize,
         max_mutations: u64,
         #[cfg(feature = "redqueen")] redqueen_rules: Option<&FxHashSet<RedqueenRule>>,
@@ -84,6 +85,7 @@ pub trait FuzzInput:
         corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
+        min_length: usize,
         max_length: usize,
     ) -> InputWithMetadata<Self>;
 
@@ -166,6 +168,7 @@ impl FuzzInput for Vec<u8> {
         corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
+        min_length: usize,
         max_length: usize,
         max_mutations: u64,
         #[cfg(feature = "redqueen")] redqueen_rules: Option<&FxHashSet<RedqueenRule>>,
@@ -234,6 +237,11 @@ impl FuzzInput for Vec<u8> {
 
         // Ensure the input fits in the maximum length
         input.truncate(max_length);
+
+        // Extend the input to minimum length
+        for _byte in 0..min_length.saturating_sub(input.len()) {
+            input.push(rng.next() as u8);
+        }
 
         // Return the mutation applied
         mutations
@@ -390,6 +398,7 @@ impl FuzzInput for Vec<u8> {
         _corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         _dictionary: &Option<Vec<Vec<u8>>>,
+        _min_length: usize,
         max_length: usize,
     ) -> InputWithMetadata<Self> {
         let mut result = vec![0u8; max_length];
@@ -627,73 +636,6 @@ pub struct InputMetadata {
     /// Is this input the result of increased entropy
     pub entropy: bool,
 }
-
-/*
-/// Custom serialize for Vec<u64>
-fn serialize_as_hex<S>(values: &[CoverageType], serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    // Convert the u64 to hex strings
-
-    // Begin the sequence of elements
-    let mut seq = serializer.serialize_seq(Some(values.len()))?;
-
-    for value in values {
-        let element = match value {
-            CoverageType::Address(addr) => format!("{addr:#x}"),
-            #[cfg(feature = "redqueen")]
-            CoverageType::Redqueen(RedqueenCoverage {
-                virt_addr,
-                rflags,
-                hit_count,
-            }) => format!("{:#x}|{rflags:#x}|{hit_count:#x}", virt_addr.0),
-        };
-
-        seq.serialize_element(&element)?;
-    }
-
-    // Finish the sequence
-    seq.end()
-}
-
-/// Custom deserialize for Vec<u64>
-fn deserialize_from_hex<'de, D>(deserializer: D) -> Result<Vec<CoverageType>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    // Get a Vec of hex strings from the deserializer
-    let hex: Vec<String> = Deserialize::deserialize(deserializer)?;
-
-    // Convert the hex strings back into CoverageType
-    let data = hex
-        .iter()
-        .map(|x| {
-            if let Some([addr, rflags, hit_count]) = x.split(&"|").array_chunks().next() {
-                let virt_addr = u64::from_str_radix(&addr[2..], 16)
-                    .expect("Failed to deserialize virt addr: {addr}");
-                let rflags = u64::from_str_radix(&rflags[2..], 16)
-                    .expect("Failed to deserialize rflags: {rflags}");
-                let hit_count = u32::from_str_radix(&hit_count[2..], 16)
-                    .expect("Failed to deserialize hit_count {hit_count}");
-
-                CoverageType::Redqueen(RedqueenCoverage {
-                    virt_addr: VirtAddr(virt_addr),
-                    rflags,
-                    hit_count,
-                })
-            } else {
-                CoverageType::Address(
-                    u64::from_str_radix(&x[2..], 16).expect("Failed to parse coverage addrss {x}"),
-                )
-            }
-        })
-        .collect::<Vec<_>>();
-
-    // Return the result
-    Ok(data)
-}
-*/
 
 /// An input tied with metadata about that input
 pub struct InputWithMetadata<T: FuzzInput> {

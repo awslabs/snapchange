@@ -352,6 +352,9 @@ fn draw_main<B: Backend>(f: &mut Frame<B>, app: &StatsApp, chunk: Rect) {
         let last_cov_minutes = (last_cov_elapsed / 60) % 60;
         let last_cov_hours = last_cov_elapsed / (60 * 60);
 
+        #[cfg(not(feature = "redqueen"))]
+        let rq_stats = format!("{:37} | {:37}", "", "");
+
         #[cfg(feature = "redqueen")]
         let rq_stats = format!(
             "{:>11}: {:10} ({:6.2}/core) | {:>11}: {:24}",

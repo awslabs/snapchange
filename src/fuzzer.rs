@@ -133,6 +133,9 @@ pub trait Fuzzer: Default + Sized {
     /// The maximum length for an input used to truncate long inputs.
     const MAX_INPUT_LENGTH: usize;
 
+    /// The minimum length for an input
+    const MIN_INPUT_LENGTH: usize = 1;
+
     /// The expected starting address of the snapshot for this fuzzer. This is a
     /// sanity check to ensure the fuzzer matches the given snapshot.
     const START_ADDRESS: u64;
@@ -180,7 +183,13 @@ pub trait Fuzzer: Default + Sized {
         // very small chance to make a new input
         if rng.next() % 0xffff == 42 {
             // P = 2**(-16)
-            return Self::Input::generate(corpus, rng, dictionary, Self::MAX_INPUT_LENGTH);
+            return Self::Input::generate(
+                corpus,
+                rng,
+                dictionary,
+                Self::MIN_INPUT_LENGTH,
+                Self::MAX_INPUT_LENGTH,
+            );
         }
 
         // make it more likely to fuzz the last new (local) finding
@@ -195,7 +204,13 @@ pub trait Fuzzer: Default + Sized {
             input.fork()
         } else {
             // Default to generating a new input
-            Self::Input::generate(corpus, rng, dictionary, Self::MAX_INPUT_LENGTH)
+            Self::Input::generate(
+                corpus,
+                rng,
+                dictionary,
+                Self::MIN_INPUT_LENGTH,
+                Self::MAX_INPUT_LENGTH,
+            )
         }
     }
 
@@ -213,6 +228,7 @@ pub trait Fuzzer: Default + Sized {
             corpus,
             rng,
             dictionary,
+            Self::MIN_INPUT_LENGTH,
             Self::MAX_INPUT_LENGTH,
             Self::MAX_MUTATIONS,
             #[cfg(feature = "redqueen")]

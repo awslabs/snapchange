@@ -364,7 +364,13 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         // Add a single input if none found
         if corpus.is_empty() {
             let mut rng = Rng::new();
-            let input = FUZZER::Input::generate(&[], &mut rng, &dict, FUZZER::MAX_INPUT_LENGTH);
+            let input = FUZZER::Input::generate(
+                &[],
+                &mut rng,
+                &dict,
+                FUZZER::MIN_INPUT_LENGTH,
+                FUZZER::MAX_INPUT_LENGTH,
+            );
             let input = Arc::new(input);
             input_corpus.push(input.clone());
             corpus.push(input);

@@ -14,7 +14,7 @@
 //! ```
 
 use rustc_hash::{FxHashMap, FxHashSet};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use std::collections::hash_map::Entry;
 use std::collections::BTreeSet;
@@ -41,7 +41,7 @@ pub type RedqueenFeedback = BTreeSet<RedqueenCoverage>;
 /// The [`FeedbackTracker`] keeps track of a log of never-before seen feedback. This is logged for
 /// each execution and can be obtained with [`FeedbackTracker::take_log`]. This enum is used to
 /// distinguish between different entries within the feedback log.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug, Ord, PartialOrd)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Ord, PartialOrd)]
 pub enum FeedbackLog {
     /// Observed new code coverage
     VAddr((VirtAddr, u16)),
@@ -56,6 +56,107 @@ pub enum FeedbackLog {
     /// While performing redqueen, observed new RFlags for a given comparison address.
     #[cfg(feature = "redqueen")]
     Redqueen(RedqueenCoverage),
+}
+/// Custom serialize for FeedbackLog
+impl Serialize for FeedbackLog {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Convert the u64 to hex strings
+
+        // Begin the sequence of elements
+        // let mut seq = serializer.serialize_seq(Some(values.len()))?;
+
+        // for value in values {
+        let element = match self {
+            FeedbackLog::VAddr((addr, hits)) => {
+                let addr = addr.0;
+                format!("{addr:#x},{hits}")
+            }
+            #[cfg(feature = "custom_feedback")]
+            FeedbackLog::Custom(val) => format!("Custom|{val:#x}"),
+            #[cfg(feature = "custom_feedback")]
+            FeedbackLog::CustomMax((tag, val)) => format!("CustomMax|{tag:#x},{val:#x}"),
+            #[cfg(feature = "redqueen")]
+            FeedbackLog::Redqueen(RedqueenCoverage {
+                virt_addr,
+                rflags,
+                hit_count,
+            }) => {
+                let virt_addr = virt_addr.0;
+                format!("RQ|{virt_addr:#x},{rflags:#x},{hit_count}")
+            }
+        };
+
+        serializer.serialize_str(&element)
+    }
+}
+
+impl<'de> Deserialize<'de> for FeedbackLog {
+    /// Custom deserialize for Vec<u64>
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // Get a Vec of hex strings from the deserializer
+        let hex: String = Deserialize::deserialize(deserializer)?;
+
+        // Convert the hex strings back into CoverageType
+        if let Some([addr, hit_count]) = hex.split(&",").array_chunks().next() {
+            let addr = u64::from_str_radix(&addr[2..], 16)
+                .expect("Failed to parse coverage address {address}");
+
+            return Ok(FeedbackLog::VAddr((
+                VirtAddr(addr),
+                hit_count.parse::<u16>().unwrap(),
+            )));
+        }
+
+        #[cfg(feature = "redqueen")]
+        if let Some(redqueen) = hex.strip_prefix("RQ|") {
+            if let Some([addr, rflags, hit_count]) = redqueen.split(&",").array_chunks().next() {
+                let virt_addr = u64::from_str_radix(&addr[2..], 16)
+                    .expect("Failed to deserialize virt addr: {addr}");
+                let rflags = u64::from_str_radix(&rflags[2..], 16)
+                    .expect("Failed to deserialize rflags: {rflags}");
+                let hit_count = u32::from_str_radix(&hit_count[2..], 16)
+                    .expect("Failed to deserialize hit_count {hit_count}");
+
+                return Ok(FeedbackLog::Redqueen(RedqueenCoverage {
+                    virt_addr: VirtAddr(virt_addr),
+                    rflags,
+                    hit_count,
+                }));
+            } else {
+                panic!("Invalid format for redqueen found: {hex}");
+            }
+        }
+
+        #[cfg(feature = "custom_feedback")]
+        if let Some(custom_max) = hex.strip_prefix("CustomMax|") {
+            if let Some([tag, val]) = hex.split(&",").array_chunks().next() {
+                let tag =
+                    u64::from_str_radix(&tag[2..], 16).expect("Failed to deserialize tag: {tag}");
+                let val =
+                    u64::from_str_radix(&val[2..], 16).expect("Failed to deserialize val: {val}");
+
+                return Ok(FeedbackLog::CustomMax((tag, val)));
+            } else {
+                panic!("Invalid custom max format: {custom_max}")
+            }
+        }
+
+        #[cfg(feature = "custom_feedback")]
+        if let Some(custom) = hex.strip_prefix("Custom|") {
+            let custom = u64::from_str_radix(&custom[2..], 16)
+                .expect("Failed to deserialize custom: {custom}");
+
+            return Ok(FeedbackLog::Custom(custom));
+        }
+
+        panic!("Failed to parse element: {hex}");
+    }
 }
 
 /// AFL introduced a [bucketing mechanism](https://lcamtuf.coredump.cx/afl/technical_details.txt) to avoid filling the corpus/queue with too many similar

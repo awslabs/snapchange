@@ -460,7 +460,7 @@ pub struct FuzzVm<'a, FUZZER: Fuzzer> {
     pub sregs: kvm_sregs,
 
     // /// Current fpu state in the VM
-    // fpu: kvm_fpu,
+    // pub fpu: kvm_fpu,
     /// Current VCPU events from KVM
     pub vcpu_events: kvm_vcpu_events,
 
@@ -3816,13 +3816,15 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         self.vcpu.set_sync_valid_reg(SyncReg::VcpuEvents);
 
         // Restore the FPU
-        self.vcpu.set_fpu(&self.vcpu.get_fpu()?)?;
+        // self.vcpu.set_fpu(&self.fpu);
 
         // Execute the CPU
         let test_res = {
             let _timer = self.scoped_timer(PerfMark::InVm);
             self.vcpu.run()
         };
+
+        // self.fpu = self.vcpu.get_fpu()?;
 
         let _timer = self.scoped_timer(PerfMark::PostRunVm);
 

@@ -1040,7 +1040,12 @@ pub fn worker<FUZZER: Fuzzer>(
         terminal = Some(crate::stats_tui::init_terminal()?);
     }
 
-    let mut coverage_timeline = Vec::new();
+    let mut coverage_timeline = if let Ok(data) = std::fs::read_to_string(&coverage_in_order) {
+        data.split('\n').map(|x| x.to_string()).collect()
+    } else {
+        Vec::new()
+    };
+
     let mut tab_index = 0_u8;
 
     let mut crash_path_strs: Vec<String> = Vec::new();

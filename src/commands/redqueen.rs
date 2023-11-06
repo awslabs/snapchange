@@ -188,7 +188,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     }
 
     if fuzzvm.redqueen_rules.is_empty() {
-        let entropy_input =
+        let _entropy_input =
             fuzzvm.increase_input_entropy(&input, &feedback, &mut fuzzer, vm_timeout)?;
     }
 
