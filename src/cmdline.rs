@@ -649,6 +649,10 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     #[cfg(feature = "redqueen")]
     let mut cmps_paths = Vec::new();
 
+    if !dir.exists() {
+        panic!("Project dir {dir:?} not found.");
+    }
+
     // Read the snapshot directory looking for the specific file extensions
     for file in dir.read_dir()? {
         let file = file?;
