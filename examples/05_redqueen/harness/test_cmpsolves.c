@@ -18,7 +18,7 @@
 
 #define INPUT_SIZE (0x4000)
 char input[INPUT_SIZE] = {
-    0,
+    0xcd
 };
 
 // based on the public domain code from
@@ -225,10 +225,12 @@ char *const_f64_compares(double *data) {
 
 char *const_long_double_compares(long double *data) {
   CHECK((isnormal(data[0])));
-  CHECK((3.1415926535897932384626433832795029L <= data[0]));
-  CHECK((0.2222222222222222222222222222222222L <= data[1] &&
-         data[1] <= 0.3333333333333333333333333333333333L));
-  return (char *)(data + 2);
+  CHECK((3.1415926535897932384626433832795029L <  data[0]));
+  CHECK((0.2222222222222222222222222222222222L <= data[1] && data[1] <= 0.3333333333333333333333333333333333L));
+  CHECK((4.1414141414141414141414141414141414L == data[2]));
+  CHECK((3.1415926535897932384626433832795029L >  data[3]));
+  CHECK((5.9999999999999999999999999999999999L >= data[4]));
+  return (char *)(data + 5);
 }
 
 // several variants of stdlib comparison functions.
@@ -260,13 +262,12 @@ char *check_dynamic_compares(char *buf) {
   return (char *)(data + 5);
 }
 
-// compare 16 uint64_t in a constant time loop
-bool constanttime_compare16_loop(const uint64_t *a, const uint64_t *b) {
+// compare 5 uint64_t in a constant time loop
+bool constanttime_compare5_loop(const uint64_t *a, const uint64_t *b) {
   bool chain = true;
 
 #pragma clang loop unroll(disable)
-  for (size_t i = 0; i < 16; i++) {
-    printf("0x%lx == 0x%lx\n", a[i], b[i]);
+  for (size_t i = 0; i < 5; i++) {
     chain &= (a[i] == b[i]);
   }
 
@@ -303,7 +304,7 @@ char *const_u64_compares_constanttime(char *data) {
 
   CHECK((branchless_compare4_unrolled((uint64_t *)data, arr)));
   data = data + (8 * 4);
-  CHECK((constanttime_compare16_loop((uint64_t *)data, arr)));
+  CHECK((constanttime_compare5_loop((uint64_t *)data, arr)));
   data = data + (8 * 16);
   return data;
 }
@@ -316,7 +317,7 @@ char *check_dynamic_branchless_compares(char *data) {
 
   CHECK((branchless_compare4_unrolled((uint64_t *)data, arr)));
   data = data + (8 * 4);
-  CHECK((constanttime_compare16_loop((uint64_t *)data, arr)));
+  CHECK((constanttime_compare5_loop((uint64_t *)data, arr)));
   data = data + (8 * 16);
   return data;
 }

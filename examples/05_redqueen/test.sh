@@ -14,9 +14,9 @@ example5() {
 
   # Start the fuzzers
   echo "Begin fuzzing!"
-  cargo run -r -- fuzz -c 16 --ascii-stats --stop-after-first-crash --stop-after-time 10m 2>/dev/null >/dev/null
+  cargo run -r -- fuzz -c 16 --stop-after-first-crash --stop-after-time 6m
 
-  # Kill the example 04 fuzzers
+  # Kill the example 05 fuzzers
   ps -ef | rg Example05 | tr -s ' ' | cut -d' ' -f2 | xargs kill -9 2>/dev/null >/dev/null
 
   # Check if the fuzzer found a crash
@@ -27,6 +27,7 @@ example5() {
     exit 1
   else 
     echo -e "\e[32mExample 05 SUCCESS!\e[0m"
+    exit 0
   fi
 }
 
