@@ -151,7 +151,7 @@ fn start_core<FUZZER: Fuzzer>(
     let starting_input: InputWithMetadata<FUZZER::Input> =
         InputWithMetadata::from_path(input_case, project_dir)?;
     let mut input = starting_input.fork();
-    
+
     let start_length = input.len();
     let start_entropy = input.entropy_metric();
 
@@ -249,7 +249,7 @@ fn start_core<FUZZER: Fuzzer>(
             }
             if let Some(entropy) = input.entropy_metric() {
                 log::info!(
-                    "Minimized from {} -> {} entropy metric",
+                    "Minimized from {:.6} -> {:.6} entropy metric",
                     start_entropy.unwrap(),
                     entropy
                 );
