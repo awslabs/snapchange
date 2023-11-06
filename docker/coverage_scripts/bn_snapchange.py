@@ -76,6 +76,7 @@ class FunctionAlias(enum.Enum):
     STRNCMP = 3
     STRCASECMP = 4
     STRNCASECMP = 5
+    MEMCHR = 6
     RETURN_STATUS_FUNCTION = 100
 
 
@@ -118,6 +119,7 @@ FUNCTION_ALIASES = {
     "g_ascii_strncasecmp": FunctionAlias.STRNCASECMP,
     "Curl_strncasecompare": FunctionAlias.STRNCASECMP,
     "g_strncasecmp": FunctionAlias.STRNCASECMP,
+    "memchr": FunctionAlias.MEMCHR,
 }
 
 errored_functions = set()
@@ -811,6 +813,20 @@ def run_cmp_analysis(bv, ignore=None):
                                 memlen=(cmp_len
                                         if cmp_len else STR_LEN_THRESHOLD),
                             )
+                    if len(params) >= 3 and func_alias == FunctionAlias.MEMCHR:
+                        cmp_len = None
+                        if isinstance(params[2], int):
+                            cmp_len = params[2]
+                        elif isinstance(params[2], str):
+                            try:
+                                cmp_len = int(params[2], 0)
+                            except ValueError:
+                                cmp_len = params[2]
+                        if cmp_len is not None:
+                            res = f"{instr.address:#x},{cmp_len},{params[0]},memchr,{params[1]}\n"
+                            if "flag" not in res:
+                                cmps.append(res)
+
 
             if instr.operation in [
                     LowLevelILOperation.LLIL_CMP_E,
