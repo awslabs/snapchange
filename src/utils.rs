@@ -95,6 +95,30 @@ pub fn rdtsc() -> u64 {
     unsafe { core::arch::x86_64::_rdtsc() }
 }
 
+
+/// calculate shannon entropy over a byte array
+pub fn byte_entropy<T: AsRef<[u8]>>(buf: T) -> f64 {
+    let buf = buf.as_ref();
+    let mut entropy = 0f64;
+    let mut bytecounts = [0u16; 256];
+    for b in buf.iter().copied() {
+        let b_idx = b as usize;
+        bytecounts[b_idx] = bytecounts[b_idx].saturating_add(1);
+    }
+    let buf_len: f64 = (buf.len() as u32).into();
+    for c in bytecounts.into_iter() {
+        if c == 0 {
+            continue;
+        }
+        let c: f64 = c.into();
+        let p = c / buf_len;
+        entropy -= p * p.log2();
+    }
+
+    entropy
+}
+
+
 /// Returns the hash of the given input using [`DefaultHasher`]
 pub fn calculate_hash<T: Hash>(t: &T) -> u64 {
     let mut s = DefaultHasher::new();
