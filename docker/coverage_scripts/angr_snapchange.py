@@ -671,7 +671,7 @@ for entry in auto_dictionary:
             auto_dict_files[fname] = data
 
         fname = "int_str_" + str(entry).replace("-", "neg")
-        auto_dict_files[fname] = str(entry)
+        auto_dict_files[fname] = str(entry).encode()
 
     elif isinstance(entry, float):
         # emit using struct.pack in various formats

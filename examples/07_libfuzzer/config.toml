@@ -1,0 +1,18 @@
+guest_memory_size = 5368709120
+
+[stats]
+maximum_new_corpus_size = 5000
+minimum_total_corpus_percentage_sync = 40
+maximum_total_corpus_percentage_sync = 80
+
+[stats.merge_corpus_timer]
+secs = 2
+nanos = 0
+
+[stats.stats_sync_timer]
+secs = 0
+nanos = 500000000
+
+[stats.coverage_sync_timer]
+secs = 2
+nanos = 0

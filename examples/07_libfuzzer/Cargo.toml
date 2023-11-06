@@ -8,8 +8,7 @@ exclude = ["snapshot", "docker"]
 
 [dependencies]
 anyhow = "1"
-# snapchange = {path = "../../../", features = ["libnuma"]}
-snapchange = {path = "../../../"}
+snapchange = { version = "0.1.0", path = "../.." }
 rand = "0.8"
 # snmalloc-rs = "0.3"
 log = "0.4"

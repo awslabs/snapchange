@@ -6,20 +6,25 @@
 
 use anyhow::Result;
 
+use snapchange::fuzz_input::InputWithMetadata;
 use snapchange::fuzzer::Fuzzer;
 use snapchange::fuzzvm::FuzzVm;
 
 use crate::constants;
 
 #[derive(Default)]
-pub struct Example1Fuzzer {}
+pub struct Example7Fuzzer {}
 
-impl Fuzzer for Example1Fuzzer {
+impl Fuzzer for Example7Fuzzer {
     type Input = Vec<u8>;
     const START_ADDRESS: u64 = constants::RIP;
-    const MAX_INPUT_LENGTH: usize = 1024;
+    const MAX_INPUT_LENGTH: usize = 32;
 
-    fn set_input(&mut self, input: &Self::Input, fuzzvm: &mut FuzzVm<Self>) -> Result<()> {
+    fn set_input(
+        &mut self,
+        input: &InputWithMetadata<Self::Input>,
+        fuzzvm: &mut FuzzVm<Self>,
+    ) -> Result<()> {
         snapchange::utils::libfuzzer::set_input(&input[..], fuzzvm)
     }
 
