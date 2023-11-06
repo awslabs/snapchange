@@ -249,6 +249,7 @@ impl Fuzzer for MazeFuzzer {
                 corpus,
                 rng,
                 dictionary,
+                Self::MIN_INPUT_LENGTH,
                 Self::MAX_INPUT_LENGTH,
             );
         }
@@ -335,6 +336,7 @@ impl snapchange::FuzzInput for WasdArray {
         _corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         _dictionary: &Option<Vec<Vec<u8>>>,
+        _min_length: usize,
         _max_length: usize,
     ) -> InputWithMetadata<Self> {
         // Start with a random new direction
@@ -347,6 +349,7 @@ impl snapchange::FuzzInput for WasdArray {
         corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         _dictionary: &Option<Vec<Vec<u8>>>,
+        _min_length: usize,
         max_length: usize,
         max_mutations: u64,
     ) -> Vec<String> {
