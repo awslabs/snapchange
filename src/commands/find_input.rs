@@ -19,7 +19,7 @@ use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::{FuzzVm, FuzzVmExit};
 use crate::memory::Memory;
 use crate::stack_unwinder::StackUnwinders;
-use crate::{cmdline, fuzzvm, unblock_sigalrm, THREAD_IDS};
+use crate::{cmdline, fuzzvm, unblock_sigalrm, THREAD_IDS, SymbolList};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
 use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
 
@@ -33,7 +33,7 @@ fn start_core<FUZZER: Fuzzer>(
     cpuid: &CpuId,
     snapshot_fd: i32,
     clean_snapshot: Arc<RwLock<Memory>>,
-    symbols: &Option<VecDeque<Symbol>>,
+    symbols: &Option<SymbolList>,
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
     vm_timeout: Duration,
     config: Config,

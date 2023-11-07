@@ -43,7 +43,7 @@ use crate::stats::{PerfMark, PerfStatTimer, Stats};
 use crate::symbols::Symbol;
 
 use crate::vbcpu::VbCpu;
-use crate::{handle_vmexit, Execution, DIRTY_BITMAPS};
+use crate::{handle_vmexit, Execution, DIRTY_BITMAPS, SymbolList};
 use crate::{try_u32, try_u64, try_u8, try_usize};
 
 #[cfg(feature = "redqueen")]
@@ -536,7 +536,7 @@ pub struct FuzzVm<'a, FUZZER: Fuzzer> {
     pub reset_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
 
     /// List of symbols available in this VM
-    pub symbols: &'a Option<VecDeque<Symbol>>,
+    pub symbols: &'a Option<SymbolList>,
 
     /// Start time of the current fuzz case, used to determine if the VM should be timed
     /// out
@@ -653,7 +653,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         clean_snapshot: Arc<RwLock<Memory>>,
         coverage_breakpoints: Option<BTreeMap<VirtAddr, u8>>,
         reset_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
-        symbols: &'a Option<VecDeque<Symbol>>,
+        symbols: &'a Option<SymbolList>,
         config: Config,
         unwinders: StackUnwinders,
         #[cfg(feature = "redqueen")] redqueen_breakpoints: Option<Vec<(u64, RedqueenArguments)>>,

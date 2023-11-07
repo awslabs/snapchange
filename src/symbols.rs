@@ -67,7 +67,7 @@ pub struct Symbol {
 }
 
 /// Get the symbol for the given `addr` using the given `symbols`
-pub fn get_symbol(addr: u64, symbols: &VecDeque<Symbol>) -> Option<String> {
+pub fn get_symbol(addr: u64, symbols: &crate::SymbolList) -> Option<String> {
     // Get the index to where this address can be found
     let index = symbols.binary_search_by_key(&addr, |Symbol { address, .. }| *address);
 

@@ -24,6 +24,7 @@ use std::{
 
 #[cfg(feature = "redqueen")]
 use crate::{
+    SymbolList,
     cmdline,
     cmp_analysis::RedqueenCoverage,
     feedback::FeedbackLog,
@@ -98,13 +99,15 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     cpuid: &CpuId,
     snapshot_fd: i32,
     clean_snapshot: Arc<RwLock<Memory>>,
-    symbols: &Option<VecDeque<Symbol>>,
+    symbols: &Option<SymbolList>,
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
     coverage_breakpoints: BTreeMap<VirtAddr, u8>,
     input_case: &PathBuf,
     project_state: &ProjectState,
 ) -> Result<()> {
     // Store the thread ID of this thread used for passing the SIGALRM to this thread
+
+    use crate::SymbolList;
     let thread_id = unsafe { libc::pthread_self() };
     *THREAD_IDS[core_id.id].lock().unwrap() = Some(thread_id);
 

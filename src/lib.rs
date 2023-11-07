@@ -268,6 +268,9 @@ impl Execution {
     }
 }
 
+/// List of [`Symbol`] sorted in order by address. Always allows to `binary_search_by_key`.
+pub type SymbolList = Vec<Symbol>;
+
 /// Maximum number of cores supported
 pub(crate) const MAX_CORES: usize = 200;
 
@@ -885,7 +888,7 @@ struct KvmEnvironment {
     clean_snapshot: Arc<RwLock<Memory>>,
 
     /// Parsed symbols if the project has symbols available
-    symbols: Option<VecDeque<Symbol>>,
+    symbols: Option<SymbolList>,
 
     /// Parsed symbol breakpoints if any coverage breakpoints are available in the project
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
