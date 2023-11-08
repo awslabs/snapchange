@@ -101,6 +101,9 @@ pub enum BreakpointHook<FUZZER: Fuzzer> {
     #[cfg(feature = "redqueen")]
     Redqueen(RedqueenArguments),
 
+    /// intentionally ignore this breakpoint for breakpoint hooks.
+    Ignore,
+
     /// No breakpoint hook function set for this breakpoint
     None,
 }
@@ -2634,6 +2637,9 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 BreakpointHook::Redqueen(args) => {
                     let args = args.clone();
                     execution = crate::cmp_analysis::gather_comparison(self, input, &args)?;
+                }
+                BreakpointHook::Ignore => {
+                    execution = Execution::Continue;
                 }
                 _ => {
                     let sym = self.get_symbol(virt_addr.0);
