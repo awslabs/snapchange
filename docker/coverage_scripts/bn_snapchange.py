@@ -533,6 +533,8 @@ def int_is_interesting_for_dict(i, size, _bv=None):
         return False
     if i < 256:
         return False
+    if size == 0:
+        size = 4
     # convert to signed
     i_s = i
     if i_s & (1 << (size - 1)):
@@ -846,6 +848,16 @@ def run_cmp_analysis(bv, ignore=None):
                     LowLevelILOperation.LLIL_FCMP_GT,
                     LowLevelILOperation.LLIL_INTRINSIC
             ]:
+                if instr.operation != LowLevelILOperation.LLIL_INTRINSIC:
+                    if is_instr_const(instr.left):
+                        add_const_to_dict(
+                            bv, dictionary, instr.left.constant, instr.left.size
+                        )
+                    if is_instr_const(instr.right):
+                        add_const_to_dict(
+                            bv, dictionary, instr.right.constant, instr.right.size
+                        )
+
                 # Get the comparison rule for this instruction, using the address of the
                 # full instruction
                 res = get_collapsed_rule(bv, instr)
