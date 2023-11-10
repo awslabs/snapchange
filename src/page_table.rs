@@ -219,22 +219,22 @@ impl IndexMut<usize> for PageTable {
 #[allow(dead_code)]
 pub struct Translation {
     /// The virtual address for this translation
-    virt_addr: VirtAddr,
+    pub(crate) virt_addr: VirtAddr,
 
     /// The physical address of the translation, if found
-    phys_addr: Option<PhysAddr>,
+    pub(crate) phys_addr: Option<PhysAddr>,
 
     /// The size of the translation page
     pub page_size: Option<PageSize>,
 
     /// [`Permissions`] for this entry
-    perms: Permissions,
+    pub(crate) perms: Permissions,
 
     /// Intermediate physical addresses and their entries for the page table walk
     pub entries: [Option<(u64, Entry)>; 4],
 }
 
-impl Translation {
+impl<'a> Translation {
     /// Create a new [`Translation`] for the [`VirtAddr`]
     pub fn new(
         virt_addr: VirtAddr,
@@ -272,6 +272,29 @@ impl Translation {
     pub fn phys_addr(&self) -> Option<PhysAddr> {
         self.phys_addr
     }
+
+    /// get a copy of the permissions
+    pub fn permissions(&self) -> Permissions {
+        self.perms
+    }
+
+    /// check if translation result points to executable memory
+    #[inline]
+    pub fn is_executable(&self) -> bool {
+        self.perms.executable
+    }
+
+    /// check if translation result points to readable memory
+    #[inline]
+    pub fn is_readable(&self) -> bool {
+        self.perms.readable
+    }
+
+    /// check if translation result points to writable memory
+    #[inline]
+    pub fn is_writable(&self) -> bool {
+        self.perms.writable
+    }
 }
 
 /// The size of the memory containing the translated address
@@ -292,13 +315,13 @@ pub enum PageSize {
 #[allow(dead_code)]
 pub struct Permissions {
     /// The page is readable
-    readable: bool,
+    pub readable: bool,
 
     /// The page is writable
-    writable: bool,
+    pub writable: bool,
 
     /// The page is executable
-    executable: bool,
+    pub executable: bool,
 }
 
 impl Permissions {
@@ -314,7 +337,7 @@ impl Permissions {
     /// Get the writable flag
     #[inline]
     #[allow(dead_code)]
-    pub fn writable(&mut self) -> bool {
+    pub fn writable(&self) -> bool {
         self.writable
     }
 

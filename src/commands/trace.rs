@@ -107,23 +107,30 @@ fn start_core<FUZZER: Fuzzer>(
         let mut count = 0_usize;
 
         let cr3 = Cr3(project_state.vbcpu.cr3);
-        // this is not a good idea... many symbols are not code symbols
         if let Some(symbols) = symbols.as_ref() {
             log::info!("setting breakpoints on all symbols");
             for sym in symbols.iter() {
-                let res = fuzzvm.set_breakpoint(
-                    sym.address.into(),
-                    cr3,
-                    BreakpointType::Repeated,
-                    BreakpointMemory::NotDirty,
-                    BreakpointHook::Ignore,
-                );
-                match res {
-                    Ok(_) => count += 1,
-                    Err(_e) => {
-                        let name = &sym.symbol;
-                        let address = &sym.address;
-                        log::trace!("invalid symbol breakpoint for symbols {name} @ {address:#x}");
+                let translation = fuzzvm.translate(sym.address.into(), cr3);
+                if translation.phys_addr().is_some()
+                    && translation.is_executable()
+                    && !translation.is_writable()
+                {
+                    let res = fuzzvm.set_breakpoint(
+                        sym.address.into(),
+                        cr3,
+                        BreakpointType::Repeated,
+                        BreakpointMemory::NotDirty,
+                        BreakpointHook::Ignore,
+                    );
+                    match res {
+                        Ok(_) => count += 1,
+                        Err(_e) => {
+                            let name = &sym.symbol;
+                            let address = &sym.address;
+                            log::trace!(
+                                "invalid symbol breakpoint for symbols {name} @ {address:#x}"
+                            );
+                        }
                     }
                 }
             }
