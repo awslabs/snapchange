@@ -436,8 +436,7 @@ class SnapchangeCmpAnalysis(SnapchangeTask):
             self.dict_location = Path(dict_location)
 
     def run(self):
-        bv = self.bv
-        cmps, autodict = run_cmp_analysis(bv, self.ignore)
+        cmps, autodict = run_cmp_analysis(self.bv, self.ignore)
         if self.cmp_location:
             with self.cmp_location.open("w") as f:
                 f.write("\n".join(map(lambda c: str(c).strip(), cmps)))
@@ -849,7 +848,7 @@ def run_cmp_analysis(bv, ignore=None):
             ]:
                 # Get the comparison rule for this instruction, using the address of the
                 # full instruction
-                res = get_collapsed_rule(instr)
+                res = get_collapsed_rule(bv, instr)
 
                 if res != None:
                     # Continue if the collapsed rule was ignored (like the return value comparison case)
@@ -1266,7 +1265,7 @@ def is_instr_const(instr):
     return instr.operation in STATIC_INSTRS
 
 
-def get_collapsed_rule(instr):
+def get_collapsed_rule(bv, instr):
     """
     This common pattern compares the result of an operation. We
     want to create a rule that would actually produce the result,
@@ -1306,6 +1305,8 @@ def get_collapsed_rule(instr):
 
         # Get the definition of the variable being used in the comparison
         definition = instr.function.get_ssa_reg_definition(ssa_reg)
+        if definition is None:  # ssa definition outside current function.
+            return None
 
         # Ignore the following pattern. We don't want to add a redqueen rule that
         # compares against a known status code function
@@ -1334,9 +1335,13 @@ def get_collapsed_rule(instr):
                 # if (result == 0x1234) { .. }
                 return None
 
+        if not hasattr(definition, "src"):
+            log_warn(f"failed to get ssa definition source for {instr!r}")
+            return None
+
         # Found a valid definition, get the src of the definition
         definition = definition.src
-        if definition == None:
+        if definition is None:
             return None
 
         # Ignore any operation that doesn't have 'left' and 'right' operands
