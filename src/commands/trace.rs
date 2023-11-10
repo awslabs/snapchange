@@ -445,13 +445,14 @@ fn start_core<FUZZER: Fuzzer>(
                 || (ret_addrs.contains(&rip) && !matches!(vmret, FuzzVmExit::DebugException))
             {
                 log::trace!("returned from call @ {rip:#x}");
-                indent -= 1;
 
-                let ret = fuzzvm.rax();
                 if let Some(curr_index) = func_indexes.pop() {
                     if let Some(item) = funcs.get_mut(curr_index) {
+                        let ret = fuzzvm.rax();
                         item.1 = Some(ret);
                     }
+
+                    indent = indent.saturating_sub(1);
                 } else {
                     log::warn!("encountered function ret @ {rip:#x} without prior call");
                 }
