@@ -291,12 +291,18 @@ class SnapchangeCovAnalysis(SnapchangeTask):
                 ignored_functions.add(str(func))
                 continue
 
+            # if func.analysis_skipped:
+            #     fn = str(func)
+            #     if fn not in errored_functions:
+            #         skip_reason = str(func.analysis_skip_reason)
+            #         log_warn(f"Analysis skipped for {func} | {skip_reason}")
+            #         errored_functions.add(func)
+
             # If this function doesn't have LLIL, display the warning only once
-            if func.analysis_skipped:
+            if func.low_level_il is None:
                 fn = str(func)
                 if fn not in errored_functions:
-                    skip_reason = str(func.analysis_skip_reason)
-                    log_warn(f"Analysis skipped for {func} | {skip_reason}", LOG_ID)
+                    log_warn(f"Analysis skipped for {func} | missing LLIL")
                     errored_functions.add(func)
 
             for bb in func:
@@ -437,7 +443,9 @@ class SnapchangeCmpAnalysis(SnapchangeTask):
             self.dict_location = Path(dict_location)
 
     def run(self):
-        cmps, autodict = run_cmp_analysis(self.bv, self.ignore)
+        cmps, autodict = run_cmp_analysis(self.bv, self.ignore, self)
+        if self.cancelled or (cmps is None and autodict is None):
+            return
         if self.cmp_location:
             with self.cmp_location.open("w") as f:
                 f.write("\n".join(map(lambda c: str(c).strip(), cmps)))
@@ -628,34 +636,65 @@ def add_memory_to_dict(
         dictionary.add(data.lower())
 
 
-def add_const_to_dict(bv, dictionary, c, c_size):
+def add_const_to_dict(bv, dictionary, c, c_size, is_float=False):
     real_size = 0
-    is_float = False
+    # is_float = False
     if isinstance(c_size, str):
         if c_size[0] == "f":
             is_float = True
             c_size = c_size[1:]
         real_size = int(c_size, 0)
+    else:
+        real_size = c_size
 
-    if isinstance(c, str):
+    if not c_size and isinstance(c, bytes):
+        real_size = len(c)
+
+    if isinstance(c, bytes):  # was given raw bytes
+        assert len(c) >= real_size
+        if real_size in (2, 4, 8, 16) and not is_float:
+            c = int.from_bytes(c, "little")
+        elif is_float and real_size in (2, 4, 8):
+            dictionary.add(c)
+            if real_size == 4:
+                c = struct.unpack("@f", c)[0]
+            elif real_size == 8:
+                c = struct.unpack("@d", c)[0]
+            elif real_size == 2:
+                c = struct.unpack("@e", c)[0]
+
+    elif isinstance(c, str):
         if c.startswith("load_from"):
             x = c.split(" ")
-            a = None
+            addr = None
             if len(x) > 1:
                 try:
-                    a = int(x[1], 0)
+                    addr = int(x[1], 0)
                 except ValueError:
-                    a = None
+                    addr = None
 
-            if a is not None:
+            if addr is not None:
                 if not is_float:
                     try:
-                        c = bv.read_int(a, real_size)
+                        c = bv.read_int(addr, real_size)
                     except ValueError:
                         pass
                 else:
-                    log_warn(f"reading a float from memory @ {a:#x} is not supported")
-                    return
+                    # for floating points, we read the data as bytes
+                    data = bv.read(addr, real_size)
+                    # add the float bytes to the dictionary
+                    dictionary.add(c)
+                    # but we also attempt to convert to an actual float value using struct
+                    # not sure this is always accurate.
+                    try:
+                        if real_size == 4:
+                            c = struct.unpack("@f", data)[0]
+                        elif real_size == 8:
+                            c = struct.unpack("@d", data)[0]
+                        elif real_size == 2:
+                            c = struct.unpack("@e", data)[0]
+                    except ValueError:
+                        return
             else:
                 # can't load non-constant from memory...
                 return
@@ -669,7 +708,7 @@ def add_const_to_dict(bv, dictionary, c, c_size):
                 else:
                     c = int(c, 0)
             except ValueError:
-                log_warn(f"failed to convert {c!r} into number")
+                # log_warn(f"failed to convert {c!r} into number")
                 return
 
     if isinstance(c, int):
@@ -683,7 +722,7 @@ def add_const_to_dict(bv, dictionary, c, c_size):
         dictionary.add(c)
 
 
-def run_cmp_analysis(bv, ignore=None):
+def run_cmp_analysis(bv, ignore=None, taskref=None):
     blacklist = DEFAULT_IGNORE
     if ignore:
         blacklist.extend(ignore)
@@ -697,6 +736,8 @@ def run_cmp_analysis(bv, ignore=None):
     ignored_addresses = []
 
     for _i, func in enumerate(bv.functions):
+        if taskref and taskref.cancelled:
+            return (None, None)
         # If any of the blacklist substrings are found in the function name, ignore it
         if any(black for black in blacklist if black in func.name):
             log_debug(f"Ignoring {func.name}", LOG_ID)
@@ -704,6 +745,7 @@ def run_cmp_analysis(bv, ignore=None):
             continue
 
         if func.low_level_il is None:
+            log_warn(f"skipping func {func!r}, because of missing LLIL")
             continue
 
         # Get the number of LLIL expressions (not instructions) for this function
@@ -835,15 +877,73 @@ def run_cmp_analysis(bv, ignore=None):
                 LowLevelILOperation.LLIL_FCMP_GT,
                 LowLevelILOperation.LLIL_INTRINSIC,
             ]:
+                is_float = False
+                if instr.operation in (
+                    LowLevelILOperation.LLIL_FCMP_E,
+                    LowLevelILOperation.LLIL_FCMP_NE,
+                    LowLevelILOperation.LLIL_FCMP_LT,
+                    LowLevelILOperation.LLIL_FCMP_LE,
+                    LowLevelILOperation.LLIL_FCMP_GE,
+                    LowLevelILOperation.LLIL_FCMP_GT,
+                ):
+                    is_float = True
+
+                find_ssa_defs = []
                 if instr.operation != LowLevelILOperation.LLIL_INTRINSIC:
-                    if is_instr_const(instr.left):
+                    for curr_instr in (instr.left, instr.right):
+                        find_ssa_defs.append(curr_instr)
+                elif instr.operation == LowLevelILOperation.LLIL_INTRINSIC:
+                    if "cmp" in str(curr_instr) and len(curr_instr.params) == 2:
+                        find_ssa_defs.append(curr_instr.params[0])
+                        find_ssa_defs.append(curr_instr.params[1])
+
+                # this is a non-exhaustive ssa backtracking thing. it is mostly to cover patterns like:
+                # ```
+                # reg0 = [constptr]
+                # if (reg0 == reg1) ...
+                # ```
+                while find_ssa_defs:
+                    curr_instr = find_ssa_defs.pop()
+                    if is_instr_const(curr_instr):
                         add_const_to_dict(
-                            bv, dictionary, instr.left.constant, instr.left.size
+                            bv,
+                            dictionary,
+                            curr_instr.constant,
+                            curr_instr.size,
+                            is_float,
                         )
-                    if is_instr_const(instr.right):
-                        add_const_to_dict(
-                            bv, dictionary, instr.right.constant, instr.right.size
-                        )
+                    elif curr_instr.operation == LowLevelILOperation.LLIL_REG:
+                        ssa_reg = curr_instr.ssa_form
+                        if hasattr(ssa_reg, "full_reg"):
+                            ssa_reg = ssa_reg.full_reg
+                        elif hasattr(ssa_reg, "src"):
+                            ssa_reg = ssa_reg.src
+                        if (
+                            hasattr(ssa_reg, "operation")
+                            and ssa_reg.operation == LowLevelILOperation.LLIL_CONST
+                        ):
+                            add_const_to_dict(
+                                bv, dictionary, ssa_reg.constant, ssa_reg.size, is_float
+                            )
+                        else:
+                            definition = (
+                                curr_instr.function.ssa_form.get_ssa_reg_definition(
+                                    ssa_reg
+                                )
+                            )
+                            find_ssa_defs.append(definition.non_ssa_form)
+                    elif curr_instr.operation == LowLevelILOperation.LLIL_SET_REG:
+                        find_ssa_defs.append(curr_instr.src)
+                    elif curr_instr.operation == LowLevelILOperation.LLIL_LOAD:
+                        iload = curr_instr
+                        if iload.src.operation == LowLevelILOperation.LLIL_CONST_PTR:
+                            add_const_to_dict(
+                                bv,
+                                dictionary,
+                                bv.read(iload.src.constant, iload.size),
+                                iload.size,
+                                is_float,
+                            )
 
                 # Get the comparison rule for this instruction, using the address of the
                 # full instruction
@@ -864,6 +964,15 @@ def run_cmp_analysis(bv, ignore=None):
                 # If we found a comparison rule write it to the log
                 if res is not None:
                     cmps.append(f"{res}\n")
+                    res_split = res.split(",")
+                    size = res_split[1]
+                    op1 = res_split[-1]
+                    op2 = res_split[-3]
+                    for op in (op1, op2):
+                        is_float = False
+                        if "FCMP" in res:
+                            is_float = True
+                        add_const_to_dict(bv, dictionary, op, size, is_float)
 
             # Special case unimplemented instructions
             if instr.operation == LowLevelILOperation.LLIL_UNIMPL:
@@ -882,8 +991,6 @@ def run_cmp_analysis(bv, ignore=None):
                     reg_size = bv.arch.regs[disasm[1]].size
 
                     res = f"{instr.address:#x},{reg_size:#x},reg {disasm[1]},{comparison},reg {disasm[2]}\n"
-                    if "None" in res or "0x7ffff7f7df5f" in res:
-                        log_error(f"RHS is None for {instr!r} {instr}")
                     cmps.append(res)
 
     return (cmps, dictionary)
@@ -1153,10 +1260,9 @@ def get_cmp_analysis_from_instr_llil(curr_instr):
 
         return f"load_from {res}"
     elif curr_instr.operation == LowLevelILOperation.LLIL_REG:
-        result = f"reg {curr_instr.src.name}"
 
         # If temp if in this register, attempt to find it's definition
-        if "temp" in result:
+        if str(curr_instr.src.name) not in curr_instr.function.arch.regs:
             ssa_reg = curr_instr.ssa_form.src
             definition = curr_instr.function.ssa_form.get_ssa_reg_definition(ssa_reg)
             curr_instr = get_cmp_analysis_from_instr_llil(definition.src.non_ssa_form)
@@ -1164,10 +1270,14 @@ def get_cmp_analysis_from_instr_llil(curr_instr):
 
         # print(f'{pad}TRACE {curr_instr} {str(curr_instr.operation)}')
         # res = get_cmp_analysis_from_instr_llil(curr_instr.src, address, iters + 1)
+        result = f"reg {curr_instr.src.name}"
         return result
     elif curr_instr.operation == LowLevelILOperation.LLIL_NOT:
         src = get_cmp_analysis_from_instr_llil(curr_instr.src)
         return f"not {src}"
+    elif curr_instr.operation == LowLevelILOperation.LLIL_NEG:
+        src = get_cmp_analysis_from_instr_llil(curr_instr.src)
+        return f"neg {src}"
     elif curr_instr.operation == LowLevelILOperation.LLIL_OR:
         left = get_cmp_analysis_from_instr_llil(curr_instr.left)
         right = get_cmp_analysis_from_instr_llil(curr_instr.right)
@@ -1216,11 +1326,10 @@ def get_cmp_analysis_from_instr_llil(curr_instr):
         # log_warn(f'{pad}TRACE CONST_PTR {curr_instr.constant:x}')
         return f"{hex(curr_instr.constant)}"
     elif curr_instr.operation == LowLevelILOperation.LLIL_INTRINSIC:
-        if "cmp" in str(curr_instr):
-            # TODO: Need a decent way of grouping all of the cmp mmx/sse/avx operations
-            # for this check
-            print(f"INTRINSIC {curr_instr}")
-            assert len(curr_instr.params) == 2
+        # TODO: Need a decent way of grouping all of the cmp mmx/sse/avx operations
+        # for this check
+        if "cmp" in str(curr_instr) and len(curr_instr.params) == 2:
+            log_debug(f"INTRINSIC compare `{curr_instr}` @ {curr_instr.address:#x}")
             left = get_cmp_analysis_from_instr_llil(curr_instr.params[0])
             right = get_cmp_analysis_from_instr_llil(curr_instr.params[1])
             op = "CMP_E"
@@ -1235,11 +1344,15 @@ def get_cmp_analysis_from_instr_llil(curr_instr):
             output = f"{curr_instr.address:#x},{size:#x},{left},{op},{right}\n"
             return output
 
-    else:
-        log_warn(
-            f"{curr_instr.address:#x} UNKNOWN: {str(curr_instr.operation)} | {type(curr_instr)}"
+        log_debug(
+            f"{curr_instr.address:#x} UNKNOWN intrinsic: `{curr_instr.operation}` | {curr_instr!r}"
         )
-        return
+        return None
+
+    log_warn(
+        f"{curr_instr.address:#x} UNKNOWN: `{curr_instr.operation}` | {curr_instr!r}"
+    )
+    return None
 
 
 def is_instr_const(instr):
@@ -1322,15 +1435,24 @@ def get_collapsed_rule(bv, instr):
                 FunctionAlias.STRNCASECMP,
             ):
                 return ""
-            else:
-                # If this function return isn't known to be a status code,
-                # we should check the result. For example:
-                # result = checksum(..)
-                # if (result == 0x1234) { .. }
-                return None
+
+            # If this function return isn't known to be a status code,
+            # we should check the result. For example:
+            # result = checksum(..)
+            # if (result == 0x1234) { .. }
+            return None
+
+        if definition.operation == LowLevelILOperation.LLIL_IF:
+            # encountered a PHI in SSA. We don't backtrack any further.
+            return None
+
+        if definition.operation == LowLevelILOperation.LLIL_INTRINSIC:
+            return get_cmp_analysis_from_instr_llil(definition)
 
         if not hasattr(definition, "src"):
-            log_warn(f"failed to get ssa definition source for {instr!r}")
+            log_warn(
+                f"failed to get ssa definition source for `{instr}` @ {instr.address:#x} for reg {ssa_reg} - def: ({definition!r})"
+            )
             return None
 
         # Found a valid definition, get the src of the definition
@@ -1350,6 +1472,10 @@ def get_collapsed_rule(bv, instr):
         return f"{definition.address:#x},{instr.size:#x},{left},{op},{right}"
 
     return None
+
+
+def is_isa_register(bv, regname):
+    return regname.lower() in bv.arch.regs
 
 
 def get_register_alias(register, size):
@@ -1563,15 +1689,12 @@ def cli_main():
         "analysis.mode": "basic",
     }
 
-    with bn.open_view(str(args.binary), options=options, update_analysis=True) as bv:
+    with bn.load(str(args.binary), options=options, update_analysis=True) as bv:
         # If given a different base address, rebase the BinaryView
         if args.base_addr != 0:
             bv = bv.rebase(args.base_addr)
 
         bv.update_analysis_and_wait()
-
-        # import IPython; shell = IPython.terminal.embed.InteractiveShellEmbed(); shell.mainloop();
-        # sys.exit(1)
 
         binary = Path(bv.file.filename)
         tasks = []
