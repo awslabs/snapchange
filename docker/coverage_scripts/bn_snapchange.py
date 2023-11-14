@@ -1175,35 +1175,6 @@ def dump_all(bv):
     _dump(bv, bps=True, analysis=True, cmps=True, autodict=True)
 
 
-def get_cmp_analysis_from_instr(instr):
-    log_info(f"Cmp Analysis {instr}")
-    log_info(f"{instr.left} | {str(instr.operation)} | {instr.right}")
-    log_info(f"{type(instr.left)} | {str(instr.operation)} | {type(instr.right)}")
-
-    size = 0
-    curr_instr = instr.left
-    while True:
-        if curr_instr.operation == MediumLevelILOperation.MLIL_VAR:
-            # Convert a <mlil: var_18> to llil
-            # <llil: [rbp#1 - 0x10 {var_18}].d @ mem#8>
-            log_info(f"TRACE {curr_instr} {str(curr_instr.operation)}")
-            curr_instr = curr_instr.llil
-            continue
-        elif curr_instr.operation == LowLevelILOperation.LLIL_LOAD_SSA:
-            size = curr_instr.size
-            log_info(f"TRACE {curr_instr} {str(curr_instr.operation)} {size}")
-            curr_instr = curr_instr.src
-            continue
-        elif curr_instr.operation == LowLevelILOperation.LLIL_ADD:
-            size = curr_instr.size
-            log_info(
-                f"TRACE {curr_instr} {str(curr_instr.operation)} {curr_instr.left} {curr_instr.right}"
-            )
-            break
-        else:
-            break
-
-
 def get_cmp_analysis_from_instr_llil(curr_instr):
     if not hasattr(curr_instr, "operation"):
         return curr_instr
@@ -1478,91 +1449,6 @@ def get_collapsed_rule(bv, instr):
 
 def is_isa_register(bv, regname):
     return regname.lower() in bv.arch.regs
-
-
-def get_register_alias(register, size):
-    """
-    Get the register alias for the given register based on the requested size
-    """
-    REGISTERS = [
-        "rax",
-        "rbx",
-        "rcx",
-        "rdx",
-        "rsi",
-        "rdi",
-        "rsp",
-        "rbp",
-        "r8",
-        "r9",
-        "r10",
-        "r11",
-        "r12",
-        "r13",
-        "r14",
-        "r15",
-        "rip",
-    ]
-
-    # Based on the comparison size, return the correct register alias
-    if register in REGISTERS:
-        alias = {
-            ("rax", 4): "eax",
-            ("rax", 2): "ax",
-            ("rax", 1): "al",
-            ("rbx", 4): "ebx",
-            ("rbx", 2): "bx",
-            ("rbx", 1): "bl",
-            ("rcx", 4): "ecx",
-            ("rcx", 2): "cx",
-            ("rcx", 1): "cl",
-            ("rdx", 4): "edx",
-            ("rdx", 2): "dx",
-            ("rdx", 1): "dl",
-            ("rsi", 4): "esi",
-            ("rsi", 2): "si",
-            ("rsi", 1): "sil",
-            ("rdi", 4): "edi",
-            ("rdi", 2): "di",
-            ("rdi", 1): "dil",
-            ("rsp", 4): "esp",
-            ("rsp", 2): "sp",
-            ("rsp", 1): "spl",
-            ("rbp", 4): "ebp",
-            ("rbp", 2): "bp",
-            ("rbp", 1): "bpl",
-            ("r8", 4): "r8d",
-            ("r8", 2): "r8w",
-            ("r8", 1): "r8b",
-            ("r9", 4): "r9d",
-            ("r9", 2): "r9w",
-            ("r9", 1): "r9b",
-            ("r10", 4): "r10d",
-            ("r10", 2): "r10w",
-            ("r10", 1): "r10b",
-            ("r11", 4): "r11d",
-            ("r11", 2): "r11w",
-            ("r11", 1): "r11b",
-            ("r12", 4): "r12d",
-            ("r12", 2): "r12w",
-            ("r12", 1): "r12b",
-            ("r13", 4): "r13d",
-            ("r13", 2): "r13w",
-            ("r13", 1): "r13b",
-            ("r14", 4): "r14d",
-            ("r14", 2): "r14w",
-            ("r14", 1): "r14b",
-            ("r15", 4): "r15d",
-            ("r15", 2): "r15w",
-            ("r15", 1): "r15b",
-            ("rip", 4): "eip",
-            ("rip", 2): "ip",
-            ("rflags", 4): "eflags",
-        }.get((register, size), register)
-    else:
-        alias = register
-
-    return alias
 
 
 def register_in_bn_ui():
