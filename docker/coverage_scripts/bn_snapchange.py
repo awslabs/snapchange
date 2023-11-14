@@ -1345,12 +1345,14 @@ def get_cmp_analysis_from_instr_llil(curr_instr):
             return output
 
         log_debug(
-            f"{curr_instr.address:#x} UNKNOWN intrinsic: `{curr_instr.operation}` | {curr_instr!r}"
+            f"{curr_instr.address:#x} UNKNOWN intrinsic @ {curr_instr.address:#x}: `{curr_instr.operation}` | {curr_instr!r}"
         )
         return None
+    elif curr_instr.operation == LowLevelILOperation.LLIL_FLOAT_CONV:
+        return get_cmp_analysis_from_instr_llil(curr_instr.src)
 
     log_warn(
-        f"{curr_instr.address:#x} UNKNOWN: `{curr_instr.operation}` | {curr_instr!r}"
+        f"{curr_instr.address:#x} UNKNOWN instr @ {curr_instr.address:#x}: `{curr_instr}` ({curr_instr!r})"
     )
     return None
 
