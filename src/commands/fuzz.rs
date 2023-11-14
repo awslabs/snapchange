@@ -189,10 +189,32 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
     if dict_dir.exists() {
         let mut new_dict = Vec::new();
 
-        for file in std::fs::read_dir(dict_dir)? {
-            let file = file?;
-            new_dict.push(std::fs::read(file.path())?);
+        let dict_dir = dict_dir.canonicalize().with_context(|| {
+            format!(
+                "failed to canonicalize '{}/dict'",
+                project_state.path.to_string_lossy()
+            )
+        })?;
+        let mut attempts = 0_u32;
+        // log::warn!("{dict_dir:?}");
+        for file in std::fs::read_dir(&dict_dir).with_context(|| format!("failed to read dictionary from dir: {}", &dict_dir.to_string_lossy()))? {
+            attempts += 1;
+            if let Ok(file) = file {
+                if let Ok(contents) = std::fs::read(file.path()) {
+                    new_dict.push(contents);
+                } else {
+                    log::warn!("failed to read dict file: {file:?}");
+                }
+            } else {
+                log::warn!("failed to obtain dict file: {file:?}");
+            }
         }
+
+        if attempts > 0 && new_dict.is_empty() {
+            anyhow::bail!("Attempted to read dictionary entries, but failed.");
+        }
+
+        log::info!("loaded {} dictionary entries", new_dict.len());
 
         dict = Some(new_dict);
     } else {
