@@ -931,7 +931,11 @@ def run_cmp_analysis(bv, ignore=None, taskref=None):
                                     ssa_reg
                                 )
                             )
-                            find_ssa_defs.append(definition.non_ssa_form)
+                            if definition:
+                                if hasattr(definition, "non_ssa_form"):
+                                    find_ssa_defs.append(definition.non_ssa_form)
+                                else:
+                                    log_warn(f"{curr_instr} -> definition {definition} -> has no non-ssa-form ")
                     elif curr_instr.operation == LowLevelILOperation.LLIL_SET_REG:
                         find_ssa_defs.append(curr_instr.src)
                     elif curr_instr.operation == LowLevelILOperation.LLIL_LOAD:
