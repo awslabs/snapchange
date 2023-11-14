@@ -4,14 +4,9 @@
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_lossless)]
 
-use anyhow::Result;
-
 use crate::constants;
-use snapchange::addrs::{Cr3, VirtAddr};
-use snapchange::fuzz_input::InputWithMetadata;
-use snapchange::fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer};
-use snapchange::fuzzvm::FuzzVm;
-use snapchange::{Execution, FuzzInput};
+use snapchange::prelude::*;
+use snapchange::InputWithMetadata;
 
 const CR3: Cr3 = Cr3(constants::CR3);
 
@@ -36,24 +31,5 @@ impl Fuzzer for Example05Fuzzer {
         fuzzvm.write_bytes_dirty(VirtAddr(constants::INPUT), CR3, &input)?; // [2]
 
         Ok(())
-    }
-
-    fn breakpoints(&self) -> Option<&[Breakpoint<Self>]> {
-        Some(&[Breakpoint {
-            lookup: AddressLookup::SymbolOffset("libc.so.6!__GI___getpid", 0x0),
-            bp_type: BreakpointType::Repeated,
-            bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer, _feedback| {
-                // Set the return value to 0xdeadbeef
-                fuzzvm.set_rax(0xdead_beef);
-
-                // Fake an immediate return from the function by setting RIP to the
-                // value popped from the stack (this assumes the function was entered
-                // via a `call`)
-                fuzzvm.fake_immediate_return()?;
-
-                // Continue execution
-                Ok(Execution::Continue)
-            },
-        }])
     }
 }
