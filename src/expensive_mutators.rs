@@ -70,6 +70,9 @@ pub(crate) fn splice_from_dictionary_extend(
     // select renadom dictionary entry
     let dict_idx = rng.gen_range(0..dictionary.len());
     let splice_from = &dictionary[dict_idx];
+    if splice_from.is_empty() { // should never happen...
+        return None;
+    }
     // random offset into the input
     let input_offset = if input.is_empty() {
         0
