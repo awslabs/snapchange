@@ -332,7 +332,7 @@ fn start_core<FUZZER: Fuzzer>(
                 false
             };
 
-            if at_symbol_offset_zero && index > 0 {
+            if at_symbol_offset_zero && index > 0 && !single_step {
                 // function called.
                 log::trace!("call targeted {:#x}", rip);
                 // obtain return address
@@ -340,20 +340,28 @@ fn start_core<FUZZER: Fuzzer>(
                     if ret_addrs.insert(retaddr) {
                         log::trace!("discovered new return address {retaddr:#x}");
                         let retaddr = VirtAddr(retaddr);
-                        if !fuzzvm.has_breakpoint(retaddr, fuzzvm.cr3()) {
-                            log::debug!("setting retaddr breakpoint for newly discovered return address {retaddr:?}");
-                            // set breakpoint at callsite
-                            let res = fuzzvm.set_breakpoint(
-                                retaddr,
-                                fuzzvm.cr3(),
-                                BreakpointType::Repeated,
-                                BreakpointMemory::NotDirty,
-                                BreakpointHook::Ignore,
-                            );
-                            match res {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    log::debug!("invalid retaddr breakpoint @ {retaddr:?} {e:?}");
+                        let translation = fuzzvm.translate(retaddr, cr3);
+                        if translation.phys_addr().is_some()
+                            && translation.is_executable()
+                            && !translation.is_writable()
+                        {
+                            if !fuzzvm.has_breakpoint(retaddr, fuzzvm.cr3()) {
+                                log::debug!("setting retaddr breakpoint for newly discovered return address {retaddr:?}");
+                                // set breakpoint at callsite
+                                let res = fuzzvm.set_breakpoint(
+                                    retaddr,
+                                    fuzzvm.cr3(),
+                                    BreakpointType::Repeated,
+                                    BreakpointMemory::NotDirty,
+                                    BreakpointHook::Ignore,
+                                );
+                                match res {
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        log::debug!(
+                                            "invalid retaddr breakpoint @ {retaddr:?} {e:?}"
+                                        );
+                                    }
                                 }
                             }
                         }
