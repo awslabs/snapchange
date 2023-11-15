@@ -196,14 +196,26 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
             )
         })?;
         let mut attempts = 0_u32;
-        // log::warn!("{dict_dir:?}");
-        for file in std::fs::read_dir(&dict_dir).with_context(|| format!("failed to read dictionary from dir: {}", &dict_dir.to_string_lossy()))? {
+        for file in std::fs::read_dir(&dict_dir).with_context(|| {
+            format!(
+                "failed to read dictionary from dir: {}",
+                &dict_dir.to_string_lossy()
+            )
+        })? {
             attempts += 1;
             if let Ok(file) = file {
-                if let Ok(contents) = std::fs::read(file.path()) {
-                    new_dict.push(contents);
+                let p = file.path();
+                if let Ok(contents) = std::fs::read(&p) {
+                    if contents.is_empty() {
+                        log::warn!(
+                            "ignoring empty dictionary file '{}' - consider deleting it",
+                            p.to_string_lossy()
+                        );
+                    } else {
+                        new_dict.push(contents);
+                    }
                 } else {
-                    log::warn!("failed to read dict file: {file:?}");
+                    log::warn!("failed to read dict file: '{}'", p.to_string_lossy());
                 }
             } else {
                 log::warn!("failed to obtain dict file: {file:?}");
@@ -211,7 +223,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         }
 
         if attempts > 0 && new_dict.is_empty() {
-            anyhow::bail!("Attempted to read dictionary entries, but failed.");
+            anyhow::bail!("Attempted to read dictionary entries, but failed. Check your `dict` directory!");
         }
 
         log::info!("loaded {} dictionary entries", new_dict.len());
