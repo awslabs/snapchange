@@ -451,6 +451,11 @@ class SnapchangeCmpAnalysis(SnapchangeTask):
                 f.write("\n".join(map(lambda c: str(c).strip(), cmps)))
         if self.dict_location:
             self.dict_location.mkdir(parents=True, exist_ok=True)
+            ints = sum(isinstance(o, int) for o in autodict)
+            floats = sum(isinstance(o, float) for o in autodict)
+            bytess = sum(isinstance(o, bytes) or isinstance(o, str) for o in autodict)
+            others = len(autodict) - ints - floats - bytess
+            log_info(f"discovered {len(autodict)} dictionary entries ({ints} int, {floats} float, {bytess} strings, {others} others)")
             for entry in autodict:
                 write_dict_entry(entry, self.dict_location)
 
@@ -591,13 +596,26 @@ def float_is_interesting_for_dict(f, size):
     return True
 
 
+def bytes_is_interesting_for_dict(b):
+    if len(b) < 2:
+        return False
+    if all(i in (0, 0xff) for i in b):
+        return False
+
+    return True
+
+
 def add_memory_to_dict(
     dictionary, bv, addr, memlen=STR_LEN_THRESHOLD, null_term=False, both_cases=False
 ):
+    # log_warn(f"adding addr {addr} to dict with len {memlen}")
     if addr is None or memlen is None:
         return
-    if isinstance(memlen, str):
-        return False
+    if not isinstance(memlen, int):
+        try:
+            memlen = int(memlen, 0)
+        except ValueError:
+            return False
     if memlen <= 2:
         return False
     if isinstance(addr, int):
@@ -611,13 +629,16 @@ def add_memory_to_dict(
         except ValueError:
             s = f"cannot convert addr str {addr!r} to concrete address (type int)"
             log_error(s)
-            return
+            return False
+    elif hasattr(addr, "constant"):
+        addr = int(addr.constant)
     else:
         s = f"require addr to bye of type int; got {addr!r}"
         log_error(s)
         raise ValueError(s)
+
     if memlen > STR_LEN_THRESHOLD:
-        return
+        return FAlse
     log_debug(f"auto-dict read memory @ '{addr:#x}' len {memlen}")
     data = bv.read(addr, memlen)
     if not data:
@@ -634,6 +655,7 @@ def add_memory_to_dict(
     if both_cases:
         dictionary.add(data.upper())
         dictionary.add(data.lower())
+    return True
 
 
 def add_const_to_dict(bv, dictionary, c, c_size, is_float=False):
@@ -717,9 +739,67 @@ def add_const_to_dict(bv, dictionary, c, c_size, is_float=False):
     elif isinstance(c, float):
         if float_is_interesting_for_dict(c, real_size):
             dictionary.add(c)
+    elif isinstance(c, bytes):
+        if bytes_is_interesting_for_dict(c):
+            dictionary.add(c)
     else:
         # is there something else?
         dictionary.add(c)
+
+
+def find_const_definition(instr):
+    find_ssa_defs = [instr]
+    # this is a non-exhaustive ssa backtracking thing. it is mostly to cover patterns like:
+    # ```
+    # reg0 = [constptr]
+    # if (reg0 == reg1) ...
+    # ```
+    while find_ssa_defs:
+        curr_instr = find_ssa_defs.pop()
+        if is_instr_const(curr_instr):
+            return curr_instr
+        elif curr_instr.operation == LowLevelILOperation.LLIL_REG:
+            ssa_reg = curr_instr.ssa_form
+            if hasattr(ssa_reg, "full_reg"):
+                ssa_reg = ssa_reg.full_reg
+            elif hasattr(ssa_reg, "src"):
+                ssa_reg = ssa_reg.src
+            if (
+                hasattr(ssa_reg, "operation")
+                and ssa_reg.operation == LowLevelILOperation.LLIL_CONST
+            ):
+                return ssa_reg
+            else:
+                definition = (
+                    curr_instr.function.ssa_form.get_ssa_reg_definition(
+                        ssa_reg
+                    )
+                )
+                if definition:
+                    if hasattr(definition, "non_ssa_form"):
+                        find_ssa_defs.append(definition.non_ssa_form)
+                    else:
+                        log_warn(f"{curr_instr} -> definition {definition} -> has no non-ssa-form ")
+        elif curr_instr.operation == LowLevelILOperation.LLIL_SET_REG:
+            find_ssa_defs.append(curr_instr.src)
+        elif curr_instr.operation == LowLevelILOperation.LLIL_LOAD:
+            iload = curr_instr
+            if iload.src.operation == LowLevelILOperation.LLIL_CONST_PTR:
+                return iload.src
+
+    return None
+
+
+def get_const_from_reg_param_at(callinst, regidx):
+    if regidx > len(callinst.ssa_form.params):
+        return None
+
+    reg = callinst.ssa_form.params[regidx].operands[0]
+    defn = callinst.function.get_ssa_reg_definition(reg)
+    if not defn:
+        return None
+
+    return find_const_definition(defn)
 
 
 def run_cmp_analysis(bv, ignore=None, taskref=None):
@@ -793,57 +873,59 @@ def run_cmp_analysis(bv, ignore=None, taskref=None):
                         res = f"{instr.address:#x},0x0,{params[0]},strcmp,{params[1]}\n"
                         cmps.append(res)
 
+                    # auto-dict code
+                    if func_alias in strcmps:
                         memlen = STR_LEN_THRESHOLD
                         if (
-                            len(params) >= 3
-                            and params[2]
-                            and func_alias
+                            func_alias
                             in (FunctionAlias.STRNCMP, FunctionAlias.STRNCASECMP)
                         ):
-                            if isinstance(params[2], int):
-                                memlen = params[2]
-                            elif isinstance(params[2], str):
-                                try:
-                                    memlen = int(params[2], 0)
-                                except ValueError:
-                                    memlen = params[2]
+                            x = get_const_from_reg_param_at(instr, 2)
+                            if x:
+                                memlen = int(x)
                         both_cases = func_alias in (
                             FunctionAlias.STRNCASECMP,
                             FunctionAlias.STRCASECMP,
                         )
-                        for p in params[:2]:
-                            add_memory_to_dict(
-                                dictionary,
-                                bv,
-                                p,
-                                null_term=True,
-                                memlen=memlen,
-                                both_cases=both_cases,
-                            )
+                        for reg_idx in (0, 1):
+                            p_addr = get_const_from_reg_param_at(instr, reg_idx)
+                            if p_addr:
+                                add_memory_to_dict(
+                                    dictionary,
+                                    bv,
+                                    int(p_addr),
+                                    null_term=True,
+                                    memlen=memlen,
+                                    both_cases=both_cases,
+                                )
 
                     if len(params) >= 3 and func_alias == FunctionAlias.MEMCMP:
-                        cmp_len = None
-                        if isinstance(params[2], int):
+                        try:
+                            cmp_len = int(params[2], 0)
+                        except ValueError:
                             cmp_len = params[2]
-                        elif isinstance(params[2], str):
-                            try:
-                                cmp_len = int(params[2], 0)
-                            except ValueError:
-                                cmp_len = params[2]
-                        if cmp_len is not None:
-                            res = f"{instr.address:#x},{cmp_len},{params[0]},memcmp,{params[1]}\n"
-                            if "flag" not in res:
-                                cmps.append(res)
-                            else:
-                                log_warn(f"Flag found! {res}")
-                        for p in params[:2]:
-                            add_memory_to_dict(
-                                dictionary,
-                                bv,
-                                p,
-                                null_term=False,
-                                memlen=(cmp_len if cmp_len else STR_LEN_THRESHOLD),
-                            )
+                        assert cmp_len
+                        res = f"{instr.address:#x},{cmp_len},{params[0]},memcmp,{params[1]}\n"
+                        if "flag" not in res:
+                            cmps.append(res)
+                        else:
+                            log_warn(f"Flag found! {res}")
+
+                    if func_alias == FunctionAlias.MEMCMP:
+                        cmp_len = get_const_from_reg_param_at(instr, 2)
+                        if cmp_len:
+                            cmp_len = int(cmp_len)
+                        for reg_idx in (0, 1):
+                            p_addr = get_const_from_reg_param_at(instr, reg_idx)
+                            if p_addr:
+                                add_memory_to_dict(
+                                    dictionary,
+                                    bv,
+                                    int(p_addr),
+                                    null_term=False,
+                                    memlen=(cmp_len if cmp_len else STR_LEN_THRESHOLD),
+                                )
+
                     if len(params) >= 3 and func_alias == FunctionAlias.MEMCHR:
                         cmp_len = None
                         if isinstance(params[2], int):
