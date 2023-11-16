@@ -15,7 +15,7 @@ use core_affinity::CoreId;
 use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
 
-use crate::cmdline;
+use crate::{cmdline, SymbolList};
 use crate::cmdline::ProjectCoverage;
 
 use crate::config::Config;
@@ -640,7 +640,7 @@ fn start_core<FUZZER: Fuzzer>(
     cpuid: &CpuId,
     snapshot_fd: i32,
     clean_snapshot: Arc<RwLock<Memory>>,
-    symbols: &Option<VecDeque<Symbol>>,
+    symbols: &Option<SymbolList>,
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
     coverage_breakpoints: Option<BTreeMap<VirtAddr, u8>>,
     core_stats: &Arc<Mutex<Stats<FUZZER>>>,

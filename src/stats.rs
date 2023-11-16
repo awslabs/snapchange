@@ -17,7 +17,7 @@ use tui::text::Span;
 use tui::widgets::ListItem;
 use tui_logger::{TuiWidgetEvent, TuiWidgetState};
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::mem::variant_count;
 use std::path::Path;
@@ -28,6 +28,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::SymbolList;
 use crate::addrs::VirtAddr;
 use crate::cmdline::Modules;
 use crate::config::Config;
@@ -871,7 +872,7 @@ pub fn worker<FUZZER: Fuzzer>(
     mut total_feedback: FeedbackTracker,
     input_corpus: &Vec<Arc<InputWithMetadata<FUZZER::Input>>>,
     coverage_breakpoints: Option<BTreeSet<VirtAddr>>,
-    symbols: &Option<VecDeque<Symbol>>,
+    symbols: &Option<SymbolList>,
     mut coverage_analysis: Option<CoverageAnalysis>,
     tui: bool,
     config: &Config, // redqueen_rules: BTreeMap<u64, BTreeSet<RedqueenRule>>
@@ -2180,7 +2181,7 @@ pub fn source_from_address(
 /// Get the `str` for the given address using the symbols and modules of this project
 fn get_symbol_str(
     addr: u64,
-    symbols: &Option<VecDeque<Symbol>>,
+    symbols: &Option<SymbolList>,
     modules: &Modules,
     contexts: &Vec<Context<EndianReader<RunTimeEndian, Rc<[u8]>>>>,
 ) -> Result<String> {

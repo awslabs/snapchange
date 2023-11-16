@@ -71,7 +71,9 @@ impl VirtAddr {
     #[allow(dead_code)]
     #[must_use]
     pub const fn offset(self, offset: u64) -> VirtAddr {
-        VirtAddr(self.0 + offset)
+        // encountered overflow panics here in debug builds. should be fine letting it overflow, no?
+        // VirtAddr(self.0 + offset)
+        VirtAddr(self.0.overflowing_add(offset).0)
     }
 
     /// Get the 4 page table indexes that this [`VirtAddr`] corresponds maps with when

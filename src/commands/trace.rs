@@ -1,8 +1,10 @@
 //! Executing the `trace` command
 
 use anyhow::{anyhow, ensure, Context, Result};
+use rustc_hash::FxHashSet;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
@@ -14,11 +16,11 @@ use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
 
 use crate::fuzz_input::InputWithMetadata;
-use crate::fuzzer::Fuzzer;
-use crate::fuzzvm::{FuzzVm, FuzzVmExit};
+use crate::fuzzer::{BreakpointType, Fuzzer};
+use crate::fuzzvm::{BreakpointHook, BreakpointMemory, FuzzVm, FuzzVmExit};
 use crate::interrupts::IdtEntry;
 use crate::memory::Memory;
-use crate::{cmdline, fuzzvm, symbols, unblock_sigalrm, THREAD_IDS};
+use crate::{cmdline, fuzzvm, symbols, unblock_sigalrm, SymbolList, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
 use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
 
@@ -34,7 +36,7 @@ fn start_core<FUZZER: Fuzzer>(
     cpuid: &CpuId,
     snapshot_fd: i32,
     clean_snapshot: Arc<RwLock<Memory>>,
-    symbols: &Option<VecDeque<Symbol>>,
+    symbols: &Option<SymbolList>,
     symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
     coverage_breakpoints: Option<BTreeMap<VirtAddr, u8>>,
     input_case: &Option<PathBuf>,
@@ -101,6 +103,59 @@ fn start_core<FUZZER: Fuzzer>(
     } else {
         log::info!("No single step trace");
         fuzzvm.disable_single_step()?;
+
+        let mut count = 0_usize;
+
+        let cr3 = Cr3(project_state.vbcpu.cr3);
+        if let Some(symbols) = symbols.as_ref() {
+            log::info!("setting breakpoints on all symbols");
+            for sym in symbols.iter() {
+                let translation = fuzzvm.translate(sym.address.into(), cr3);
+                if translation.phys_addr().is_some()
+                    && translation.is_executable()
+                    && !translation.is_writable()
+                {
+                    let res = fuzzvm.set_breakpoint(
+                        sym.address.into(),
+                        cr3,
+                        BreakpointType::Repeated,
+                        BreakpointMemory::NotDirty,
+                        BreakpointHook::Ignore,
+                    );
+                    match res {
+                        Ok(_) => count += 1,
+                        Err(_e) => {
+                            let name = &sym.symbol;
+                            let address = &sym.address;
+                            log::trace!(
+                                "invalid symbol breakpoint for symbols {name} @ {address:#x}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(covbps) = project_state.coverage_breakpoints.as_ref() {
+            for addr in covbps.iter() {
+                let res = fuzzvm.set_breakpoint(
+                    *addr,
+                    cr3,
+                    BreakpointType::Repeated,
+                    BreakpointMemory::NotDirty,
+                    BreakpointHook::Ignore,
+                );
+                match res {
+                    Ok(_) => count += 1,
+                    Err(e) => {
+                        let addr = addr.0;
+                        log::debug!("invalid coverage breakpoint for @ {addr:#x}: {e:?}");
+                    }
+                }
+            }
+        }
+
+        log::info!("set {count} breakpoints");
     }
 
     // If the trace input name is `testcase`, allow the fuzzer to do something ahead of
@@ -135,6 +190,8 @@ fn start_core<FUZZER: Fuzzer>(
     } else {
         InputWithMetadata::default()
     };
+
+    let mut vmret = FuzzVmExit::Continue;
 
     for iter in 0..NUMBER_OF_ITERATIONS {
         // Init single allocation for symbol creation and the final resulting trace
@@ -171,13 +228,14 @@ fn start_core<FUZZER: Fuzzer>(
         }
 
         let mut at_call = false;
-        let mut indent = 4;
+        let mut indent = 0_usize;
         let mut func_indexes = Vec::new();
+        let mut ret_addrs = FxHashSet::default();
 
         // Top of the run iteration loop for the current fuzz case
-        for index in 0.. {
+        for index in 0_usize.. {
             // Add the current instruction to the trace
-            let rip = fuzzvm.regs().rip;
+            let rip = fuzzvm.rip();
 
             let cr3 = fuzzvm.cr3();
             let instr = fuzzvm
@@ -265,12 +323,62 @@ fn start_core<FUZZER: Fuzzer>(
                 }
             }
 
+            let rip = fuzzvm.rip();
+            let at_symbol_offset_zero = if let Some(symbols) = fuzzvm.symbols.as_ref() {
+                symbols
+                    .binary_search_by_key(&rip, |Symbol { address, .. }| *address)
+                    .is_ok()
+            } else {
+                false
+            };
+
+            if at_symbol_offset_zero && index > 0 && !single_step {
+                // function called.
+                log::trace!("call targeted {:#x}", rip);
+                // obtain return address
+                if let Ok(retaddr) = fuzzvm.read::<u64>(fuzzvm.rsp().into(), fuzzvm.cr3()) {
+                    if ret_addrs.insert(retaddr) {
+                        log::trace!("discovered new return address {retaddr:#x}");
+                        let retaddr = VirtAddr(retaddr);
+                        let translation = fuzzvm.translate(retaddr, cr3);
+                        if translation.phys_addr().is_some()
+                            && translation.is_executable()
+                            && !translation.is_writable()
+                        {
+                            if !fuzzvm.has_breakpoint(retaddr, fuzzvm.cr3()) {
+                                log::debug!("setting retaddr breakpoint for newly discovered return address {retaddr:?}");
+                                // set breakpoint at callsite
+                                let res = fuzzvm.set_breakpoint(
+                                    retaddr,
+                                    fuzzvm.cr3(),
+                                    BreakpointType::Repeated,
+                                    BreakpointMemory::NotDirty,
+                                    BreakpointHook::Ignore,
+                                );
+                                match res {
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        log::debug!(
+                                            "invalid retaddr breakpoint @ {retaddr:?} {e:?}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    log::warn!("no return address for call to {:#x}", rip);
+                }
+            }
+
             // At a new call site, write the call arguments
             // If the call site was a jmp, go to the next instruction instead of the jmp site
-            if fuzzvm.single_step && at_call && !instr.contains("jmp") {
+            if (fuzzvm.single_step && at_call && !instr.contains("jmp"))
+                || at_symbol_offset_zero && !matches!(vmret, FuzzVmExit::DebugException)
+            {
                 let symbol = symbol
                     .replace("+0x0", "")
-                    .replace("UnknownSym", &format!("{:#x}", fuzzvm.rip()));
+                    .replace("UnknownSym", &format!("{:#x}", rip));
 
                 let arg1 = fuzzvm.rdi();
                 let arg2 = fuzzvm.rsi();
@@ -332,25 +440,29 @@ fn start_core<FUZZER: Fuzzer>(
             }
 
             // Mark that the next instruction is a call site to write to the function trace
-            if fuzzvm.single_step && instr.contains("call") {
+            if fuzzvm.single_step && (instr.contains("call") || interrupt_routines.contains(&rip)) {
                 at_call = true;
+                indent += 1;
+            }
+            if at_symbol_offset_zero && !matches!(vmret, FuzzVmExit::DebugException) && index > 0 {
                 indent += 1;
             }
 
             // Mark that the next instruction is a call site to write to the function trace
-            if fuzzvm.single_step && interrupt_routines.contains(&rip) {
-                at_call = true;
-                indent += 1;
-            }
+            if (fuzzvm.single_step && instr.contains("ret"))
+                || (ret_addrs.contains(&rip) && !matches!(vmret, FuzzVmExit::DebugException))
+            {
+                log::trace!("returned from call @ {rip:#x}");
 
-            // Mark that the next instruction is a call site to write to the function trace
-            if fuzzvm.single_step && instr.contains("ret") {
-                indent = indent.saturating_sub(1);
+                if let Some(curr_index) = func_indexes.pop() {
+                    if let Some(item) = funcs.get_mut(curr_index) {
+                        let ret = fuzzvm.rax();
+                        item.1 = Some(ret);
+                    }
 
-                let ret = fuzzvm.rax();
-                let curr_index = func_indexes.pop().unwrap_or(0xdead);
-                if let Some(item) = funcs.get_mut(curr_index) {
-                    item.1 = Some(ret);
+                    indent = indent.saturating_sub(1);
+                } else {
+                    log::warn!("encountered function ret @ {rip:#x} without prior call");
                 }
             }
 
@@ -433,13 +545,17 @@ fn start_core<FUZZER: Fuzzer>(
 
             // Reset the VM if the vmexit handler says so
             if matches!(execution, Execution::Reset | Execution::CrashReset { .. }) {
+                log::debug!("stopping tracing at @ {rip:#x}");
                 break;
             }
 
             // Execute the VM
-            let ret = fuzzvm.run()?;
+            vmret = fuzzvm.run()?;
 
-            match ret {
+            let rip = fuzzvm.rip();
+            log::trace!("kvm exit @ {rip:#x} - {vmret:?}");
+
+            match vmret {
                 FuzzVmExit::KasanRead { ip, size, addr } => {
                     // Write the current line to the trace
                     result.push_str(&format!(
@@ -456,7 +572,8 @@ fn start_core<FUZZER: Fuzzer>(
             }
 
             // Handle the FuzzVmExit to determine
-            let ret = handle_vmexit(&ret, &mut fuzzvm, &mut fuzzer, None, &input, None);
+            let ret = handle_vmexit(&vmret, &mut fuzzvm, &mut fuzzer, None, &input, None);
+            log::trace!("handle_vmexit: {ret:?}");
 
             execution = match ret {
                 Err(e) => {
@@ -518,7 +635,7 @@ fn start_core<FUZZER: Fuzzer>(
         log::info!("Writing trace file: {:?}", trace_file);
         std::fs::write(&trace_file, result)?;
 
-        if single_step {
+        if !funcs.is_empty() {
             log::info!("Writing func trace file: {:?}", func_trace_file);
             let mut result = String::new();
             for (func, ret) in funcs {
@@ -544,7 +661,19 @@ fn start_core<FUZZER: Fuzzer>(
         }
 
         // Reset the guest state
-        let _guest_reset_perf = fuzzvm.reset_guest_state(&mut fuzzer)?;
+        fuzzvm.reset_guest_state(&mut fuzzer)?;
+
+        // TODO: how to obtain some reset stats now?
+        // log::info!(
+        //     "Restored {} KVM dirty pages in {}",
+        //     guest_reset_perf.restored_kvm_pages,
+        //     guest_reset_perf.reset_guest_memory_restore
+        // );
+        // log::info!(
+        //     "Restored {} custom dirty pages in {}",
+        //     guest_reset_perf.restored_custom_pages,
+        //     guest_reset_perf.reset_guest_memory_custom
+        // );
 
         // Reset the fuzzer state
         fuzzer.reset_fuzzer_state();
@@ -581,22 +710,41 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         .first()
         .ok_or_else(|| anyhow!("No valid cores"))?;
 
-    let covbp_bytes = BTreeMap::new();
+    // let mut covbp_bytes = BTreeMap::new();
 
-    /*
-    // Apply coverage breakpoints or not
-    let mut mem = crate::memory::Memory::from_addr(clean_snapshot_addr);
-    {
-        let curr_clean_snapshot = clean_snapshot.write().unwrap();
-        let cr3 = Cr3(project_state.vbcpu.cr3);
-        for addr in project_state.coverage_breakpoints.as_ref().unwrap() {
-            if let Ok(orig_byte) = curr_clean_snapshot.read::<u8>(*addr, cr3) {
-                covbp_bytes.insert(*addr, orig_byte);
-                curr_clean_snapshot.write::<u8>(*addr, cr3, 0xcc, crate::memory::WriteMem::Dirty);
-            }
-        }
-    }
-    */
+    // if args.no_single_step {
+    //     if let Some(covbps) = project_state.coverage_breakpoints.as_ref() {
+    //         let cr3 = Cr3(project_state.vbcpu.cr3);
+    //
+    //         // Small scope to drop the clean snapshot lock
+    //         let mut curr_clean_snapshot = clean_snapshot.write().unwrap();
+    //         for addr in covbps {
+    //             if let Ok(orig_byte) = curr_clean_snapshot.read::<u8>(*addr, cr3) {
+    //                 curr_clean_snapshot.write_bytes(*addr, cr3, &[0xcc])?;
+    //                 covbp_bytes.insert(*addr, orig_byte);
+    //             }
+    //         }
+    //     }
+    //
+    //     // make sure there is a breakpoint at each symbol.
+    //     if let Some(symbols) = symbols.as_ref() {
+    //         let cr3 = Cr3(project_state.vbcpu.cr3);
+    //
+    //         // Small scope to drop the clean snapshot lock
+    //         let mut curr_clean_snapshot = clean_snapshot.write().unwrap();
+    //         for sym in symbols.iter() {
+    //             let addr = sym.address.into();
+    //             if let Ok(orig_byte) = curr_clean_snapshot.read::<u8>(addr, cr3) {
+    //                 if orig_byte != 0xcc {
+    //                     curr_clean_snapshot.write_bytes(addr, cr3, &[0xcc])?;
+    //                     covbp_bytes.insert(addr, orig_byte);
+    //                 }
+    //             }
+    //         }
+    //     }
+    //
+    //     log::info!("set {} coverage breakpoints", covbp_bytes.len());
+    // }
 
     // Start executing on this core
     start_core::<FUZZER>(
@@ -608,7 +756,8 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         clean_snapshot,
         &symbols,
         symbol_breakpoints,
-        Some(covbp_bytes), // No need to apply coverage breakpoints for tracing
+        // Some(covbp_bytes),
+        None, // No need to apply coverage breakpoints for tracing
         &args.input,
         args.timeout,
         !args.no_single_step,

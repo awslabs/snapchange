@@ -10,6 +10,7 @@ use std::hash::Hasher;
 use std::path::Path;
 use std::str::FromStr;
 
+use crate::SymbolList;
 use crate::fuzz_input::{FuzzInput, InputWithMetadata};
 use crate::{Symbol, VirtAddr};
 
@@ -206,7 +207,7 @@ pub enum Error {
 /// * Requested symbol is not found
 pub fn parse_cli_symbol(
     possible_virt_addr: &str,
-    symbols: &Option<VecDeque<Symbol>>,
+    symbols: &Option<SymbolList>,
 ) -> Result<VirtAddr> {
     // Parse the given translation address or default to the starting RIP of the snapshot
     let parsed = VirtAddr::from_str(possible_virt_addr);

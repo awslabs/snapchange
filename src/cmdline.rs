@@ -5,7 +5,7 @@ use clap::Parser;
 use log::debug;
 use thiserror::Error;
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -19,6 +19,7 @@ use crate::fuzzer::ResetBreakpointType;
 use crate::stack_unwinder::StackUnwinders;
 use crate::symbols::{Symbol, LINUX_KERNEL_SYMBOLS, LINUX_USERLAND_SYMBOLS};
 use crate::vbcpu::{VbCpu, VmSelector, X86FxState, X86XSaveArea, X86XSaveHeader, X86XsaveYmmHi};
+use crate::SymbolList;
 
 /// Custom errors [`FuzzVm`](crate::fuzzvm::FuzzVm) can throw
 #[derive(Error, Debug)]
@@ -624,9 +625,6 @@ pub struct WriteMem {
     pub(crate) cr3: Option<VirtAddr>,
 }
 
-/// List of [`Symbol`] sorted in order by address
-pub type SymbolList = VecDeque<Symbol>;
-
 /// Set of addresses that, if hit, signal a crash in the guest
 pub type ResetBreakpoints = BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>;
 
@@ -968,7 +966,7 @@ pub fn parse_symbols(
     let mut reset_breakpoints = Some(BTreeMap::new());
 
     if let Some(ref syms) = symbols_arg {
-        let mut curr_symbols: VecDeque<Symbol> = VecDeque::new();
+        let mut curr_symbols = crate::SymbolList::new();
 
         // Parse the symbols file:
         // 0xdeadbeef example!main
@@ -982,7 +980,7 @@ pub fn parse_symbols(
             let address = u64::from_str_radix(&address, 16)?;
 
             // Add the parsed symbol
-            curr_symbols.push_back(Symbol {
+            curr_symbols.push(Symbol {
                 address,
                 symbol: line[1].to_string(),
             });
@@ -991,15 +989,7 @@ pub fn parse_symbols(
         let mut symbol_bps = BTreeMap::new();
 
         // Sanity check the symbols are sorted
-        let mut last = 0;
-        let mut re_sort = false;
         for sym in &curr_symbols {
-            if sym.address < last {
-                re_sort = true;
-            }
-
-            last = sym.address;
-
             // Check if this symbol matches a known reset symbol
             for (symbol, symbol_type) in LINUX_USERLAND_SYMBOLS {
                 if sym.symbol.contains(symbol) {
@@ -1047,11 +1037,8 @@ pub fn parse_symbols(
             }
         }
 
-        // If we've manually inserted a symbol, resort the symbols to be in order
-        if re_sort {
-            curr_symbols.make_contiguous().sort();
-        }
-
+        // we sort the symbols here, such that we can binary search the symbols afterwards
+        curr_symbols.sort_unstable_by_key(|sym| sym.address);
         // Set the valid return fields
         symbols = Some(curr_symbols);
         reset_breakpoints = Some(symbol_bps);
