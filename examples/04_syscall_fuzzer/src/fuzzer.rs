@@ -459,10 +459,11 @@ impl snapchange::FuzzInput for Syscalls {
         corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         dictionary: &Option<Vec<Vec<u8>>>,
+        min_length: usize,
         max_length: usize,
         _max_mutations: u64,
     ) -> Vec<String> {
-        *input = Syscalls::generate(corpus, rng, dictionary, max_length).input;
+        *input = Syscalls::generate(corpus, rng, dictionary, min_length, max_length).input;
 
         // Return an empty set of mutations
         Vec::new()
@@ -473,6 +474,7 @@ impl snapchange::FuzzInput for Syscalls {
         _corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         _dictionary: &Option<Vec<Vec<u8>>>,
+        _min_length: usize,
         _max_length: usize,
     ) -> InputWithMetadata<Self> {
         let mut res = Vec::new();
