@@ -1252,34 +1252,8 @@ impl Memory {
     /// * Failed to read the null-terminated string from the `virt_addr`
     #[allow(dead_code)]
     pub fn read_c_string(&mut self, virt_addr: VirtAddr, cr3: Cr3) -> Result<String> {
-        /// Number of bytes in each read chunk looking for a null terminator
-        const CHUNK_SIZE: usize = 64;
-
-        let mut result: Vec<u8> = Vec::new();
-        let mut offset = 0;
-
-        // Read a section of bytes from the virtual address
-        let mut bytes = [0_u8; CHUNK_SIZE];
-
-        loop {
-            // Read a section of bytes from the virtual address
-            self.read_bytes(virt_addr.offset(offset as u64), cr3, &mut bytes)?;
-
-            // Check if this byte chunk has a null terminator
-            if bytes.contains(&0) {
-                if let Some(found_end) = bytes.split_inclusive(|x| *x == 0).next() {
-                    // Make room in the reuslt for the current byte chunk (+1 to always have an ending null terminator)
-                    result.extend_from_slice(found_end);
-                    break;
-                };
-            }
-
-            // Copy this chunk and continue reading
-            result.extend_from_slice(&bytes);
-
-            // Increment the current offset into the resulting vec
-            offset += CHUNK_SIZE;
-        }
+        // Max 1024 length C string
+        let result = self.read_bytes_until(virt_addr, cr3, 0, 1024)?;
 
         // Return the resulting owned string
         Ok(std::ffi::CStr::from_bytes_with_nul(&result)?
