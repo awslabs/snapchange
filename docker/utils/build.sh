@@ -60,6 +60,18 @@ fi
 if [[ -z "$SNAPSHOT_ENV" ]]; then
     SNAPSHOT_ENV=""
 fi
+if [[ -z "$SNAPSHOT_RUN_AFTER" ]]; then
+    SNAPSHOT_RUN_AFTER=""
+fi
+if [[ -z "$SNAPSHOT_RUN_BEFORE" ]]; then
+    SNAPSHOT_RUN_BEFORE=""
+fi
+if [[ -z "$SNAPSHOT_CUSTOM_LAUNCH_SCRIPT" ]]; then
+    SNAPSHOT_CUSTOM_LAUNCH_SCRIPT=""
+fi
+if [[ -z "$SNAPSHOT_CUSTOM_GDBCMDS" ]]; then
+    SNAPSHOT_CUSTOM_GDBCMDS=""
+fi
 
 source $SNAPCHANGE_ROOT/utils/log.sh || { echo "Failed to source $SNAPCHANGE_ROOT/utils/log.sh"; exit 1; }
 
@@ -147,19 +159,23 @@ rm "$RC_LOCAL" || true
 
 # Init the rc.local script
 cat > "$RC_LOCAL" <<EOF
-#!/bin/sh -ex
+#!/bin/sh
+
+set -e
 
 if test -e /etc/profile; then
     . /etc/profile
 fi
 
-export SNAPSHOT=1
 export SNAPCHANGE=1
-export SNAPCHANGE_SNAPSHOT=1
 
 echo "[+] snapshotting program: $SNAPSHOT_ENTRYPOINT $SNAPSHOT_ENTRYPOINT_ARGUMENTS"
 
 EOF
+
+if [[ "$SNAPCHANGE_DEV" -eq 1 ]]; then
+    echo "set -x" >> "$RC_LOCAL"
+fi
 
 if test -n "$SNAPSHOT_ENV"; then
     for var in $SNAPSHOT_ENV; do
@@ -227,25 +243,64 @@ EOF
 
     cat >> "$RC_LOCAL" <<EOF
 echo "[+] obtaining kernel symbols by running gdb as root"
-\$GDB --batch --command=$GDBCMDS --args /true.bp
+\$GDB --batch --command=$GDBCMDS.basic --args /true.bp
 mv /tmp/gdb.symbols /tmp/gdb.symbols.root
 rm /tmp/gdb.modules
 rm /tmp/gdb.vmmap
 EOF
 fi
 
-# If user is not root, run gdb under the given user
-if [ $USER != 'root' ]; then
-    echo "su $USER -c '" >> $RC_LOCAL
+if [[ -n "$SNAPSHOT_RUN_BEFORE" ]]; then
+    echo "echo [+] executing run-before commands" >> $RC_LOCAL
+    printf "$SNAPSHOT_RUN_BEFORE" >> $RC_LOCAL
+    echo "" >> $RC_LOCAL
+fi
+echo "" >> $RC_LOCAL
+
+
+if [[ -z "$SNAPSHOT_CUSTOM_LAUNCH_SCRIPT" ]] ; then
+    echo "echo [+] launching target under gdb" >> $RC_LOCAL
+
+    cat >> "$RC_LOCAL" <<EOF
+# snapshot marker
+export SNAPSHOT=1
+export SNAPCHANGE_SNAPSHOT=1
+touch /SNAPCHANGE_SNAPSHOT
+
+EOF
+
+    # If user is not root, run gdb under the given user
+    if [ $USER != 'root' ]; then
+        echo -n "su $USER -c \"" >> $RC_LOCAL
+    fi
+
+    # Create the script to start on boot
+    echo -n "\$GDB --batch --command=$GDBCMDS --args "$SNAPSHOT_ENTRYPOINT" $SNAPSHOT_ENTRYPOINT_ARGUMENTS" >> $RC_LOCAL
+
+    # If user is not root, close the command executed
+    if [ $USER != 'root' ]; then
+        echo -n "\"" >> $RC_LOCAL
+    fi
+
+    # run in background
+    echo " &" >> $RC_LOCAL
+else
+    echo "echo [+] launching target with $SNAPSHOT_CUSTOM_LAUNCH_SCRIPT" >> "$RC_LOCAL"
+    ls -al "$SNAPSHOT_CUSTOM_LAUNCH_SCRIPT" || true
+    echo "$SNAPSHOT_CUSTOM_LAUNCH_SCRIPT &" >> "$RC_LOCAL"
 fi
 
-# Create the script to start on boot
-echo -n "\$GDB --batch --command=$GDBCMDS --args "$SNAPSHOT_ENTRYPOINT" $SNAPSHOT_ENTRYPOINT_ARGUMENTS" >> $RC_LOCAL
+echo "" >> $RC_LOCAL
 
-# If user is not root, close the command executed
-if [ $USER != 'root' ]; then
-    echo "'" >> $RC_LOCAL
+if [[ -n "$SNAPSHOT_RUN_AFTER" ]]; then
+    echo "echo [+] executing run-after commands" >> $RC_LOCAL
+    printf "$SNAPSHOT_RUN_AFTER" >> $RC_LOCAL
+    echo "" >> $RC_LOCAL
 fi
+echo "" >> $RC_LOCAL
+
+echo "echo [+] waiting for processes to finish" >> $RC_LOCAL
+echo "wait" >> $RC_LOCAL
 
 # Add a newline
 echo "" >> $RC_LOCAL
@@ -326,8 +381,29 @@ if nm "$BIN" | grep __sanitizer_cov_trace_cmp1; then
     "
 fi
 
+
+cat > "$DIR/$GDBCMDS.basic" <<EOF
+$(printf "$LOAD_SYMBOL_FILE")
+set pagination off
+run
+source $GDBPY
+ni
+ni
+quit
+
+EOF
+
 # Execute to the first int3, execute the gdbsnapshot, execute vmcall, then exit
-if [[ "$SNAPSHOT_FUNCTION" ]]; then
+if [[ -n "$SNAPSHOT_CUSTOM_GDBCMDS" ]]; then
+    if [[ -e "$SNAPSHOT_CUSTOM_GDBCMDS" ]]; then
+        cp "$SNAPSHOT_CUSTOM_GDBCMDS" "$DIR/$GDBCMDS"
+    elif [[ -e "$DIR/$SNAPSHOT_CUSTOM_GDBCMDS" ]]; then
+        cp "$DIR/$SNAPSHOT_CUSTOM_GDBCMDS" "$DIR/$GDBCMDS"
+    else
+        log_error "failed to locate custom gdb commands: $SNAPSHOT_CUSTOM_GDBCMDS"
+        exit 1
+    fi
+elif [[ "$SNAPSHOT_FUNCTION" ]]; then
     echo "LIBFUZZER SNAPSHOT DETECTED"
     echo "Taking a snapshot at $SNAPSHOT_FUNCTION"
     cat > "$DIR/$GDBCMDS" <<EOF
@@ -379,16 +455,7 @@ quit
 
 EOF
 else
-    cat > "$DIR/$GDBCMDS" <<EOF
-$(printf "$LOAD_SYMBOL_FILE")
-set pagination off
-run
-source $GDBPY
-ni
-ni
-quit
-
-EOF
+    cp "$DIR/$GDBCMDS.basic" "$DIR/$GDBCMDS"
 fi
 chmod a+r "$DIR/$GDBCMDS"
 cat "$DIR/$GDBCMDS"
@@ -411,6 +478,8 @@ mount -t devtmpfs dev /dev
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t tmpfs tmpfs /tmp
+mkdir -p /dev/shm
+mount -t tmpfs tmpfs /dev/shm
 
 echo "[+] bringing up loopback netdevice"
 

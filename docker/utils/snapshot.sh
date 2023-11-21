@@ -148,9 +148,9 @@ function extract_output {
   ls -al "$DIR"
 
   # Copy over the files written by `gdbsnapshot.py`
-  mv "$DIR/gdb.vmmap" .
-  mv "$DIR/gdb.modules" .
-  mv "$DIR/gdb.symbols" .
+  mv "$DIR/gdb.vmmap" . || true
+  mv "$DIR/gdb.modules" . || true
+  mv "$DIR/gdb.symbols" . || true
 
   # Copy over the root symbols and, if found, move the user symbols to .symbols in order to
   # combine the symbols into one gdb.symbols
@@ -167,12 +167,10 @@ function extract_output {
   if [ -f gdb.symbols.root ]; then 
       chown `id -u`:`id -g` gdb.symbols.root
   fi
-  chown `id -u`:`id -g` gdb.symbols
-  chown `id -u`:`id -g` gdb.modules
-  chown `id -u`:`id -g` gdb.vmmap
+  chown `id -u`:`id -g` gdb.symbols || true
+  chown `id -u`:`id -g` gdb.modules || true
+  chown `id -u`:`id -g` gdb.vmmap || true
 
-  # copy the saved working dir from the snapshot
-  cp -r "$DIR/cwd" "$OUTPUT/" || true
   cp  "$DIR"/guestkernel* "$OUTPUT" || true
 }
 
