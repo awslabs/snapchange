@@ -808,3 +808,32 @@ linux_args!(io_file_read_args, IoFileReadArgs, stream VirtAddr, buf VirtAddr, co
 linux_args!(io_file_open_args, IoFileOpenArgs, stream VirtAddr, filename VirtAddr, posix_mode u32, prot u32);
 linux_args!(io_getdelim, IoGetDelimArgs, lineptr_addr VirtAddr, size_addr VirtAddr, delimiter u32, stream u64);
 linux_args!(free_args, FreeArgs, ptr VirtAddr);
+
+/// get the first N args according to system v abi calling convetions: `rdi, rsi, rdx, rcx, r8, r9`
+///
+/// ```rust,ignore
+/// let [_, arg2, _, arg4] = snapchange::linux::sysv_args(fuzzvm);
+/// ```
+pub fn sysv_args<const N: usize, FUZZER: Fuzzer>(fuzzvm: &FuzzVm<FUZZER>) -> [u64; N] {
+    let regs = fuzzvm.regs();
+    let mut args = [0u64; N];
+    if N >= 1 {
+        args[0] = regs.rdi;
+    }
+    if N >= 2 {
+        args[1] = regs.rsi;
+    }
+    if N >= 3 {
+        args[2] = regs.rdx;
+    }
+    if N >= 4 {
+        args[3] = regs.rcx;
+    }
+    if N >= 5 {
+        args[4] = regs.r8;
+    }
+    if N >= 6 {
+        args[5] = regs.r9;
+    }
+    args
+}
