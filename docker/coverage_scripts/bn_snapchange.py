@@ -791,10 +791,18 @@ def find_const_definition(instr):
 
 
 def get_const_from_reg_param_at(callinst, regidx):
-    if regidx > len(callinst.ssa_form.params):
+    if not hasattr(callinst, "ssa_form"):
+        log_warn(f"call instruction `{callinst}` does not have .ssa_form - odd?")
+        return None
+    params = getattr(callinst.ssa_form, "params", None)
+    if params is None:
+        log_warn("seems you are on an old binja version. using workaround to retrieve callinst.ssa_form.params")
+        params = callinst.ssa_form.param.src
+
+    if regidx > len(params):
         return None
 
-    reg = callinst.ssa_form.params[regidx].operands[0]
+    reg = params[regidx].operands[0]
     defn = callinst.function.get_ssa_reg_definition(reg)
     if not defn:
         return None
