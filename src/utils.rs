@@ -63,7 +63,7 @@ pub mod vec {
         unsafe {
             let ptr = dst.as_mut_ptr().offset(index as isize);
             // check if we are only appending -> no need to move old contents
-            if index != src.len() {
+            if index < dst.len() {
                 std::ptr::copy(ptr, ptr.offset(src.len() as isize), old_len - index);
             }
             std::ptr::copy_nonoverlapping(src.as_ptr(), ptr, src.len());
@@ -121,7 +121,7 @@ pub mod vec {
         unsafe {
             let ptr = dst.as_mut_ptr().offset(index as isize);
             // check if we are only appending -> no need to move old contents
-            if index != src_len {
+            if index < old_len {
                 std::ptr::copy(ptr, ptr.offset(src_len as isize), old_len - index);
             }
             std::ptr::copy_nonoverlapping(a.as_ptr(), ptr, a.len());
@@ -171,7 +171,7 @@ pub mod vec {
         unsafe {
             let ptr = dst.as_mut_ptr().offset(index as isize);
             // check if we are only appending -> no need to move old contents
-            if index != src_len {
+            if index < old_len {
                 std::ptr::copy(ptr, ptr.offset(src_len as isize), old_len - index);
             }
             std::ptr::copy_nonoverlapping(a.as_ptr(), ptr, a.len());
@@ -221,7 +221,7 @@ pub mod vec {
         unsafe {
             let ptr = dst.as_mut_ptr().offset(index as isize);
             // check if we are only appending -> no need to move old contents
-            if index != src_len {
+            if index != old_len {
                 std::ptr::copy(ptr, ptr.offset(src_len as isize), old_len - index);
             }
             std::ptr::write_unaligned(ptr, before);
