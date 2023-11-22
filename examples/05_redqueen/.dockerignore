@@ -1,0 +1,5 @@
+snapshot
+target
+results.md
+fuzzer.log
+Cargo.lock
