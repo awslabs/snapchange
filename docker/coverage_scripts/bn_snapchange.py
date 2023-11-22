@@ -975,9 +975,9 @@ def run_cmp_analysis(bv, ignore=None, taskref=None):
                     for curr_instr in (instr.left, instr.right):
                         find_ssa_defs.append(curr_instr)
                 elif instr.operation == LowLevelILOperation.LLIL_INTRINSIC:
-                    if "cmp" in str(curr_instr) and len(curr_instr.params) == 2:
-                        find_ssa_defs.append(curr_instr.params[0])
-                        find_ssa_defs.append(curr_instr.params[1])
+                    if "cmp" in str(instr) and len(instr.params) == 2:
+                        find_ssa_defs.append(instr.params[0])
+                        find_ssa_defs.append(instr.params[1])
 
                 # this is a non-exhaustive ssa backtracking thing. it is mostly to cover patterns like:
                 # ```
@@ -1050,6 +1050,7 @@ def run_cmp_analysis(bv, ignore=None, taskref=None):
                 # If we found a comparison rule write it to the log
                 if res is not None:
                     cmps.append(f"{res}\n")
+
                     res_split = res.split(",")
                     size = res_split[1]
                     op1 = res_split[-1]
