@@ -13,8 +13,8 @@ example5() {
   cargo build -r 2>/dev/null >/dev/null
 
   # Start the fuzzers
-  echo "Begin fuzzing!"
-  cargo run -r -- fuzz -c 16 --stop-after-first-crash --stop-after-time 6m
+  echo "Begin fuzzing! we have $(nproc) cores; using half for fuzzing; using at most $(grep -Eo 'cores = ([0-9]*)' ./harness/config.toml) for redqueen"
+  cargo run -r -- fuzz -c /2 --ascii-stats --stop-after-first-crash --stop-after-time 6m
 
   # Kill the example 05 fuzzers
   ps -ef | rg Example05 | tr -s ' ' | cut -d' ' -f2 | xargs kill -9 2>/dev/null >/dev/null

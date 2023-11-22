@@ -26,7 +26,8 @@ cp harness/config.toml ./snapshot/config.toml
 exec hyperfine \
     --shell bash \
     --export-markdown results.md \
-    --runs 3 \
+    --warmup 1 \
+    --runs 5 \
     -p "pushd snapshot; ./reset.sh; rm dict || true; popd; cargo build -r --features redqueen" \
     -n "redqueen" \
     "./target/release/example_fuzzer fuzz $DEFAULT_ARGS" \
