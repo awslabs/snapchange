@@ -355,7 +355,6 @@ pub mod vec {
             let dst_ptr = dst.as_mut_ptr().offset(dst_start);
             let tail_ptr = dst.as_ptr().offset(dst_end);
             let tail_len = dst_full_len - dst_end;
-            println!("{:?} {:?} {:?}", dst_ptr, tail_ptr, tail_len);
             debug_assert!(tail_len >= 0);
             // move the old contents within dst to the new location -> memmove
             if tail_len > 0 {
