@@ -731,6 +731,8 @@ impl Memory {
             // Read the translated physical address into the given buf
             self.read_phys_bytes(phys_addr, buf)?;
 
+            // Put the page boundaries back
+            self.temp_page_boundaries = Some(page_boundaries);
             // Return from the base case
             return Ok(());
         }
@@ -939,8 +941,8 @@ impl Memory {
 
             // Read the translated physical address into the given buf
             self.write_phys_bytes(phys_addr, buf)?;
-
-            // Early return from the base case
+            // Put the page boundaries back and early return
+            self.temp_page_boundaries = Some(page_boundaries);
             return Ok(());
         }
 
@@ -1016,6 +1018,9 @@ impl Memory {
 
             // Dirty the physical page
             self.dirty_pages.insert(phys_addr.page());
+            // Put the page boundaries allocation back and early return.
+            self.temp_page_boundaries = Some(page_boundaries);
+            return Ok(());
         }
 
         // Offset into the input buffer
