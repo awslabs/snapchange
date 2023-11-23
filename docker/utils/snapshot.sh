@@ -92,7 +92,7 @@ function start_vm {
         -m "$QEMU_MEM" \
         -smp 1 \
         -kernel "$KERNEL" \
-        -append "console=ttyS0 root=/dev/sda earlyprintk=serial init=/init mitigations=off" \
+        -append "console=ttyS0 root=/dev/sda earlyprintk=serial init=/init nokaslr mitigations=off" \
         -drive "file=$SNAPCHANGE_ROOT/$RELEASE.img" \
         -net user,host=10.0.2.10,hostfwd=tcp:127.0.0.1:10021-:22 \
         -net nic,model=e1000 \
@@ -108,7 +108,7 @@ function start_vm {
           -smp 1 \
           -kernel "$KERNEL" \
           -initrd "$SNAPCHANGE_ROOT/$RELEASE.initramfs.lz4" \
-          -append "console=ttyS0 earlyprintk=serial mitigations=off" \
+          -append "console=ttyS0 earlyprintk=serial nokaslr mitigations=off" \
           -net user,host=10.0.2.10,hostfwd=tcp:127.0.0.1:10021-:22 \
           -net nic,model=e1000 \
           -virtfs "local,path=$D9P,mount_tag=snapchange_mnt,security_model=mapped" \

@@ -171,6 +171,8 @@ export SNAPCHANGE=1
 
 echo "[+] snapshotting program: $SNAPSHOT_ENTRYPOINT $SNAPSHOT_ENTRYPOINT_ARGUMENTS"
 
+sysctl -w kernel.randomize_va_space=0 || true
+
 EOF
 
 if [[ "$SNAPCHANGE_DEV" -eq 1 ]]; then
