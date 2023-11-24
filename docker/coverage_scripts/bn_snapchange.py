@@ -152,6 +152,7 @@ class SnapchangeCoverageBreakpoints(SnapchangeTask):
     TASK_NAME = "Snapchange Coverage Breakpoints"
 
     def run(self):
+        log_info("Task '{self.TASK_NAME}' started")
         bv = self.bv
         binary = Path(bv.file.filename)
         # binary_name = binary.with_suffix("").name
@@ -249,6 +250,8 @@ class SnapchangeCoverageBreakpoints(SnapchangeTask):
         with open(location, "w") as f:
             f.write("\n".join(blocks))
 
+        log_info("Task '{self.TASK_NAME}' done")
+
 
 class SnapchangeCovAnalysis(SnapchangeTask):
     """
@@ -258,6 +261,7 @@ class SnapchangeCovAnalysis(SnapchangeTask):
     TASK_NAME = "Snapchange Coverage Analysis"
 
     def run(self):
+        log_info("Task '{self.TASK_NAME}' started")
         bv = self.bv
         binary = Path(bv.file.filename)
         binary_name = binary.with_suffix("").name
@@ -414,6 +418,8 @@ class SnapchangeCovAnalysis(SnapchangeTask):
         with open(location, "w") as f:
             f.write(json.dumps(nodes))
 
+        log_info("Task '{self.TASK_NAME}' done")
+
 
 class SnapchangeCmpAnalysis(SnapchangeTask):
     TASK_NAME = "Snapchange Cmp Analysis"
@@ -443,6 +449,7 @@ class SnapchangeCmpAnalysis(SnapchangeTask):
             self.dict_location = Path(dict_location)
 
     def run(self):
+        log_info("Task '{self.TASK_NAME}' started")
         cmps, autodict = run_cmp_analysis(self.bv, self.ignore, self)
         if self.cancelled or (cmps is None and autodict is None):
             return
@@ -458,6 +465,7 @@ class SnapchangeCmpAnalysis(SnapchangeTask):
             log_info(f"discovered {len(autodict)} dictionary entries ({ints} int, {floats} float, {bytess} strings, {others} others)")
             for entry in autodict:
                 write_dict_entry(entry, self.dict_location)
+        log_info("Task '{self.TASK_NAME}' done")
 
 
 def write_dict_entry(entry, location: Path):
@@ -1076,7 +1084,7 @@ def run_cmp_analysis(bv, ignore=None, taskref=None):
                     instr_length = bv.get_instruction_length(instr.address, bv.arch)
                     next_addr = instr.address + instr_length
                     next_instr = bv.get_disassembly(next_addr)
-                    print(next_instr)
+                    log_debug(f"found `sbb` instruction followed by: {next_instr}")
                     comparison = "CMP_SLT"
                     if "jb" in next_instr:
                         comparison = "CMP_SLT"
@@ -1658,8 +1666,8 @@ def cli_main():
         log_error(f"non-existing file passed to script {args.binary}", LOG_ID)
         sys.exit(1)
 
-    if not args.bps and not args.analysis and not args.cmp:
-        log_error("you must choose either --bps or --analysis or --cmp")
+    if not any((args.bps, args.analysis, args.cmp, args.auto_dict)):
+        log_error("you must pass one of: --bps, --analysis, --cmp, --auto-dict")
         sys.exit(1)
 
     log_info(
@@ -1672,12 +1680,16 @@ def cli_main():
         "analysis.mode": "basic",
     }
 
+    log_info(f"opening binary {args.binary}")
     with bn.load(str(args.binary), options=options, update_analysis=True) as bv:
         # If given a different base address, rebase the BinaryView
         if args.base_addr != 0:
+            log_info(f"rebasing binary {args.binary} to {args.base_addr:#x}")
             bv = bv.rebase(args.base_addr)
 
+        log_info(f"waiting for binaryninja analysis")
         bv.update_analysis_and_wait()
+        log_info(f"binaryninja analysis done. starting analysis tasks.")
 
         binary = Path(bv.file.filename)
         tasks = []
@@ -1688,7 +1700,7 @@ def cli_main():
             filename = binary.parent / (binary.name + ".coverage_analysis")
             task1 = SnapchangeCovAnalysis(bv, ignore=args.ignore, location=filename)
             task1.start()
-            tasks.append(task1)
+            tasks.append(("coverage analysis", task1))
 
         task2 = None
         if args.bps:
@@ -1698,7 +1710,7 @@ def cli_main():
                 bv, ignore=args.ignore, location=filename
             )
             task2.start()
-            tasks.append(task2)
+            tasks.append(("breakpoint dump", task2))
 
         task3 = None
         if args.cmp or args.auto_dict:
@@ -1713,11 +1725,12 @@ def cli_main():
                 bv, ignore=args.ignore, cmp_location=filename, dict_location=dict_path
             )
             task3.start()
-            tasks.append(task3)
+            tasks.append(("compare analysis (redqueen, auto-dict)", task3))
 
         # Wait for all threads to finish
-        for task in tasks:
+        for (name, task) in tasks:
             task.join()
+            log_info(f"task {name} joined")
 
     log_info("done. bye!")
     bn.shutdown()
