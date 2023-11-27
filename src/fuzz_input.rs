@@ -148,12 +148,12 @@ pub trait FuzzInput:
             "Redqueen not implemented for this type. Please impl `has_redqueen_rule_candidates`"
         );
     }
-    
+
     /// return some kind of entropy metric (e.g., byte entropy), if applicable.
     fn entropy_metric(&self) -> Option<f64> {
         None
     }
-    
+
     /// return length of the input, if applicable.
     fn len(&self) -> Option<usize> {
         None
@@ -397,14 +397,17 @@ impl FuzzInput for Vec<u8> {
             mutators::splice_input,
             mutators::replace_with_interesting,
             mutators::set_input_slice,
-            mutators::insert_from_dictionary,
+            mutators::overwrite_from_dictionary,
             mutators::byte_insert,
         ]
     }
 
     /// Current expensive mutators available for mutation (typically those which allocate)
     fn expensive_mutators() -> &'static [Self::MutatorFunc] {
-        &[expensive_mutators::splice_corpus_extend]
+        &[
+            expensive_mutators::splice_corpus_extend,
+            expensive_mutators::splice_from_dictionary_extend,
+        ]
     }
 
     /// Generate a random `Vec<u8>` of `max_length` size

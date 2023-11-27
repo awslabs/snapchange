@@ -466,7 +466,7 @@ pub fn set_input_slice(
 }
 
 /// Insert an element from the dictionary into the input
-pub fn insert_from_dictionary(
+pub fn overwrite_from_dictionary(
     input: &mut Vec<u8>,
     _corpus: &[Arc<InputWithMetadata<Vec<u8>>>],
     rng: &mut Rng,
