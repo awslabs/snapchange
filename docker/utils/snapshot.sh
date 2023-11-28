@@ -92,7 +92,7 @@ function start_vm {
         -m "$QEMU_MEM" \
         -smp 1 \
         -kernel "$KERNEL" \
-        -append "console=ttyS0 root=/dev/sda earlyprintk=serial init=/init mitigations=off" \
+        -append "console=ttyS0 root=/dev/sda earlyprintk=serial init=/init nokaslr mitigations=off" \
         -drive "file=$SNAPCHANGE_ROOT/$RELEASE.img" \
         -net user,host=10.0.2.10,hostfwd=tcp:127.0.0.1:10021-:22 \
         -net nic,model=e1000 \
@@ -108,7 +108,7 @@ function start_vm {
           -smp 1 \
           -kernel "$KERNEL" \
           -initrd "$SNAPCHANGE_ROOT/$RELEASE.initramfs.lz4" \
-          -append "console=ttyS0 earlyprintk=serial mitigations=off" \
+          -append "console=ttyS0 earlyprintk=serial nokaslr mitigations=off" \
           -net user,host=10.0.2.10,hostfwd=tcp:127.0.0.1:10021-:22 \
           -net nic,model=e1000 \
           -virtfs "local,path=$D9P,mount_tag=snapchange_mnt,security_model=mapped" \
@@ -148,9 +148,9 @@ function extract_output {
   ls -al "$DIR"
 
   # Copy over the files written by `gdbsnapshot.py`
-  mv "$DIR/gdb.vmmap" .
-  mv "$DIR/gdb.modules" .
-  mv "$DIR/gdb.symbols" .
+  mv "$DIR/gdb.vmmap" . || true
+  mv "$DIR/gdb.modules" . || true
+  mv "$DIR/gdb.symbols" . || true
 
   # Copy over the root symbols and, if found, move the user symbols to .symbols in order to
   # combine the symbols into one gdb.symbols
@@ -167,12 +167,10 @@ function extract_output {
   if [ -f gdb.symbols.root ]; then 
       chown `id -u`:`id -g` gdb.symbols.root
   fi
-  chown `id -u`:`id -g` gdb.symbols
-  chown `id -u`:`id -g` gdb.modules
-  chown `id -u`:`id -g` gdb.vmmap
+  chown `id -u`:`id -g` gdb.symbols || true
+  chown `id -u`:`id -g` gdb.modules || true
+  chown `id -u`:`id -g` gdb.vmmap || true
 
-  # copy the saved working dir from the snapshot
-  cp -r "$DIR/cwd" "$OUTPUT/" || true
   cp  "$DIR"/guestkernel* "$OUTPUT" || true
 }
 
