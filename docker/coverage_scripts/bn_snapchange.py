@@ -26,6 +26,7 @@ if __name__ == "__main__":
 from typing import List, Optional
 
 import binaryninja as bn
+import binaryninja._binaryninjacore as core
 from binaryninja import (
     BackgroundTaskThread,
     BranchType,
@@ -35,7 +36,6 @@ from binaryninja import (
     MediumLevelILInstruction,
     MediumLevelILOperation,
 )
-import binaryninja._binaryninjacore as core
 
 # from binaryninja.log import log_debug, log_error, log_info, log_warn
 from binaryninja.lowlevelil import LowLevelILFlag
@@ -152,9 +152,10 @@ class SnapchangeCoverageBreakpoints(SnapchangeTask):
     TASK_NAME = "Snapchange Coverage Breakpoints"
 
     def run(self):
+        log_info(f"Task '{self.TASK_NAME}' started")
         bv = self.bv
         binary = Path(bv.file.filename)
-        binary_name = binary.with_suffix("").name
+        # binary_name = binary.with_suffix("").name
 
         blacklist = DEFAULT_IGNORE
         if self.ignore:
@@ -215,8 +216,11 @@ class SnapchangeCoverageBreakpoints(SnapchangeTask):
             if self.cancelled:
                 return
             for bb in func:
-                if (bb.instruction_count == 1 and len(bb.outgoing_edges) == 1
-                        and len(bb.incoming_edges) == 2):
+                if (
+                    bb.instruction_count == 1
+                    and len(bb.outgoing_edges) == 1
+                    and len(bb.incoming_edges) == 2
+                ):
                     text = []
                     for edge in bb.incoming_edges:
                         block_text = [
@@ -230,13 +234,11 @@ class SnapchangeCoverageBreakpoints(SnapchangeTask):
 
         # Get all basic block and block edges that aren't that asan_report finish basic block
         blocks = [
-            hex(bb.start) for func in funcs for bb in func
-            if bb.start not in bad_blocks
+            hex(bb.start) for func in funcs for bb in func if bb.start not in bad_blocks
         ]
 
         if ignored_functions:
-            log_info(f"ignored the following functions: {ignored_functions}",
-                     LOG_ID)
+            log_info(f"ignored the following functions: {ignored_functions}", LOG_ID)
 
         log_info(f"found {len(blocks)} basic blocks", LOG_ID)
 
@@ -248,6 +250,8 @@ class SnapchangeCoverageBreakpoints(SnapchangeTask):
         with open(location, "w") as f:
             f.write("\n".join(blocks))
 
+        log_info(f"Task '{self.TASK_NAME}' done")
+
 
 class SnapchangeCovAnalysis(SnapchangeTask):
     """
@@ -257,6 +261,7 @@ class SnapchangeCovAnalysis(SnapchangeTask):
     TASK_NAME = "Snapchange Coverage Analysis"
 
     def run(self):
+        log_info(f"Task '{self.TASK_NAME}' started")
         bv = self.bv
         binary = Path(bv.file.filename)
         binary_name = binary.with_suffix("").name
@@ -290,13 +295,18 @@ class SnapchangeCovAnalysis(SnapchangeTask):
                 ignored_functions.add(str(func))
                 continue
 
+            # if func.analysis_skipped:
+            #     fn = str(func)
+            #     if fn not in errored_functions:
+            #         skip_reason = str(func.analysis_skip_reason)
+            #         log_warn(f"Analysis skipped for {func} | {skip_reason}")
+            #         errored_functions.add(func)
+
             # If this function doesn't have LLIL, display the warning only once
-            if func.analysis_skipped:
+            if func.low_level_il is None:
                 fn = str(func)
                 if fn not in errored_functions:
-                    skip_reason = str(func.analysis_skip_reason)
-                    log_warn(f"Analysis skipped for {func} | {skip_reason}",
-                             LOG_ID)
+                    log_warn(f"Analysis skipped for {func} | missing LLIL")
                     errored_functions.add(func)
 
             for bb in func:
@@ -309,10 +319,10 @@ class SnapchangeCovAnalysis(SnapchangeTask):
                 # Initialize this node's data
                 node = {}
                 node["address"] = start
-                node["children"] = list(
-                    set(x.target.start for x in bb.outgoing_edges))
+                node["children"] = list(set(x.target.start for x in bb.outgoing_edges))
                 node["dominator_tree_children"] = set(
-                    x.start for x in bb.dominator_tree_children)
+                    x.start for x in bb.dominator_tree_children
+                )
                 node["parents"] = set()
 
                 # Add incoming edges that are not in a loop
@@ -334,7 +344,8 @@ class SnapchangeCovAnalysis(SnapchangeTask):
                 node["function_offset"] = start - func.start
                 node["called_funcs"] = []
                 node["dominators"] = list(
-                    set(x.start for x in bb.dominators if x.start != start))
+                    set(x.start for x in bb.dominators if x.start != start)
+                )
 
                 if func.llil:
                     # Check if there is a constant function in the block. If so, add the function as child.
@@ -356,10 +367,9 @@ class SnapchangeCovAnalysis(SnapchangeTask):
                         called_func = bv.get_function_at(il.dest.constant)
 
                         # If any of the blacklist substrings are found in the function name, ignore it
-                        if hasattr(called_func, "name") and any([
-                                black for black in blacklist
-                                if black in called_func.name
-                        ]):
+                        if hasattr(called_func, "name") and any(
+                            [black for black in blacklist if black in called_func.name]
+                        ):
                             # log_warn(f"Ignoring called {called_func.name} from {func.name}")
                             continue
 
@@ -372,8 +382,7 @@ class SnapchangeCovAnalysis(SnapchangeTask):
                         node["called_funcs"].append(il.dest.constant)
                         function_calls.append((start, il.dest.constant))
 
-                node["dominator_tree_children"] = list(
-                    node["dominator_tree_children"])
+                node["dominator_tree_children"] = list(node["dominator_tree_children"])
 
                 # Add the node to the list of all nodes
                 nodes.append(node)
@@ -383,16 +392,18 @@ class SnapchangeCovAnalysis(SnapchangeTask):
         for (caller, callee) in function_calls:
             node_index = lookup.get(callee, None)
             if node_index is None:
+                # node_addr = node['address']
+                callee = int(callee)
+                caller = int(caller)
                 log_error(
-                    f"ERROR: Check this called function! Function call not found: {node_addr:#x}",
+                    f"ERROR: Check this called function! Function call not found: {caller:#x} -> {callee:#x}",
                     LOG_ID,
                 )
             else:
                 nodes[node_index]["dominators"].append(caller)
 
         if ignored_functions:
-            log_info(f"ignored the following functions: {ignored_functions}",
-                     LOG_ID)
+            log_info(f"ignored the following functions: {ignored_functions}", LOG_ID)
 
         # Make the `parents` a list to allow for JSON serialization
         for node in nodes:
@@ -406,6 +417,8 @@ class SnapchangeCovAnalysis(SnapchangeTask):
         log_info(f"Writing coverage analysis to '{location}'", LOG_ID)
         with open(location, "w") as f:
             f.write(json.dumps(nodes))
+
+        log_info(f"Task '{self.TASK_NAME}' done")
 
 
 class SnapchangeCmpAnalysis(SnapchangeTask):
@@ -436,15 +449,24 @@ class SnapchangeCmpAnalysis(SnapchangeTask):
             self.dict_location = Path(dict_location)
 
     def run(self):
-        bv = self.bv
-        cmps, autodict = run_cmp_analysis(bv, self.ignore)
+        log_info(f"Task '{self.TASK_NAME}' started")
+        cmps, autodict = run_cmp_analysis(self.bv, self.ignore, self)
+        if self.cancelled or (cmps is None and autodict is None):
+            return
         if self.cmp_location:
+            log_info(f"discovered {len(cmps)} comparison instructions for redqueen/input-to-state")
             with self.cmp_location.open("w") as f:
                 f.write("\n".join(map(lambda c: str(c).strip(), cmps)))
         if self.dict_location:
             self.dict_location.mkdir(parents=True, exist_ok=True)
+            ints = sum(isinstance(o, int) for o in autodict)
+            floats = sum(isinstance(o, float) for o in autodict)
+            bytess = sum(isinstance(o, bytes) or isinstance(o, str) for o in autodict)
+            others = len(autodict) - ints - floats - bytess
+            log_info(f"discovered {len(autodict)} dictionary entries ({ints} int, {floats} float, {bytess} strings, {others} others)")
             for entry in autodict:
                 write_dict_entry(entry, self.dict_location)
+        log_info(f"Task '{self.TASK_NAME}' done")
 
 
 def write_dict_entry(entry, location: Path):
@@ -491,9 +513,7 @@ def write_dict_entry(entry, location: Path):
                     # don't write all 0 buffers to dict
                     if all(b == 0 for b in buf):
                         continue
-                    fname = "_".join(
-                        [float_fmt, endian[1],
-                         hex(hash(entry))[2:]])
+                    fname = "_".join([float_fmt, endian[1], hex(hash(entry))[2:]])
                     with (location / fname).open("wb") as f:
                         f.write(buf)
                 except (ValueError, OverflowError):
@@ -509,8 +529,7 @@ def write_dict_entry(entry, location: Path):
     elif isinstance(entry, (bytes, str)):
         fname = hex(abs(hash(entry)))
         if isinstance(entry, str):
-            fname += "_" + "".join(e if e in ALPHANUM else "_"
-                                   for e in entry[:8])
+            fname += "_" + "".join(e if e in ALPHANUM else "_" for e in entry[:8])
             entry = entry.encode()
         else:
             if all(chr(b) in ALPHANUM for b in entry):
@@ -534,6 +553,8 @@ def int_is_interesting_for_dict(i, size, _bv=None):
         return False
     if i < 256:
         return False
+    if size == 0:
+        size = 4
     # convert to signed
     i_s = i
     if i_s & (1 << (size - 1)):
@@ -584,22 +605,32 @@ def float_is_interesting_for_dict(f, size):
     return True
 
 
-def add_memory_to_dict(dictionary,
-                       bv,
-                       addr,
-                       memlen=STR_LEN_THRESHOLD,
-                       null_term=False,
-                       both_cases=False):
+def bytes_is_interesting_for_dict(b):
+    if len(b) < 2:
+        return False
+    if all(i in (0, 0xff) for i in b):
+        return False
+
+    return True
+
+
+def add_memory_to_dict(
+    dictionary, bv, addr, memlen=STR_LEN_THRESHOLD, null_term=False, both_cases=False
+):
+    # log_warn(f"adding addr {addr} to dict with len {memlen}")
     if addr is None or memlen is None:
         return
-    if isinstance(memlen, str):
-        return False
+    if not isinstance(memlen, int):
+        try:
+            memlen = int(memlen, 0)
+        except ValueError:
+            return False
     if memlen <= 2:
         return False
     if isinstance(addr, int):
         pass  # all good
     elif isinstance(addr, str):
-        if 'reg' in addr:
+        if "reg" in addr:
             return False
 
         try:
@@ -607,13 +638,16 @@ def add_memory_to_dict(dictionary,
         except ValueError:
             s = f"cannot convert addr str {addr!r} to concrete address (type int)"
             log_error(s)
-            return
+            return False
+    elif hasattr(addr, "constant"):
+        addr = int(addr.constant)
     else:
         s = f"require addr to bye of type int; got {addr!r}"
         log_error(s)
         raise ValueError(s)
+
     if memlen > STR_LEN_THRESHOLD:
-        return
+        return FAlse
     log_debug(f"auto-dict read memory @ '{addr:#x}' len {memlen}")
     data = bv.read(addr, memlen)
     if not data:
@@ -630,38 +664,68 @@ def add_memory_to_dict(dictionary,
     if both_cases:
         dictionary.add(data.upper())
         dictionary.add(data.lower())
+    return True
 
 
-def add_const_to_dict(bv, dictionary, c, c_size):
+def add_const_to_dict(bv, dictionary, c, c_size, is_float=False):
     real_size = 0
-    is_float = False
+    # is_float = False
     if isinstance(c_size, str):
         if c_size[0] == "f":
             is_float = True
             c_size = c_size[1:]
         real_size = int(c_size, 0)
+    else:
+        real_size = c_size
 
-    if isinstance(c, str):
+    if not c_size and isinstance(c, bytes):
+        real_size = len(c)
+
+    if isinstance(c, bytes):  # was given raw bytes
+        assert len(c) >= real_size
+        if real_size in (2, 4, 8, 16) and not is_float:
+            c = int.from_bytes(c, "little")
+        elif is_float and real_size in (2, 4, 8):
+            dictionary.add(c)
+            if real_size == 4:
+                c = struct.unpack("@f", c)[0]
+            elif real_size == 8:
+                c = struct.unpack("@d", c)[0]
+            elif real_size == 2:
+                c = struct.unpack("@e", c)[0]
+
+    elif isinstance(c, str):
         if c.startswith("load_from"):
             x = c.split(" ")
-            a = None
+            addr = None
             if len(x) > 1:
                 try:
-                    a = int(x[1], 0)
+                    addr = int(x[1], 0)
                 except ValueError:
-                    a = None
+                    addr = None
 
-            if a is not None:
+            if addr is not None:
                 if not is_float:
                     try:
-                        c = bv.read_int(a, real_size)
+                        c = bv.read_int(addr, real_size)
                     except ValueError:
                         pass
                 else:
-                    log_warn(
-                        f"reading a float from memory @ {a:#x} is not supported"
-                    )
-                    return
+                    # for floating points, we read the data as bytes
+                    data = bv.read(addr, real_size)
+                    # add the float bytes to the dictionary
+                    dictionary.add(c)
+                    # but we also attempt to convert to an actual float value using struct
+                    # not sure this is always accurate.
+                    try:
+                        if real_size == 4:
+                            c = struct.unpack("@f", data)[0]
+                        elif real_size == 8:
+                            c = struct.unpack("@d", data)[0]
+                        elif real_size == 2:
+                            c = struct.unpack("@e", data)[0]
+                    except ValueError:
+                        return
             else:
                 # can't load non-constant from memory...
                 return
@@ -675,7 +739,7 @@ def add_const_to_dict(bv, dictionary, c, c_size):
                 else:
                     c = int(c, 0)
             except ValueError:
-                log_warn(f"failed to convert {c!r} into number")
+                # log_warn(f"failed to convert {c!r} into number")
                 return
 
     if isinstance(c, int):
@@ -684,12 +748,78 @@ def add_const_to_dict(bv, dictionary, c, c_size):
     elif isinstance(c, float):
         if float_is_interesting_for_dict(c, real_size):
             dictionary.add(c)
+    elif isinstance(c, bytes):
+        if bytes_is_interesting_for_dict(c):
+            dictionary.add(c)
     else:
         # is there something else?
         dictionary.add(c)
 
 
-def run_cmp_analysis(bv, ignore=None):
+def find_const_definition(instr):
+    find_ssa_defs = [instr]
+    # this is a non-exhaustive ssa backtracking thing. it is mostly to cover patterns like:
+    # ```
+    # reg0 = [constptr]
+    # if (reg0 == reg1) ...
+    # ```
+    while find_ssa_defs:
+        curr_instr = find_ssa_defs.pop()
+        if is_instr_const(curr_instr):
+            return curr_instr
+        elif curr_instr.operation == LowLevelILOperation.LLIL_REG:
+            ssa_reg = curr_instr.ssa_form
+            if hasattr(ssa_reg, "full_reg"):
+                ssa_reg = ssa_reg.full_reg
+            elif hasattr(ssa_reg, "src"):
+                ssa_reg = ssa_reg.src
+            if (
+                hasattr(ssa_reg, "operation")
+                and ssa_reg.operation == LowLevelILOperation.LLIL_CONST
+            ):
+                return ssa_reg
+            else:
+                definition = (
+                    curr_instr.function.ssa_form.get_ssa_reg_definition(
+                        ssa_reg
+                    )
+                )
+                if definition:
+                    if hasattr(definition, "non_ssa_form"):
+                        find_ssa_defs.append(definition.non_ssa_form)
+                    else:
+                        log_warn(f"{curr_instr} -> definition {definition} -> has no non-ssa-form ")
+        elif curr_instr.operation == LowLevelILOperation.LLIL_SET_REG:
+            find_ssa_defs.append(curr_instr.src)
+        elif curr_instr.operation == LowLevelILOperation.LLIL_LOAD:
+            iload = curr_instr
+            if iload.src.operation == LowLevelILOperation.LLIL_CONST_PTR:
+                return iload.src
+
+    return None
+
+
+def get_const_from_reg_param_at(callinst, regidx):
+    if not hasattr(callinst, "ssa_form"):
+        log_warn(f"call instruction `{callinst}` does not have .ssa_form - odd?")
+        return None
+    params = getattr(callinst.ssa_form, "params", None)
+    if params is None:
+        log_warn("seems you are on an old binja version. using workaround to retrieve callinst.ssa_form.params")
+        params = callinst.ssa_form.param.src
+
+    if regidx > len(params):
+        return None
+
+    reg = params[regidx].operands[0]
+    defn = callinst.function.get_ssa_reg_definition(reg)
+    if not defn:
+        return None
+
+    return find_const_definition(defn)
+
+
+def run_cmp_analysis(bv, ignore=None, taskref=None):
     blacklist = DEFAULT_IGNORE
     if ignore:
         blacklist.extend(ignore)
@@ -697,26 +827,22 @@ def run_cmp_analysis(bv, ignore=None):
 
     ignored_functions = set()
 
-    # Collect functions not in the blacklist
-    funcs = []
-
     cmps = []
     dictionary = set()
 
     ignored_addresses = []
 
-    for i, func in enumerate(bv.functions):
+    for _i, func in enumerate(bv.functions):
+        if taskref and taskref.cancelled:
+            return (None, None)
         # If any of the blacklist substrings are found in the function name, ignore it
         if any(black for black in blacklist if black in func.name):
             log_debug(f"Ignoring {func.name}", LOG_ID)
             ignored_functions.add(str(func))
             continue
 
-        # Initialize the seen expr_indexes so that we don't query CMP instructions
-        # that are a part of the IF instructions
-        expr_indexes = []
-
         if func.low_level_il is None:
+            log_warn(f"skipping func {func!r}, because of missing LLIL")
             continue
 
         # Get the number of LLIL expressions (not instructions) for this function
@@ -729,9 +855,7 @@ def run_cmp_analysis(bv, ignore=None):
             # If this instruction uses the result of a memcmp/strcmp, ignore the
             # condition as a rule has already been added from the strcmp/memcmp call site
             if instr.address in ignored_addresses:
-                log_warn(
-                    f"Ignoring instruction found in ignored_addresses: {instr}"
-                )
+                log_warn(f"Ignoring instruction found in ignored_addresses: {instr}")
                 continue
 
             if instr.operation == LowLevelILOperation.LLIL_CALL:
@@ -746,10 +870,12 @@ def run_cmp_analysis(bv, ignore=None):
                 func_alias = FUNCTION_ALIASES.get(func_name)
                 if func_alias is not None:
                     # Get the registers used for the calling convention
-                    param_regs = instr.function.source_function.calling_convention.int_arg_regs
+                    param_regs = (
+                        instr.function.source_function.calling_convention.int_arg_regs
+                    )
 
                     # Create the register parameters
-                    params = [f'reg {param_reg}' for param_reg in param_regs]
+                    params = [f"reg {param_reg}" for param_reg in param_regs]
 
                     log_debug(
                         f"cmp function {instr.address:#x} {func_name} -> {func_alias!r} params: {params!r}"
@@ -764,55 +890,59 @@ def run_cmp_analysis(bv, ignore=None):
                         res = f"{instr.address:#x},0x0,{params[0]},strcmp,{params[1]}\n"
                         cmps.append(res)
 
+                    # auto-dict code
+                    if func_alias in strcmps:
                         memlen = STR_LEN_THRESHOLD
-                        if (len(params) >= 3 and params[2]
-                                and func_alias in (FunctionAlias.STRNCMP,
-                                                   FunctionAlias.STRNCASECMP)):
-                            if isinstance(params[2], int):
-                                memlen = params[2]
-                            elif isinstance(params[2], str):
-                                try:
-                                    memlen = int(params[2], 0)
-                                except ValueError:
-                                    memlen = params[2]
+                        if (
+                            func_alias
+                            in (FunctionAlias.STRNCMP, FunctionAlias.STRNCASECMP)
+                        ):
+                            x = get_const_from_reg_param_at(instr, 2)
+                            if x:
+                                memlen = int(x)
                         both_cases = func_alias in (
                             FunctionAlias.STRNCASECMP,
                             FunctionAlias.STRCASECMP,
                         )
-                        for p in params[:2]:
-                            add_memory_to_dict(
-                                dictionary,
-                                bv,
-                                p,
-                                null_term=True,
-                                memlen=memlen,
-                                both_cases=both_cases,
-                            )
+                        for reg_idx in (0, 1):
+                            p_addr = get_const_from_reg_param_at(instr, reg_idx)
+                            if p_addr:
+                                add_memory_to_dict(
+                                    dictionary,
+                                    bv,
+                                    int(p_addr),
+                                    null_term=True,
+                                    memlen=memlen,
+                                    both_cases=both_cases,
+                                )
 
                     if len(params) >= 3 and func_alias == FunctionAlias.MEMCMP:
-                        cmp_len = None
-                        if isinstance(params[2], int):
+                        try:
+                            cmp_len = int(params[2], 0)
+                        except ValueError:
                             cmp_len = params[2]
-                        elif isinstance(params[2], str):
-                            try:
-                                cmp_len = int(params[2], 0)
-                            except ValueError:
-                                cmp_len = params[2]
-                        if cmp_len is not None:
-                            res = f"{instr.address:#x},{cmp_len},{params[0]},memcmp,{params[1]}\n"
-                            if "flag" not in res:
-                                cmps.append(res)
-                            else:
-                                log_warn(f"Flag found! {res}")
-                        for p in params[:2]:
-                            add_memory_to_dict(
-                                dictionary,
-                                bv,
-                                p,
-                                null_term=False,
-                                memlen=(cmp_len
-                                        if cmp_len else STR_LEN_THRESHOLD),
-                            )
+                        assert cmp_len
+                        res = f"{instr.address:#x},{cmp_len},{params[0]},memcmp,{params[1]}\n"
+                        if "flag" not in res:
+                            cmps.append(res)
+                        else:
+                            log_warn(f"Flag found! {res}")
+
+                    if func_alias == FunctionAlias.MEMCMP:
+                        cmp_len = get_const_from_reg_param_at(instr, 2)
+                        if cmp_len:
+                            cmp_len = int(cmp_len)
+                        for reg_idx in (0, 1):
+                            p_addr = get_const_from_reg_param_at(instr, reg_idx)
+                            if p_addr:
+                                add_memory_to_dict(
+                                    dictionary,
+                                    bv,
+                                    int(p_addr),
+                                    null_term=False,
+                                    memlen=(cmp_len if cmp_len else STR_LEN_THRESHOLD),
+                                )
+
                     if len(params) >= 3 and func_alias == FunctionAlias.MEMCHR:
                         cmp_len = None
                         if isinstance(params[2], int):
@@ -827,63 +957,145 @@ def run_cmp_analysis(bv, ignore=None):
                             if "flag" not in res:
                                 cmps.append(res)
 
-
             if instr.operation in [
-                    LowLevelILOperation.LLIL_CMP_E,
-                    LowLevelILOperation.LLIL_CMP_NE,
-                    LowLevelILOperation.LLIL_CMP_SLT,
-                    LowLevelILOperation.LLIL_CMP_ULT,
-                    LowLevelILOperation.LLIL_CMP_SLE,
-                    LowLevelILOperation.LLIL_CMP_ULE,
-                    LowLevelILOperation.LLIL_CMP_SGE,
-                    LowLevelILOperation.LLIL_CMP_UGE,
-                    LowLevelILOperation.LLIL_CMP_SGT,
-                    LowLevelILOperation.LLIL_CMP_UGT,
+                LowLevelILOperation.LLIL_CMP_E,
+                LowLevelILOperation.LLIL_CMP_NE,
+                LowLevelILOperation.LLIL_CMP_SLT,
+                LowLevelILOperation.LLIL_CMP_ULT,
+                LowLevelILOperation.LLIL_CMP_SLE,
+                LowLevelILOperation.LLIL_CMP_ULE,
+                LowLevelILOperation.LLIL_CMP_SGE,
+                LowLevelILOperation.LLIL_CMP_UGE,
+                LowLevelILOperation.LLIL_CMP_SGT,
+                LowLevelILOperation.LLIL_CMP_UGT,
+                LowLevelILOperation.LLIL_FCMP_E,
+                LowLevelILOperation.LLIL_FCMP_NE,
+                LowLevelILOperation.LLIL_FCMP_LT,
+                LowLevelILOperation.LLIL_FCMP_LE,
+                LowLevelILOperation.LLIL_FCMP_GE,
+                LowLevelILOperation.LLIL_FCMP_GT,
+                LowLevelILOperation.LLIL_INTRINSIC,
+            ]:
+                is_float = False
+                if instr.operation in (
                     LowLevelILOperation.LLIL_FCMP_E,
                     LowLevelILOperation.LLIL_FCMP_NE,
                     LowLevelILOperation.LLIL_FCMP_LT,
                     LowLevelILOperation.LLIL_FCMP_LE,
                     LowLevelILOperation.LLIL_FCMP_GE,
                     LowLevelILOperation.LLIL_FCMP_GT,
-                    LowLevelILOperation.LLIL_INTRINSIC
-            ]:
+                ):
+                    is_float = True
+
+                find_ssa_defs = []
+                if instr.operation != LowLevelILOperation.LLIL_INTRINSIC:
+                    for curr_instr in (instr.left, instr.right):
+                        find_ssa_defs.append(curr_instr)
+                elif instr.operation == LowLevelILOperation.LLIL_INTRINSIC:
+                    if "cmp" in str(instr) and len(instr.params) == 2:
+                        find_ssa_defs.append(instr.params[0])
+                        find_ssa_defs.append(instr.params[1])
+
+                # this is a non-exhaustive ssa backtracking thing. it is mostly to cover patterns like:
+                # ```
+                # reg0 = [constptr]
+                # if (reg0 == reg1) ...
+                # ```
+                while find_ssa_defs:
+                    curr_instr = find_ssa_defs.pop()
+                    if is_instr_const(curr_instr):
+                        add_const_to_dict(
+                            bv,
+                            dictionary,
+                            curr_instr.constant,
+                            curr_instr.size,
+                            is_float,
+                        )
+                    elif curr_instr.operation == LowLevelILOperation.LLIL_REG:
+                        ssa_reg = curr_instr.ssa_form
+                        if hasattr(ssa_reg, "full_reg"):
+                            ssa_reg = ssa_reg.full_reg
+                        elif hasattr(ssa_reg, "src"):
+                            ssa_reg = ssa_reg.src
+                        if (
+                            hasattr(ssa_reg, "operation")
+                            and ssa_reg.operation == LowLevelILOperation.LLIL_CONST
+                        ):
+                            add_const_to_dict(
+                                bv, dictionary, ssa_reg.constant, ssa_reg.size, is_float
+                            )
+                        else:
+                            definition = (
+                                curr_instr.function.ssa_form.get_ssa_reg_definition(
+                                    ssa_reg
+                                )
+                            )
+                            if definition:
+                                if hasattr(definition, "non_ssa_form"):
+                                    find_ssa_defs.append(definition.non_ssa_form)
+                                else:
+                                    log_warn(f"{curr_instr} -> definition {definition} -> has no non-ssa-form ")
+                    elif curr_instr.operation == LowLevelILOperation.LLIL_SET_REG:
+                        find_ssa_defs.append(curr_instr.src)
+                    elif curr_instr.operation == LowLevelILOperation.LLIL_LOAD:
+                        iload = curr_instr
+                        if iload.src.operation == LowLevelILOperation.LLIL_CONST_PTR:
+                            add_const_to_dict(
+                                bv,
+                                dictionary,
+                                bv.read(iload.src.constant, iload.size),
+                                iload.size,
+                                is_float,
+                            )
+
                 # Get the comparison rule for this instruction, using the address of the
                 # full instruction
-                res = get_collapsed_rule(instr)
+                res = get_collapsed_rule(bv, instr)
 
-                if res != None:
+                if res is not None:
                     # Continue if the collapsed rule was ignored (like the return value comparison case)
                     if len(res) == 0:
                         continue
 
                     cmps.append(f"{res}\n")
                     continue
-                
+
                 # Get the comparison rule for this instruction, using the address of the
                 # full instruction
                 res = get_cmp_analysis_from_instr_llil(instr)
 
                 # If we found a comparison rule write it to the log
-                if res != None:
+                if res is not None:
                     cmps.append(f"{res}\n")
+
+                    res_split = res.split(",")
+                    size = res_split[1]
+                    op1 = res_split[-1]
+                    op2 = res_split[-3]
+                    for op in (op1, op2):
+                        is_float = False
+                        if "FCMP" in res:
+                            is_float = True
+                        add_const_to_dict(bv, dictionary, op, size, is_float)
 
             # Special case unimplemented instructions
             if instr.operation == LowLevelILOperation.LLIL_UNIMPL:
                 disasm = bv.get_disassembly(instr.address).replace(",", "").split()
-                if disasm[0] == 'sbb':
+                if disasm[0] == "sbb":
                     instr_length = bv.get_instruction_length(instr.address, bv.arch)
                     next_addr = instr.address + instr_length
                     next_instr = bv.get_disassembly(next_addr)
-                    print(next_instr)
+                    log_debug(f"found `sbb` instruction followed by: {next_instr}")
                     comparison = "CMP_SLT"
                     if "jb" in next_instr:
                         comparison = "CMP_SLT"
                     if "jae" in next_instr:
                         comparison = "CMP_SGE"
-                    
-                    reg_size = bv.arch.regs[disasm[1]].size
-                    cmps.append(f"{instr.address:#x},{reg_size:#x},reg {disasm[1]},{comparison},reg {disasm[2]}\n")
 
+                    reg_size = bv.arch.regs[disasm[1]].size
+
+                    res = f"{instr.address:#x},{reg_size:#x},reg {disasm[1]},{comparison},reg {disasm[2]}\n"
+                    cmps.append(res)
 
     return (cmps, dictionary)
 
@@ -893,12 +1105,8 @@ def get_config(bv, more_fields=None):
     Helper method to get relocation address and ignorelist via the binary ninja
     GUI interaction components.
     """
-    binary = Path(bv.file.filename)
-    binary_name = binary.with_suffix("").name
 
-    rebase_field = bn.interaction.AddressField("Image Base Address",
-                                               view=bv,
-                                               default=0)
+    rebase_field = bn.interaction.AddressField("Image Base Address", view=bv, default=0)
     ignore_field = bn.interaction.TextLineField("Ignore Functions")
 
     fields = [
@@ -910,7 +1118,8 @@ def get_config(bv, more_fields=None):
     if more_fields:
         fields.extend(more_fields)
     user_cancelled = not bn.interaction.get_form_input(
-        fields, "Snapchange Analysis Export")
+        fields, "Snapchange Analysis Export"
+    )
     if user_cancelled:
         log_debug("user cancelled")
         return None
@@ -950,29 +1159,31 @@ def _dump(bv, analysis=True, bps=True, cmps=False, autodict=False):
     if analysis:
         filename = binary.parent / (binary_name + ".coverage_analysis")
         cov_analysis_field_location = bn.interaction.SaveFileNameField(
-            "Coverage Analysis File",
-            ext="coverage_analysis",
-            default=str(filename))
+            "Coverage Analysis File", ext="coverage_analysis", default=str(filename)
+        )
         more_fields.append(cov_analysis_field_location)
 
     covbps_field_location = None
     if bps:
         filename = binary.parent / (binary_name + ".covbps")
         covbps_field_location = bn.interaction.SaveFileNameField(
-            "Coverage Breakpoints File", ext="covbps", default=str(filename))
+            "Coverage Breakpoints File", ext="covbps", default=str(filename)
+        )
         more_fields.append(covbps_field_location)
 
     if cmps:
         filename = binary.parent / (binary_name + ".cmps")
         cmps_field_location = bn.interaction.SaveFileNameField(
-            "Comparison Analysis File", ext="cmps", default=str(filename))
+            "Comparison Analysis File", ext="cmps", default=str(filename)
+        )
         more_fields.append(cmps_field_location)
 
     if autodict:
         filename = binary.parent / "dict/"
 
         autodict_field_location = bn.interaction.DirectoryNameField(
-            "Path to auto-generated dict/ dir", default=str(filename))
+            "Path to auto-generated dict/ dir", default=str(filename)
+        )
         more_fields.append(autodict_field_location)
 
     r = get_config(bv, more_fields=more_fields)
@@ -982,17 +1193,20 @@ def _dump(bv, analysis=True, bps=True, cmps=False, autodict=False):
     if base_addr:
         bv = bv.rebase(base_addr)
 
-    if (analysis and cov_analysis_field_location is not None
-            and cov_analysis_field_location.result):
+    if (
+        analysis
+        and cov_analysis_field_location is not None
+        and cov_analysis_field_location.result
+    ):
         location = Path(cov_analysis_field_location.result)
         a_task = SnapchangeCovAnalysis(bv, ignore=nopelist, location=location)
         a_task.start()
 
     if bps and covbps_field_location is not None and covbps_field_location.result:
         location = Path(covbps_field_location.result)
-        b_task = SnapchangeCoverageBreakpoints(bv,
-                                               ignore=nopelist,
-                                               location=Path(location))
+        b_task = SnapchangeCoverageBreakpoints(
+            bv, ignore=nopelist, location=Path(location)
+        )
         b_task.start()
 
     if cmps or autodict:
@@ -1065,77 +1279,37 @@ def dump_all(bv):
     _dump(bv, bps=True, analysis=True, cmps=True, autodict=True)
 
 
-def get_cmp_analysis_from_instr(instr):
-    log_info(f"Cmp Analysis {instr}")
-    log_info(f"{instr.left} | {str(instr.operation)} | {instr.right}")
-    log_info(
-        f"{type(instr.left)} | {str(instr.operation)} | {type(instr.right)}")
-
-    size = 0
-    curr_instr = instr.left
-    while True:
-        if curr_instr.operation == MediumLevelILOperation.MLIL_VAR:
-            # Convert a <mlil: var_18> to llil
-            # <llil: [rbp#1 - 0x10 {var_18}].d @ mem#8>
-            log_info(f"TRACE {curr_instr} {str(curr_instr.operation)}")
-            curr_instr = curr_instr.llil
-            continue
-        elif curr_instr.operation == LowLevelILOperation.LLIL_LOAD_SSA:
-            size = curr_instr.size
-            log_info(f"TRACE {curr_instr} {str(curr_instr.operation)} {size}")
-            curr_instr = curr_instr.src
-            continue
-        elif curr_instr.operation == LowLevelILOperation.LLIL_ADD:
-            size = curr_instr.size
-            log_info(
-                f"TRACE {curr_instr} {str(curr_instr.operation)} {curr_instr.left} {curr_instr.right}"
-            )
-            break
-        else:
-            break
-
-
 def get_cmp_analysis_from_instr_llil(curr_instr):
     if not hasattr(curr_instr, "operation"):
         return curr_instr
 
-    size = 0
-    operation = None
-    not_condition = False
-    result = None
-    flags = []
-
     if curr_instr.operation == LowLevelILOperation.LLIL_IF:
         return get_cmp_analysis_from_instr_llil(curr_instr.condition)
     elif curr_instr.operation in [
-            LowLevelILOperation.LLIL_CMP_E,
-            LowLevelILOperation.LLIL_CMP_NE,
-            LowLevelILOperation.LLIL_CMP_SLT,
-            LowLevelILOperation.LLIL_CMP_ULT,
-            LowLevelILOperation.LLIL_CMP_SLE,
-            LowLevelILOperation.LLIL_CMP_ULE,
-            LowLevelILOperation.LLIL_CMP_SGE,
-            LowLevelILOperation.LLIL_CMP_UGE,
-            LowLevelILOperation.LLIL_CMP_SGT,
-            LowLevelILOperation.LLIL_CMP_UGT,
-            LowLevelILOperation.LLIL_FCMP_E,
-            LowLevelILOperation.LLIL_FCMP_NE,
-            LowLevelILOperation.LLIL_FCMP_LT,
-            LowLevelILOperation.LLIL_FCMP_LE,
-            LowLevelILOperation.LLIL_FCMP_GE,
-            LowLevelILOperation.LLIL_FCMP_GT,
-            LowLevelILOperation.LLIL_FCMP_O,
-            LowLevelILOperation.LLIL_FCMP_UO,
+        LowLevelILOperation.LLIL_CMP_E,
+        LowLevelILOperation.LLIL_CMP_NE,
+        LowLevelILOperation.LLIL_CMP_SLT,
+        LowLevelILOperation.LLIL_CMP_ULT,
+        LowLevelILOperation.LLIL_CMP_SLE,
+        LowLevelILOperation.LLIL_CMP_ULE,
+        LowLevelILOperation.LLIL_CMP_SGE,
+        LowLevelILOperation.LLIL_CMP_UGE,
+        LowLevelILOperation.LLIL_CMP_SGT,
+        LowLevelILOperation.LLIL_CMP_UGT,
+        LowLevelILOperation.LLIL_FCMP_E,
+        LowLevelILOperation.LLIL_FCMP_NE,
+        LowLevelILOperation.LLIL_FCMP_LT,
+        LowLevelILOperation.LLIL_FCMP_LE,
+        LowLevelILOperation.LLIL_FCMP_GE,
+        LowLevelILOperation.LLIL_FCMP_GT,
+        LowLevelILOperation.LLIL_FCMP_O,
+        LowLevelILOperation.LLIL_FCMP_UO,
     ]:
         # log_warn(f'{pad}TRACE {str(curr_instr.left):20} {str(curr_instr.right):20}')
         left = get_cmp_analysis_from_instr_llil(curr_instr.left)
         right = get_cmp_analysis_from_instr_llil(curr_instr.right)
-        result = {"left": left, "right": right}
+        # result = {"left": left, "right": right}
         op = "_".join(str(curr_instr.operation).split("_")[1:])
-
-        data = ""
-        if is_instr_const(curr_instr.left) and is_instr_const(curr_instr.right):
-            data = "CONST_INSTR"
 
         output = f"{curr_instr.address:#x},{curr_instr.size:#x},{left},{op},{right}\n"
         return output
@@ -1161,10 +1335,9 @@ def get_cmp_analysis_from_instr_llil(curr_instr):
 
         return f"load_from {res}"
     elif curr_instr.operation == LowLevelILOperation.LLIL_REG:
-        result = f"reg {curr_instr.src.name}"
 
         # If temp if in this register, attempt to find it's definition
-        if 'temp' in result:
+        if str(curr_instr.src.name) not in curr_instr.function.arch.regs:
             ssa_reg = curr_instr.ssa_form.src
             definition = curr_instr.function.ssa_form.get_ssa_reg_definition(ssa_reg)
             curr_instr = get_cmp_analysis_from_instr_llil(definition.src.non_ssa_form)
@@ -1172,10 +1345,14 @@ def get_cmp_analysis_from_instr_llil(curr_instr):
 
         # print(f'{pad}TRACE {curr_instr} {str(curr_instr.operation)}')
         # res = get_cmp_analysis_from_instr_llil(curr_instr.src, address, iters + 1)
+        result = f"reg {curr_instr.src.name}"
         return result
     elif curr_instr.operation == LowLevelILOperation.LLIL_NOT:
         src = get_cmp_analysis_from_instr_llil(curr_instr.src)
         return f"not {src}"
+    elif curr_instr.operation == LowLevelILOperation.LLIL_NEG:
+        src = get_cmp_analysis_from_instr_llil(curr_instr.src)
+        return f"neg {src}"
     elif curr_instr.operation == LowLevelILOperation.LLIL_OR:
         left = get_cmp_analysis_from_instr_llil(curr_instr.left)
         right = get_cmp_analysis_from_instr_llil(curr_instr.right)
@@ -1224,30 +1401,35 @@ def get_cmp_analysis_from_instr_llil(curr_instr):
         # log_warn(f'{pad}TRACE CONST_PTR {curr_instr.constant:x}')
         return f"{hex(curr_instr.constant)}"
     elif curr_instr.operation == LowLevelILOperation.LLIL_INTRINSIC:
-        if 'cmp' in str(curr_instr):
-            # TODO: Need a decent way of grouping all of the cmp mmx/sse/avx operations
-            # for this check
-            print(f"INTRINSIC {curr_instr}")
-            assert(len(curr_instr.params) == 2)
+        # TODO: Need a decent way of grouping all of the cmp mmx/sse/avx operations
+        # for this check
+        if "cmp" in str(curr_instr) and len(curr_instr.params) == 2:
+            log_debug(f"INTRINSIC compare `{curr_instr}` @ {curr_instr.address:#x}")
             left = get_cmp_analysis_from_instr_llil(curr_instr.params[0])
             right = get_cmp_analysis_from_instr_llil(curr_instr.params[1])
             op = "CMP_E"
-            if 'neq' in str(curr_instr.intrinsic):
+            if "neq" in str(curr_instr.intrinsic):
                 op = "CMP_NE"
             size = 16
-            if 'ymm' in str(curr_instr):
+            if "ymm" in str(curr_instr):
                 size = 32
-            elif 'zmm' in str(curr_instr):
+            elif "zmm" in str(curr_instr):
                 size = 64
 
             output = f"{curr_instr.address:#x},{size:#x},{left},{op},{right}\n"
             return output
 
-    else:
-        log_warn(
-            f"{curr_instr.address:#x} UNKNOWN: {str(curr_instr.operation)} | {type(curr_instr)}"
+        log_debug(
+            f"{curr_instr.address:#x} UNKNOWN intrinsic @ {curr_instr.address:#x}: `{curr_instr.operation}` | {curr_instr!r}"
         )
-        return
+        return None
+    elif curr_instr.operation == LowLevelILOperation.LLIL_FLOAT_CONV:
+        return get_cmp_analysis_from_instr_llil(curr_instr.src)
+
+    log_warn(
+        f"{curr_instr.address:#x} UNKNOWN instr @ {curr_instr.address:#x}: `{curr_instr}` ({curr_instr!r})"
+    )
+    return None
 
 
 def is_instr_const(instr):
@@ -1266,7 +1448,7 @@ def is_instr_const(instr):
     return instr.operation in STATIC_INSTRS
 
 
-def get_collapsed_rule(instr):
+def get_collapsed_rule(bv, instr):
     """
     This common pattern compares the result of an operation. We
     want to create a rule that would actually produce the result,
@@ -1288,59 +1470,75 @@ def get_collapsed_rule(instr):
     rsi = rsi s>> 1
     if (rsi == 0) then 10 @ 0x5555555551d8 else 11 @ 0x5555555551c4
     """
-    if not hasattr(instr, 'left') or not hasattr(instr, 'right'):
+    if not hasattr(instr, "left") or not hasattr(instr, "right"):
         return None
 
     left = instr.left
     right = instr.right
 
-    if left.operation == LowLevelILOperation.LLIL_REG and right.operation == LowLevelILOperation.LLIL_CONST:
-        constant = right.constant
-
+    if (
+        left.operation == LowLevelILOperation.LLIL_REG
+        and right.operation == LowLevelILOperation.LLIL_CONST
+    ):
         ssa_reg = left.ssa_form
-        if hasattr(ssa_reg, 'full_reg'):
+        if hasattr(ssa_reg, "full_reg"):
             ssa_reg = ssa_reg.full_reg
-        elif hasattr(ssa_reg, 'src'):
+        elif hasattr(ssa_reg, "src"):
             ssa_reg = ssa_reg.src
-
 
         # Get the definition of the variable being used in the comparison
         definition = instr.function.get_ssa_reg_definition(ssa_reg)
+        if definition is None:  # ssa definition outside current function.
+            return None
 
         # Ignore the following pattern. We don't want to add a redqueen rule that
         # compares against a known status code function
-        # 
+        #
         # rax = strcmp(..)
         # rax = rax == 0
         if definition.operation == LowLevelILOperation.LLIL_CALL:
-            if hasattr(definition.dest, 'constant'):
+            if hasattr(definition.dest, "constant"):
                 func_name = bv.get_symbol_at(definition.dest.constant)
             else:
                 log_warn(f"Call with no constant? Possibly by register? {definition}")
-                func_name = 'unknown_func'
+                func_name = "unknown_func"
 
             func_alias = FUNCTION_ALIASES.get(func_name)
             if func_alias in (
-                    FunctionAlias.MEMCMP, 
-                    FunctionAlias.STRCMP, 
-                    FunctionAlias.STRNCMP, 
-                    FunctionAlias.STRCASECMP, 
-                    FunctionAlias.STRNCASECMP):
-                return ''
-            else:   
-                # If this function return isn't known to be a status code,
-                # we should check the result. For example:
-                # result = checksum(..)
-                # if (result == 0x1234) { .. }
-                return None
+                FunctionAlias.MEMCMP,
+                FunctionAlias.STRCMP,
+                FunctionAlias.STRNCMP,
+                FunctionAlias.STRCASECMP,
+                FunctionAlias.STRNCASECMP,
+            ):
+                return ""
+
+            # If this function return isn't known to be a status code,
+            # we should check the result. For example:
+            # result = checksum(..)
+            # if (result == 0x1234) { .. }
+            return None
+
+        if definition.operation == LowLevelILOperation.LLIL_IF:
+            # encountered a PHI in SSA. We don't backtrack any further.
+            return None
+
+        if definition.operation == LowLevelILOperation.LLIL_INTRINSIC:
+            return get_cmp_analysis_from_instr_llil(definition)
+
+        if not hasattr(definition, "src"):
+            log_warn(
+                f"failed to get ssa definition source for `{instr}` @ {instr.address:#x} for reg {ssa_reg} - def: ({definition!r})"
+            )
+            return None
 
         # Found a valid definition, get the src of the definition
         definition = definition.src
-        if definition == None:
+        if definition is None:
             return None
 
         # Ignore any operation that doesn't have 'left' and 'right' operands
-        if not hasattr(definition, 'left') or not hasattr(definition, 'right'):
+        if not hasattr(definition, "left") or not hasattr(definition, "right"):
             return None
 
         # Finally, convert the left and right operands into the correct format for the rules
@@ -1348,101 +1546,17 @@ def get_collapsed_rule(instr):
         right = get_cmp_analysis_from_instr_llil(definition.right)
         op = "_".join(str(instr.operation).split("_")[1:])
         # def_op = "_".join(str(definition.operation).split("_")[1:]).lower()
-        return f'{definition.address:#x},{instr.size:#x},{left},{op},{right}'
-
+        return f"{definition.address:#x},{instr.size:#x},{left},{op},{right}"
 
     return None
 
 
-    
-
-def get_register_alias(register, size):
-    """
-    Get the register alias for the given register based on the requested size
-    """
-    REGISTERS = [
-        "rax",
-        "rbx",
-        "rcx",
-        "rdx",
-        "rsi",
-        "rdi",
-        "rsp",
-        "rbp",
-        "r8",
-        "r9",
-        "r10",
-        "r11",
-        "r12",
-        "r13",
-        "r14",
-        "r15",
-        "rip",
-    ]
-
-    # Based on the comparison size, return the correct register alias
-    if register in REGISTERS:
-        alias = {
-            ("rax", 4): "eax",
-            ("rax", 2): "ax",
-            ("rax", 1): "al",
-            ("rbx", 4): "ebx",
-            ("rbx", 2): "bx",
-            ("rbx", 1): "bl",
-            ("rcx", 4): "ecx",
-            ("rcx", 2): "cx",
-            ("rcx", 1): "cl",
-            ("rdx", 4): "edx",
-            ("rdx", 2): "dx",
-            ("rdx", 1): "dl",
-            ("rsi", 4): "esi",
-            ("rsi", 2): "si",
-            ("rsi", 1): "sil",
-            ("rdi", 4): "edi",
-            ("rdi", 2): "di",
-            ("rdi", 1): "dil",
-            ("rsp", 4): "esp",
-            ("rsp", 2): "sp",
-            ("rsp", 1): "spl",
-            ("rbp", 4): "ebp",
-            ("rbp", 2): "bp",
-            ("rbp", 1): "bpl",
-            ("r8", 4): "r8d",
-            ("r8", 2): "r8w",
-            ("r8", 1): "r8b",
-            ("r9", 4): "r9d",
-            ("r9", 2): "r9w",
-            ("r9", 1): "r9b",
-            ("r10", 4): "r10d",
-            ("r10", 2): "r10w",
-            ("r10", 1): "r10b",
-            ("r11", 4): "r11d",
-            ("r11", 2): "r11w",
-            ("r11", 1): "r11b",
-            ("r12", 4): "r12d",
-            ("r12", 2): "r12w",
-            ("r12", 1): "r12b",
-            ("r13", 4): "r13d",
-            ("r13", 2): "r13w",
-            ("r13", 1): "r13b",
-            ("r14", 4): "r14d",
-            ("r14", 2): "r14w",
-            ("r14", 1): "r14b",
-            ("r15", 4): "r15d",
-            ("r15", 2): "r15w",
-            ("r15", 1): "r15b",
-            ("rip", 4): "eip",
-            ("rip", 2): "ip",
-            ("rflags", 4): "eflags",
-        }.get((register, size), register)
-    else:
-        alias = register
-
-    return alias
+def is_isa_register(bv, regname):
+    return regname.lower() in bv.arch.regs
 
 
-# only if imported by binaryninja UI
-if __name__ != "__main__":
+def register_in_bn_ui():
+    """register command in BN GUI"""
     bn.PluginCommand.register(
         "Snapchange\\Save Coverage Analysis",
         "Save Coverage Analysis for snapchange",
@@ -1478,19 +1592,18 @@ if __name__ != "__main__":
         "Perform breakpoint dump, coverage analysis, comparison analysis (cmp + autodict)",
         dump_all,
     )
-# if run from command line
-else:
+
+
+def cli_main():
+    """headless processing"""
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("binary",
-                        help="Path to the binary file to analyze",
-                        type=Path)
+    parser.add_argument("binary", help="Path to the binary file to analyze", type=Path)
     parser.add_argument(
         "--base-addr",
         default=0,
-        help=
-        "Address to rebase the binary to - check `gdb.vmmap` for base address",
+        help="Address to rebase the binary to - check `gdb.vmmap` for base address",
         type=lambda i: int(i, 0),
     )
     parser.add_argument(
@@ -1509,18 +1622,17 @@ else:
         "--bn-max-analysis-time",
         default=(60 * 1000),
         type=int,
-        help=
-        "set binary ninja analysis limit for max function analysis time (in ms)",
+        help="set binary ninja analysis limit for max function analysis time (in ms)",
     )
-    parser.add_argument("--bps",
-                        action="store_true",
-                        help="dump coverage breakpoint addresses")
-    parser.add_argument("--analysis",
-                        action="store_true",
-                        help="dump coverage analysis data")
-    parser.add_argument("--cmp",
-                        action="store_true",
-                        help="dump comparision analysis data")
+    parser.add_argument(
+        "--bps", action="store_true", help="dump coverage breakpoint addresses"
+    )
+    parser.add_argument(
+        "--analysis", action="store_true", help="dump coverage analysis data"
+    )
+    parser.add_argument(
+        "--cmp", action="store_true", help="dump comparision analysis data"
+    )
     parser.add_argument(
         "--auto-dict",
         action="store_true",
@@ -1542,14 +1654,12 @@ else:
                     license_data = f.read()
                 log_info(f"Using license information from {license_file}")
             else:
-                log_info(
-                    f"Using license information from BINARY_NINJA_LICENSE_DATA"
-                )
+                log_info("Using license information from BINARY_NINJA_LICENSE_DATA")
 
             bn.core_set_license(license_data)
     except Exception as e:
         log_warn(
-            f"Error while using environemnt license. Falling back on the system license."
+            "Error while using environemnt license. Falling back on the system license."
         )
         log_warn(f"{e}")
 
@@ -1557,8 +1667,8 @@ else:
         log_error(f"non-existing file passed to script {args.binary}", LOG_ID)
         sys.exit(1)
 
-    if not args.bps and not args.analysis and not args.cmp:
-        log_error("you must choose either --bps or --analysis or --cmp")
+    if not any((args.bps, args.analysis, args.cmp, args.auto_dict)):
+        log_error("you must pass one of: --bps, --analysis, --cmp, --auto-dict")
         sys.exit(1)
 
     log_info(
@@ -1568,44 +1678,40 @@ else:
     options = {
         "analysis.limits.maxFunctionSize": args.bn_max_function_size,
         "analysis.limits.maxFunctionAnalysisTime": args.bn_max_analysis_time,
-        "analysis.mode": "basic"
+        "analysis.mode": "basic",
     }
 
-    with bn.open_view(str(args.binary), options=options,
-                      update_analysis=True) as bv:
+    log_info(f"opening binary {args.binary}")
+    with bn.load(str(args.binary), options=options, update_analysis=True) as bv:
         # If given a different base address, rebase the BinaryView
         if args.base_addr != 0:
+            log_info(f"rebasing binary {args.binary} to {args.base_addr:#x}")
             bv = bv.rebase(args.base_addr)
 
+        log_info(f"waiting for binaryninja analysis")
         bv.update_analysis_and_wait()
-
-        # import IPython; shell = IPython.terminal.embed.InteractiveShellEmbed(); shell.mainloop();
-        # sys.exit(1)
+        log_info(f"binaryninja analysis done. starting analysis tasks.")
 
         binary = Path(bv.file.filename)
-        binary_name = binary.with_suffix("").name
-
         tasks = []
 
         task1 = None
         if args.analysis:
             log_info("launching coverage analysis")
             filename = binary.parent / (binary.name + ".coverage_analysis")
-            task1 = SnapchangeCovAnalysis(bv,
-                                          ignore=args.ignore,
-                                          location=filename)
+            task1 = SnapchangeCovAnalysis(bv, ignore=args.ignore, location=filename)
             task1.start()
-            tasks.append(task1)
+            tasks.append(("coverage analysis", task1))
 
         task2 = None
         if args.bps:
             log_info("launching breakpoint dump")
             filename = binary.parent / (binary.name + ".covbps")
-            task2 = SnapchangeCoverageBreakpoints(bv,
-                                                  ignore=args.ignore,
-                                                  location=filename)
+            task2 = SnapchangeCoverageBreakpoints(
+                bv, ignore=args.ignore, location=filename
+            )
             task2.start()
-            tasks.append(task2)
+            tasks.append(("breakpoint dump", task2))
 
         task3 = None
         if args.cmp or args.auto_dict:
@@ -1616,16 +1722,24 @@ else:
                 filename = binary.parent / (binary.name + ".cmps")
             if args.auto_dict:
                 dict_path = binary.parent / "dict"
-            task3 = SnapchangeCmpAnalysis(bv,
-                                          ignore=args.ignore,
-                                          cmp_location=filename,
-                                          dict_location=dict_path)
+            task3 = SnapchangeCmpAnalysis(
+                bv, ignore=args.ignore, cmp_location=filename, dict_location=dict_path
+            )
             task3.start()
-            tasks.append(task3)
+            tasks.append(("compare analysis (redqueen, auto-dict)", task3))
 
         # Wait for all threads to finish
-        for task in tasks:
+        for (name, task) in tasks:
             task.join()
+            log_info(f"task {name} joined")
 
     log_info("done. bye!")
     bn.shutdown()
+
+
+if __name__ == "__main__":
+    # run as headless script
+    cli_main()
+else:
+    # bn imported this script as plugin
+    register_in_bn_ui()

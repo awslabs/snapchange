@@ -7,20 +7,21 @@ exclude = ["snapshot", "docker"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1"
-snapchange = { version = "0.1.0", path = "../..", features = ["redqueen"] }
-rand = "0.8"
+snapchange = { version = "0.1.0", path = "../.."}
 log = "0.4"
-serde = "1.0.180"
-serde_json = "1.0.104"
-thiserror = "1.0.44"
+serde = "1.0"
+serde_json = "1.0"
+thiserror = "1.0"
 
 [build-dependencies]
 regex = "1"
 
 [profile.release]
 panic = "abort"
-lto = false
-codegen-units = 255
+lto = "thin"
 opt-level = 3
 debug = true
+
+[features]
+default = ["redqueen"]
+redqueen = ["snapchange/redqueen"]
