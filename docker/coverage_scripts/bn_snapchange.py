@@ -152,7 +152,7 @@ class SnapchangeCoverageBreakpoints(SnapchangeTask):
     TASK_NAME = "Snapchange Coverage Breakpoints"
 
     def run(self):
-        log_info("Task '{self.TASK_NAME}' started")
+        log_info(f"Task '{self.TASK_NAME}' started")
         bv = self.bv
         binary = Path(bv.file.filename)
         # binary_name = binary.with_suffix("").name
@@ -250,7 +250,7 @@ class SnapchangeCoverageBreakpoints(SnapchangeTask):
         with open(location, "w") as f:
             f.write("\n".join(blocks))
 
-        log_info("Task '{self.TASK_NAME}' done")
+        log_info(f"Task '{self.TASK_NAME}' done")
 
 
 class SnapchangeCovAnalysis(SnapchangeTask):
@@ -261,7 +261,7 @@ class SnapchangeCovAnalysis(SnapchangeTask):
     TASK_NAME = "Snapchange Coverage Analysis"
 
     def run(self):
-        log_info("Task '{self.TASK_NAME}' started")
+        log_info(f"Task '{self.TASK_NAME}' started")
         bv = self.bv
         binary = Path(bv.file.filename)
         binary_name = binary.with_suffix("").name
@@ -418,7 +418,7 @@ class SnapchangeCovAnalysis(SnapchangeTask):
         with open(location, "w") as f:
             f.write(json.dumps(nodes))
 
-        log_info("Task '{self.TASK_NAME}' done")
+        log_info(f"Task '{self.TASK_NAME}' done")
 
 
 class SnapchangeCmpAnalysis(SnapchangeTask):
@@ -449,11 +449,12 @@ class SnapchangeCmpAnalysis(SnapchangeTask):
             self.dict_location = Path(dict_location)
 
     def run(self):
-        log_info("Task '{self.TASK_NAME}' started")
+        log_info(f"Task '{self.TASK_NAME}' started")
         cmps, autodict = run_cmp_analysis(self.bv, self.ignore, self)
         if self.cancelled or (cmps is None and autodict is None):
             return
         if self.cmp_location:
+            log_info(f"discovered {len(cmps)} comparison instructions for redqueen/input-to-state")
             with self.cmp_location.open("w") as f:
                 f.write("\n".join(map(lambda c: str(c).strip(), cmps)))
         if self.dict_location:
@@ -465,7 +466,7 @@ class SnapchangeCmpAnalysis(SnapchangeTask):
             log_info(f"discovered {len(autodict)} dictionary entries ({ints} int, {floats} float, {bytess} strings, {others} others)")
             for entry in autodict:
                 write_dict_entry(entry, self.dict_location)
-        log_info("Task '{self.TASK_NAME}' done")
+        log_info(f"Task '{self.TASK_NAME}' done")
 
 
 def write_dict_entry(entry, location: Path):
