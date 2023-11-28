@@ -4378,12 +4378,12 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
     }
 
     /// Get the coverage breakpoints hit by the given `input`
-    pub fn gather_feedback(
+    pub fn gather_feedback<I: IntoIterator<Item = VirtAddr>>(
         &mut self,
         fuzzer: &mut FUZZER,
         input: &InputWithMetadata<FUZZER::Input>,
         vm_timeout: Duration,
-        coverage_breakpoints: &[VirtAddr],
+        coverage_breakpoints: I,
         coverage_bp_type: BreakpointType,
     ) -> Result<(Execution, FeedbackTracker)> {
         let mut feedback = FeedbackTracker::new();
@@ -4402,15 +4402,14 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         let cr3 = self.cr3();
 
         // Reset all of the current breakpoints
-        for hit_bp in coverage_breakpoints {
-            let bp_addr = *hit_bp;
+        for bp_addr in coverage_breakpoints {
             if self.has_breakpoint(bp_addr, cr3) {
                 continue;
             }
             let curr_byte = self.read::<u8>(bp_addr, cr3)?;
             if curr_byte != 0xcc {
                 // Store the original byte for this address
-                hit_breakpoints.insert(*hit_bp, curr_byte);
+                hit_breakpoints.insert(bp_addr.into(), curr_byte);
 
                 // Write a breakpoint at this address to look for coverage
                 self.write_bytes_dirty(bp_addr, cr3, &[0xcc])?;

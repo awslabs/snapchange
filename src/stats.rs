@@ -19,16 +19,14 @@ use tui_logger::{TuiWidgetEvent, TuiWidgetState};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
+use std::io::Write;
 use std::mem::variant_count;
-use std::path::Path;
-
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::SymbolList;
 use crate::addrs::VirtAddr;
 use crate::cmdline::Modules;
 use crate::config::Config;
@@ -41,6 +39,7 @@ use crate::rng::Rng;
 use crate::stats_tui::StatsApp;
 use crate::symbols::Symbol;
 use crate::utils::save_input_in_project;
+use crate::SymbolList;
 
 #[cfg(feature = "redqueen")]
 use crate::cmp_analysis::RedqueenCoverage;
@@ -801,16 +800,30 @@ impl GlobalStats {
     }
 }
 
+pub type ContextList = Vec<Context<EndianReader<RunTimeEndian, Rc<[u8]>>>>;
+
 /// Get a [`Context`] for every known binary in the snapshot.
 ///
 /// Search for all `.bin` files and vmlinux in the snapshot dir and open
 /// a [`adddr2line::Context`] for all of them to retrieve symbols
 #[allow(clippy::type_complexity)]
-pub fn get_binary_contexts(
-    project_dir: &Path,
-) -> Result<Vec<Context<EndianReader<RunTimeEndian, Rc<[u8]>>>>> {
+pub fn get_binary_contexts(project_dir: &Path) -> Result<ContextList> {
     // ) -> Result<Vec<u64>> {
     let mut contexts = Vec::new();
+
+    for file in std::fs::read_dir(project_dir)? {
+        let file = file?;
+        if let Some(extension) = file.path().extension() {
+            if matches!(extension.to_str(), Some("bin")) {
+                let fd = File::open(file.path())?;
+                let map = unsafe { memmap::Mmap::map(&fd)? };
+                let object = addr2line::object::File::parse(&*map)?;
+                let tmp = addr2line::Context::new(&object)?;
+                contexts.push(tmp);
+                log::info!("Found {:?} addr2line context", file.path().file_name());
+            }
+        }
+    }
 
     // Check if the project contains a `vmlinux` file for kernel symbols
     let vmlinux = project_dir.join("vmlinux");
@@ -821,20 +834,6 @@ pub fn get_binary_contexts(
         let tmp = addr2line::Context::new(&object)?;
         contexts.push(tmp);
         log::info!("Found vmlinux addr2line context");
-    }
-
-    for file in std::fs::read_dir(project_dir)? {
-        let file = file?;
-        if let Some(extension) = file.path().extension() {
-            if matches!(extension.to_str(), Some("bin")) {
-                let file = File::open(file.path())?;
-                let map = unsafe { memmap::Mmap::map(&file)? };
-                let object = addr2line::object::File::parse(&*map)?;
-                let tmp = addr2line::Context::new(&object)?;
-                contexts.push(tmp);
-                log::info!("Found {file:?} addr2line context");
-            }
-        }
     }
 
     // Return the found binary contexts
@@ -867,17 +866,17 @@ fn get_subdirs(path: &PathBuf, crashes: &mut Vec<String>) -> bool {
 #[allow(clippy::too_many_lines)]
 pub fn worker<FUZZER: Fuzzer>(
     stats: Arc<Vec<Arc<Mutex<Stats<FUZZER>>>>>,
-    modules: &Modules,
+    project_state: &crate::ProjectState,
     project_dir: &Path,
     mut total_feedback: FeedbackTracker,
     input_corpus: &Vec<Arc<InputWithMetadata<FUZZER::Input>>>,
-    coverage_breakpoints: Option<BTreeSet<VirtAddr>>,
-    symbols: &Option<SymbolList>,
+    symbols: Option<&SymbolList>,
     mut coverage_analysis: Option<CoverageAnalysis>,
     tui: bool,
     config: &Config, // redqueen_rules: BTreeMap<u64, BTreeSet<RedqueenRule>>
     stop_after_first_crash: bool,
 ) -> Result<()> {
+    let coverage_breakpoints = project_state.coverage_breakpoints.as_ref();
     // Create the data directory if it doesn't exist to store raw data from the fuzzer
     let data_dir = project_dir.join("data");
     if !data_dir.exists() {
@@ -929,7 +928,9 @@ pub fn worker<FUZZER: Fuzzer>(
     #[cfg(feature = "redqueen")]
     let coverage_redqueen = project_dir.join("coverage.redqueen");
     #[cfg(feature = "custom_feedback")]
-    let coverage_custom = project_dir.join("coverage.custom");
+    let coverage_custom = project_dir.join("coverage.custom.json");
+    #[cfg(feature = "custom_feedback")]
+    let coverage_max = project_dir.join("coverage.max.json");
 
     // let redqueen_rules_path = project_dir.join("redqueen.rules");
     let plot_exec_per_sec = data_dir.join("exec_per_sec.plot");
@@ -967,7 +968,6 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut sum_dirty_pages_custom = [0_u64; ITERS_WINDOW_SIZE];
     let mut sum_vmexits = [0_u64; ITERS_WINDOW_SIZE];
     let mut iters_index = 0;
-    let mut lighthouse_data = String::new();
     let mut cov_addrs = String::new();
 
     // Init graph data
@@ -1011,7 +1011,9 @@ pub fn worker<FUZZER: Fuzzer>(
                         // Found the correct addr2line context, no need to go into other contextx
                         break;
                     }
-                } else if let Some(module_start) = modules.get_module_start_containing(addr) {
+                } else if let Some(module_start) =
+                    project_state.modules.get_module_start_containing(addr)
+                {
                     // If not found, check if the module that contains this address
                     // is compiled with Position Independent code (PIE) and subtract
                     // the module start address to check for
@@ -1457,7 +1459,10 @@ pub fn worker<FUZZER: Fuzzer>(
                                                 let addr = *addr;
 
                                                 let symbol = get_symbol_str(
-                                                    addr, symbols, modules, &contexts,
+                                                    addr,
+                                                    symbols,
+                                                    &project_state.modules,
+                                                    &contexts,
                                                 )?;
 
                                                 coverage_timeline.push(format!(
@@ -1473,7 +1478,10 @@ pub fn worker<FUZZER: Fuzzer>(
                                                 let virt_addr = *virt_addr;
 
                                                 let symbol = get_symbol_str(
-                                                    virt_addr, symbols, modules, &contexts,
+                                                    virt_addr,
+                                                    symbols,
+                                                    &project_state.modules,
+                                                    &contexts,
                                                 )?;
 
                                                 coverage_timeline.push(format!(
@@ -1592,22 +1600,12 @@ pub fn worker<FUZZER: Fuzzer>(
 
         if iter % 4 == 0 {
             time!(CoverageLighthouse, {
-                // Clear old lighthouse data
-                lighthouse_data.clear();
-
                 // Collect the lighthouse coverage data
-                for addr in total_feedback.code_cov.keys() {
-                    if let Some((module, offset)) = modules.contains(addr.0) {
-                        lighthouse_data.push_str(&format!("{module}+{offset:x}\n"));
-                    } else {
-                        lighthouse_data.push_str(&format!("{:x}\n", addr.0));
-                    }
-                }
-
-                // Write the lighthouse coverage data
-                #[allow(clippy::needless_borrow)]
-                std::fs::write(&coverage_lighthouse, &lighthouse_data)
-                    .expect("Failed to write lighthouse file");
+                write_lighthouse_coverage(
+                    &project_state.modules,
+                    &total_feedback,
+                    &coverage_lighthouse,
+                )?;
             });
 
             time!(CoverageAddress, {
@@ -1681,7 +1679,9 @@ pub fn worker<FUZZER: Fuzzer>(
             {
                 // dump custom coverage as json
                 let w = File::create(&coverage_custom).unwrap();
-                serde_json::to_writer(w, &total_feedback).unwrap();
+                serde_json::to_writer(w, &total_feedback.custom).unwrap();
+                let w = File::create(&coverage_max).unwrap();
+                serde_json::to_writer(w, &total_feedback.max).unwrap();
             }
         }
 
@@ -1693,81 +1693,10 @@ pub fn worker<FUZZER: Fuzzer>(
         */
 
         time!(CoverageSource, {
-            for context in &contexts {
-                // Write the source and lcov coverage files if vmlinux exists
-                // let mut result = Vec::new();
-
-                for rip in total_feedback.code_cov.keys() {
-                    let addr = *rip;
-
-                    // Try to get the addr2line information for the current address
-                    if let Some(loc) = context.find_location(addr.0)? {
-                        /*
-                        let kernel_sym = format!(
-                            "{}:{}:{} {:#x}",
-                            loc.file.unwrap_or("??"),
-                            loc.line.unwrap_or(0),
-                            loc.column.unwrap_or(0),
-                            addr.0,
-                        );
-
-                        result.push(kernel_sym);
-                        */
-
-                        // Insert valid file:line into the BTreeMap for producing lcov
-                        if let (Some(file), Some(line)) = (loc.file, loc.line) {
-                            lcov.entry(file)
-                                .or_insert_with(BTreeMap::new)
-                                .insert(line, 1);
-                        }
-                    } else if let Some(module_start) = modules.get_module_start_containing(addr.0) {
-                        // If not found, check if the module that contains this address
-                        // is compiled with Position Independent code (PIE) and subtract
-                        // the module start address to check for
-                        if let Some(loc) =
-                            context.find_location(addr.saturating_sub(module_start))?
-                        {
-                            /*
-                            let kernel_sym = format!(
-                                "{}:{}:{} {:#x}",
-                                loc.file.unwrap_or("??"),
-                                loc.line.unwrap_or(0),
-                                loc.column.unwrap_or(0),
-                                addr.0,
-                            );
-
-                            result.push(kernel_sym);
-                            */
-
-                            // Insert valid file:line into the BTreeMap for producing lcov
-                            if let (Some(file), Some(line)) = (loc.file, loc.line) {
-                                lcov.entry(file)
-                                    .or_insert_with(BTreeMap::new)
-                                    .insert(line, 1);
-                            }
-                        }
-                    }
-                }
-
-                // result.sort();
-                // #[allow(clippy::needless_borrow)]
-                // std::fs::write(&coverage_src, result.join("\n"))?;
+            // Write the source and lcov coverage files if vmlinux exists
+            if !contexts.is_empty() {
+                write_lcov_info(project_state, &contexts, &total_feedback, &coverage_lcov)?;
             }
-        });
-
-        time!(Lcov, {
-            // Write the lcov output format
-            let mut lcov_res = String::new();
-            lcov_res.push_str("TN:\n");
-            for (file, lines) in &lcov {
-                lcov_res.push_str(&format!("SF:{file}\n"));
-                for (line, hit_val) in lines {
-                    lcov_res.push_str(&format!("DA:{line},{hit_val}\n"));
-                }
-                lcov_res.push_str("end_of_record\n");
-            }
-            #[allow(clippy::needless_borrow)]
-            std::fs::write(&coverage_lcov, &lcov_res)?;
         });
 
         // Check for a new file dropped into `current_corpus`
@@ -2018,8 +1947,10 @@ pub fn worker<FUZZER: Fuzzer>(
         iters_index = (iters_index + 1) % ITERS_WINDOW_SIZE;
     } // Start of iteration loop
 
-    // Restore the terminal to the original state
-    crate::stats_tui::restore_terminal()?;
+    if tui {
+        // Restore the terminal to the original state
+        crate::stats_tui::restore_terminal()?;
+    }
 
     println!("Writing graph data to disk..");
     // Write the graph data to disk
@@ -2070,8 +2001,13 @@ pub fn worker<FUZZER: Fuzzer>(
         coverage_blockers_in_path.join("\n"),
     )
     .expect("Failed to write coverage addresses");
-    std::fs::write(&coverage_lighthouse, &lighthouse_data)
-        .expect("Failed to write lighthouse file");
+
+    write_lighthouse_coverage(
+        &project_state.modules,
+        &total_feedback,
+        &coverage_lighthouse,
+    )?;
+
     std::fs::write(&coverage_addrs, &cov_addrs).expect("Failed to write coverage addresses");
     std::fs::write(&coverage_in_order, coverage_timeline.join("\n"))
         .expect("Failed to write coverage in order file");
@@ -2094,19 +2030,10 @@ pub fn worker<FUZZER: Fuzzer>(
             .expect("Failed to write redqueen cov file");
     }
 
-    time!(Lcov, {
-        // Write the lcov output format
-        let mut lcov_res = String::new();
-        lcov_res.push_str("TN:\n");
-        for (file, lines) in &lcov {
-            lcov_res.push_str(&format!("SF:{file}\n"));
-            for (line, hit_val) in lines {
-                lcov_res.push_str(&format!("DA:{line},{hit_val}\n"));
-            }
-            lcov_res.push_str("end_of_record\n");
+    time!(CoverageSource, {
+        if !contexts.is_empty() {
+            write_lcov_info(project_state, &contexts, &total_feedback, &coverage_lcov)?;
         }
-        #[allow(clippy::needless_borrow)]
-        std::fs::write(&coverage_lcov, &lcov_res)?;
     });
 
     println!(
@@ -2181,9 +2108,9 @@ pub fn source_from_address(
 /// Get the `str` for the given address using the symbols and modules of this project
 fn get_symbol_str(
     addr: u64,
-    symbols: &Option<SymbolList>,
+    symbols: Option<&SymbolList>,
     modules: &Modules,
-    contexts: &Vec<Context<EndianReader<RunTimeEndian, Rc<[u8]>>>>,
+    contexts: &[Context<EndianReader<RunTimeEndian, Rc<[u8]>>>],
 ) -> Result<String> {
     if let Some(sym_data) = symbols {
         if let Some(symbol) = crate::symbols::get_symbol(addr, sym_data) {
@@ -2200,7 +2127,7 @@ fn get_symbol_str(
                     // if not found, check if the module that contains this address
                     // is compiled with position independent code (pie) and subtract
                     // the module start address to check for
-                    if let Some(loc) = context.find_location(addr.saturating_sub(module_start))? {
+                    if let Some(loc) = context.find_location(addr - module_start)? {
                         return Ok(format!(
                             "{symbol} -- {}:{}:{}",
                             loc.file.unwrap_or("??unknownfile??"),
@@ -2218,4 +2145,169 @@ fn get_symbol_str(
 
     // Default return just return the address
     Ok(String::new())
+}
+
+/// Given a project state write lcov `.info` file to the given filepath
+///
+/// This function loads the required binary contexts. If you need those for anything else, consider
+/// [`write_lcov_info_with_contexts`].
+///
+/// returns the number of failed context lookups.
+pub fn write_lcov_info<P: std::convert::AsRef<std::path::Path>>(
+    project_state: &crate::ProjectState,
+    contexts: &ContextList,
+    feedback: &FeedbackTracker,
+    filepath: P,
+) -> anyhow::Result<usize> {
+    write_lcov_info_with_addresses(
+        project_state,
+        contexts,
+        feedback.code_cov.iter().map(|(&x, &y)| (x, y)),
+        filepath,
+    )
+}
+
+/// Given a project state and addr2line contexts: write coverage data given in iterator
+/// `addresses` into the lcov file given in `filepath`.
+///
+/// Returns the number of failed context lookups.
+pub fn write_lcov_info_with_addresses<
+    T: Into<u64>,
+    U: Into<usize>,
+    I: IntoIterator<Item = (T, U)>,
+    P: std::convert::AsRef<std::path::Path>,
+>(
+    project_state: &crate::ProjectState,
+    contexts: &[Context<EndianReader<RunTimeEndian, Rc<[u8]>>>],
+    addresses: I,
+    filepath: P,
+) -> anyhow::Result<usize> {
+    let mut lcov = BTreeMap::new();
+    let mut no_location = 0usize;
+    for cov_entry in addresses {
+        let hitcount: usize = cov_entry.1.into();
+        let addr = cov_entry.0.into();
+        'outer: for context in contexts {
+            // Try to get the addr2line information for the current address
+            if let Some(loc) = context.find_location(addr)? {
+                // Insert valid file:line into the BTreeMap for producing lcov
+                if let (Some(file), Some(line)) = (loc.file, loc.line) {
+                    lcov.entry(file)
+                        .or_insert_with(BTreeMap::new)
+                        .entry(line)
+                        .and_modify(|curr| *curr += hitcount)
+                        .or_insert(hitcount);
+                    continue 'outer; // skip checking second context
+                }
+            } else if let Some(module_start) =
+                project_state.modules.get_module_start_containing(addr)
+            {
+                // If not found, check if the module that contains this address
+                // is compiled with Position Independent code (PIE) and subtract
+                // the module start address to check for
+                if let Some(loc) = context.find_location(addr - module_start)? {
+                    // Insert valid file:line into the BTreeMap for producing lcov
+                    if let (Some(file), Some(line)) = (loc.file, loc.line) {
+                        lcov.entry(file)
+                            .or_insert_with(BTreeMap::new)
+                            .entry(line)
+                            .and_modify(|curr| *curr += hitcount)
+                            .or_insert(hitcount);
+                        continue 'outer; // skip checking second context
+                    }
+                }
+            }
+        }
+        no_location += 1;
+    }
+
+    let mut outfile = std::io::BufWriter::new(std::fs::File::create(filepath)?);
+    writeln!(outfile, "TN:")?;
+    for (file, lines) in &lcov {
+        writeln!(outfile, "SF:{file}")?;
+        for (line, hit_val) in lines {
+            writeln!(outfile, "DA:{line},{hit_val}")?;
+        }
+        writeln!(outfile, "end_of_record")?;
+    }
+    outfile.flush()?;
+
+    Ok(no_location)
+}
+
+pub fn write_lighthouse_coverage<P: std::convert::AsRef<std::path::Path>>(
+    modules: &Modules,
+    feedback: &FeedbackTracker,
+    filepath: P,
+) -> anyhow::Result<()> {
+    write_lighthouse_coverage_addresses(modules, feedback.code_cov.keys().cloned(), filepath)
+}
+
+pub fn write_lighthouse_coverage_addresses<
+    T: Into<u64>,
+    I: IntoIterator<Item = T>,
+    P: std::convert::AsRef<std::path::Path>,
+>(
+    modules: &Modules,
+    addresses: I,
+    filepath: P,
+) -> anyhow::Result<()> {
+    let mut outfile = std::io::BufWriter::new(std::fs::File::create(filepath)?);
+
+    for addr in addresses {
+        let addr: u64 = addr.into();
+        if let Some((module, offset)) = modules.contains(addr) {
+            writeln!(outfile, "{module}+{offset:x}")?;
+        } else {
+            writeln!(outfile, "{addr:x}")?;
+        }
+    }
+    outfile.flush()?;
+
+    Ok(())
+}
+
+pub fn write_text_coverage_addresses<
+    T: Into<u64>,
+    I: IntoIterator<Item = T>,
+    P: std::convert::AsRef<std::path::Path>,
+>(
+    addresses: I,
+    filepath: P,
+) -> anyhow::Result<()> {
+    let mut outfile = std::io::BufWriter::new(std::fs::File::create(filepath)?);
+
+    for addr in addresses {
+        let addr: u64 = addr.into();
+        writeln!(outfile, "{addr:x}")?;
+    }
+    outfile.flush()?;
+
+    Ok(())
+}
+
+pub fn write_text_coverage<P: std::convert::AsRef<std::path::Path>>(
+    feedback: &FeedbackTracker,
+    filepath: P,
+) -> anyhow::Result<()> {
+    write_text_coverage_addresses(feedback.code_cov.keys().cloned(), filepath)
+}
+
+pub fn write_human_readable_text_coverage<P: std::convert::AsRef<std::path::Path>>(
+    project_state: &crate::ProjectState,
+    contexts: &ContextList,
+    symbols: Option<&SymbolList>,
+    feedback: &FeedbackTracker,
+    filepath: P,
+) -> anyhow::Result<()> {
+    let mut outfile = std::io::BufWriter::new(std::fs::File::create(filepath)?);
+
+    for (&addr, &hitcount) in feedback.code_cov.iter() {
+        let addr: u64 = addr.into();
+        let symbol = get_symbol_str(addr, symbols, &project_state.modules, contexts)?;
+        writeln!(outfile, "{addr:x} | {hitcount} | {symbol}")?;
+    }
+    outfile.flush()?;
+
+    Ok(())
 }

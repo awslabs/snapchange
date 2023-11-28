@@ -52,9 +52,16 @@ impl std::ops::Deref for PhysAddr {
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Hash)]
 pub struct VirtAddr(pub u64);
 
+// From<u64> for VirtAddr implies Into<VirtAddr> for u64
 impl From<u64> for VirtAddr {
     fn from(val: u64) -> VirtAddr {
         VirtAddr(val)
+    }
+}
+
+impl Into<u64> for VirtAddr {
+    fn into(self) -> u64 {
+        self.0
     }
 }
 

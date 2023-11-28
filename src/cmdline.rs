@@ -499,6 +499,10 @@ pub struct Coverage {
     /// The path to the input to gather coverage for
     pub(crate) path: PathBuf,
 
+    /// The path where to store the inputs files
+    #[clap(long)]
+    pub(crate) coverage_path: Option<PathBuf>,
+
     /// Set the timeout (in seconds) of the execution of the VM. [0-9]+(ns|us|ms|s|m|h)
     #[clap(long, value_parser = parse_timeout, default_value = "1s")]
     pub(crate) timeout: Duration,

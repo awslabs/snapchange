@@ -582,12 +582,11 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         // Start the stats worker
         let res = stats::worker(
             curr_stats,
-            &project_state.modules,
+            &project_state,
             &project_dir,
             prev_coverage,
             &input_corpus,
-            project_state.coverage_breakpoints,
-            &symbols,
+            symbols.as_ref(),
             coverage_analysis,
             tui,
             &project_state.config,
