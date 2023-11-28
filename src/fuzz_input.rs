@@ -418,8 +418,27 @@ impl FuzzInput for Vec<u8> {
         _min_length: usize,
         max_length: usize,
     ) -> InputWithMetadata<Self> {
-        let mut result = vec![0u8; max_length];
-        rng.fill_bytes(&mut result);
+        debug_assert!(max_length > 1);
+        // generate input with random length, but make it a power of two most of the time
+        let mut len = rng.gen_range(1..max_length);
+        if rng.gen_bool(0.8) {
+            len = len.next_power_of_two();
+        }
+        // in 80% of the cases; generate high entropy random input
+        let result = if rng.gen_bool(0.8) {
+            let mut result = vec![0u8; len];
+            rng.fill_bytes(&mut result);
+            result
+        } else {
+            if rng.gen_bool(0.5) {
+                // in 10% use a low entropy input
+                let b = 0x41 + rng.gen_range(0..26);
+                vec![b; len]
+            } else {
+                // in 10% use a zero initialized buffer.
+                vec![0u8; len]
+            }
+        };
         InputWithMetadata::from_input(result)
     }
 
