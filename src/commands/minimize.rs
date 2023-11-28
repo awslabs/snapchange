@@ -160,7 +160,7 @@ fn start_core<FUZZER: Fuzzer>(
         &mut fuzzer,
         &starting_input,
         vm_timeout,
-        &covbps_addrs,
+        covbps_addrs.iter().cloned(),
         bp_type,
     )?;
     fuzzvm.print_context()?;
@@ -286,7 +286,7 @@ fn start_core<FUZZER: Fuzzer>(
 
         let (execution, mut feedback) = time!(
             RunInput,
-            fuzzvm.gather_feedback(&mut fuzzer, &curr_input, vm_timeout, &covbps_addrs, bp_type)?
+            fuzzvm.gather_feedback(&mut fuzzer, &curr_input, vm_timeout, covbps_addrs.iter().cloned(), bp_type)?
         );
 
         // Check if the VM resulted in the same crashing state. If so, keep the minimized input as the
