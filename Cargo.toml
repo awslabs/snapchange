@@ -32,8 +32,9 @@ ahash         = "0.8"
 rustc-hash    = "1.1.0"
 
 # For addr2line implementation 
-addr2line     = "0.17.0"
+addr2line     = "0.21.0"
 memmap        = "0.7"
+memmap2        = "0.5.5"
 object        = { version = "0.27.1", default-features = false, features = ["read"], optional = true }
 
 # For MSRs to/from primitive

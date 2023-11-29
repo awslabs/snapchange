@@ -806,6 +806,7 @@ impl GlobalStats {
 }
 
 pub type ContextList = Vec<Context<EndianReader<RunTimeEndian, Rc<[u8]>>>>;
+pub type ContextSlice = [Context<EndianReader<RunTimeEndian, Rc<[u8]>>>];
 
 /// Get a [`Context`] for every known binary in the snapshot.
 ///
@@ -821,7 +822,7 @@ pub fn get_binary_contexts(project_dir: &Path) -> Result<ContextList> {
         if let Some(extension) = file.path().extension() {
             if matches!(extension.to_str(), Some("bin")) {
                 let fd = File::open(file.path())?;
-                let map = unsafe { memmap::Mmap::map(&fd)? };
+                let map = unsafe { memmap2::Mmap::map(&fd)? };
                 let object = addr2line::object::File::parse(&*map)?;
                 let tmp = addr2line::Context::new(&object)?;
                 contexts.push(tmp);
@@ -834,7 +835,7 @@ pub fn get_binary_contexts(project_dir: &Path) -> Result<ContextList> {
     let vmlinux = project_dir.join("vmlinux");
     if vmlinux.exists() {
         let file = File::open(vmlinux)?;
-        let map = unsafe { memmap::Mmap::map(&file)? };
+        let map = unsafe { memmap2::Mmap::map(&file)? };
         let object = addr2line::object::File::parse(&*map)?;
         let tmp = addr2line::Context::new(&object)?;
         contexts.push(tmp);
@@ -995,47 +996,26 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut in_redqueen = Vec::new();
     let mut perfs = vec![None; crate::MAX_CORES];
     let mut vmexits = [0_u64; variant_count::<FuzzVmExit>()];
-    let mut lcov = BTreeMap::new();
+    let mut lcov: BTreeMap<String, BTreeMap<u32, u32>> = BTreeMap::new();
 
     // TUI log state
     let mut tui_log_state = TuiWidgetState::new();
 
     // Initialize all coverage breakpoints as not being hit
     if let Some(cov_bps) = coverage_breakpoints {
+        let mut hits = 0;
+
         for rip in cov_bps {
             let addr = rip.0;
 
-            for context in &contexts {
-                // Try to get the addr2line information for the current address
-                if let Some(loc) = context.find_location(addr)? {
-                    // Insert valid file:line into the BTreeMap for producing lcov
-                    if let (Some(file), Some(line)) = (loc.file, loc.line) {
-                        lcov.entry(file)
-                            .or_insert_with(BTreeMap::new)
-                            .insert(line, 0);
+            let Some((file, line)) = get_addr_location(addr, &contexts, &project_state.modules)?
+            else {
+                continue;
+            };
 
-                        // Found the correct addr2line context, no need to go into other contextx
-                        break;
-                    }
-                } else if let Some(module_start) =
-                    project_state.modules.get_module_start_containing(addr)
-                {
-                    // If not found, check if the module that contains this address
-                    // is compiled with Position Independent code (PIE) and subtract
-                    // the module start address to check for
-                    if let Some(loc) = context.find_location(addr.saturating_sub(module_start))? {
-                        // Insert valid file:line into the BTreeMap for producing lcov
-                        if let (Some(file), Some(line)) = (loc.file, loc.line) {
-                            lcov.entry(file)
-                                .or_insert_with(BTreeMap::new)
-                                .insert(line, 0);
-
-                            // Found the correct addr2line context, no need to go into other contextx
-                            break;
-                        }
-                    }
-                }
-            }
+            lcov.entry(file.to_string())
+                .or_insert_with(BTreeMap::new)
+                .insert(line, 0_u32);
         }
     }
 
@@ -1416,22 +1396,12 @@ pub fn worker<FUZZER: Fuzzer>(
 
                                 let mut line = format!("{score:>5?}: {addr:#x} {symbol}");
 
-                                // Add the source line for this address in the coverage timeline
-                                for context in &contexts {
-                                    // Write the source and lcov coverage files if vmlinux exists
-                                    for curr_addr in [addr, addr.saturating_sub(0x5555_5555_4000)] {
-                                        if let Some(loc) = context.find_location(curr_addr)? {
-                                            line.push_str(&format!(
-                                                " {}:{}:{}",
-                                                loc.file.unwrap_or("??unknownfile??"),
-                                                loc.line.unwrap_or(0),
-                                                loc.column.unwrap_or(0)
-                                            ));
-
-                                            break;
-                                        }
-                                    }
-                                }
+                                // Add the symbol source line if available
+                                if let Some((loc_file, loc_line)) =
+                                    project_state.debug_info.get(&addr)
+                                {
+                                    line.push_str(&format!(" {loc_file}:{loc_line}"));
+                                };
 
                                 if !parent_addrs.is_empty() {
                                     line.push_str(" from ");
@@ -1497,9 +1467,10 @@ pub fn worker<FUZZER: Fuzzer>(
 
                                                 let symbol = get_symbol_str(
                                                     addr,
+                                                    &project_state.debug_info,
                                                     symbols,
-                                                    &project_state.modules,
-                                                    &contexts,
+                                                    // &project_state.modules,
+                                                    // &contexts,
                                                 )?;
 
                                                 coverage_timeline.push(format!(
@@ -1516,9 +1487,10 @@ pub fn worker<FUZZER: Fuzzer>(
 
                                                 let symbol = get_symbol_str(
                                                     virt_addr,
+                                                    &project_state.debug_info,
                                                     symbols,
-                                                    &project_state.modules,
-                                                    &contexts,
+                                                    // &project_state.modules,
+                                                    // &contexts,
                                                 )?;
 
                                                 coverage_timeline.push(format!(
@@ -1732,7 +1704,13 @@ pub fn worker<FUZZER: Fuzzer>(
         time!(CoverageSource, {
             // Write the source and lcov coverage files if vmlinux exists
             if !contexts.is_empty() {
-                write_lcov_info(project_state, &contexts, &total_feedback, &coverage_lcov)?;
+                write_lcov_info(
+                    &mut lcov,
+                    project_state,
+                    &contexts,
+                    &total_feedback,
+                    &coverage_lcov,
+                )?;
             }
         });
 
@@ -2069,7 +2047,13 @@ pub fn worker<FUZZER: Fuzzer>(
 
     time!(CoverageSource, {
         if !contexts.is_empty() {
-            write_lcov_info(project_state, &contexts, &total_feedback, &coverage_lcov)?;
+            write_lcov_info(
+                &mut lcov,
+                project_state,
+                &contexts,
+                &total_feedback,
+                &coverage_lcov,
+            )?;
         }
     });
 
@@ -2145,43 +2129,25 @@ pub fn source_from_address(
 /// Get the `str` for the given address using the symbols and modules of this project
 fn get_symbol_str(
     addr: u64,
+    debug_info: &BTreeMap<u64, (String, u32)>,
     symbols: Option<&SymbolList>,
-    modules: &Modules,
-    contexts: &[Context<EndianReader<RunTimeEndian, Rc<[u8]>>>],
+    // modules: &Modules,
+    // contexts: &[Context<EndianReader<RunTimeEndian, Rc<[u8]>>>],
 ) -> Result<String> {
+    let mut result = String::new();
+
     if let Some(sym_data) = symbols {
         if let Some(symbol) = crate::symbols::get_symbol(addr, sym_data) {
-            for context in contexts {
-                // try to get the addr2line information for the current address
-                if let Some(loc) = context.find_location(addr)? {
-                    return Ok(format!(
-                        "{symbol} -- {}:{}:{}",
-                        loc.file.unwrap_or("??unknownfile??"),
-                        loc.line.unwrap_or(0),
-                        loc.column.unwrap_or(0)
-                    ));
-                } else if let Some(module_start) = modules.get_module_start_containing(addr) {
-                    // if not found, check if the module that contains this address
-                    // is compiled with position independent code (pie) and subtract
-                    // the module start address to check for
-                    if let Some(loc) = context.find_location(addr - module_start)? {
-                        return Ok(format!(
-                            "{symbol} -- {}:{}:{}",
-                            loc.file.unwrap_or("??unknownfile??"),
-                            loc.line.unwrap_or(0),
-                            loc.column.unwrap_or(0)
-                        ));
-                    }
-                }
+            if let Some((file, line)) = debug_info.get(&addr) {
+                result = format!("{symbol} -- {file}:{line}");
+            } else {
+                // if the source code wasn't found, add the raw symbol instead
+                result = symbol.to_string();
             }
-
-            // if the source code wasn't found, add the raw symbol instead
-            return Ok(symbol.to_string());
         }
     }
 
-    // Default return just return the address
-    Ok(String::new())
+    Ok(result)
 }
 
 /// Given a project state write lcov `.info` file to the given filepath
@@ -2191,12 +2157,14 @@ fn get_symbol_str(
 ///
 /// returns the number of failed context lookups.
 pub fn write_lcov_info<P: std::convert::AsRef<std::path::Path>>(
+    lcov: &mut BTreeMap<String, BTreeMap<u32, u32>>,
     project_state: &crate::ProjectState,
     contexts: &ContextList,
     feedback: &FeedbackTracker,
     filepath: P,
 ) -> anyhow::Result<usize> {
     write_lcov_info_with_addresses(
+        lcov,
         project_state,
         contexts,
         feedback.code_cov.iter().map(|(&x, &y)| (x, y)),
@@ -2210,20 +2178,33 @@ pub fn write_lcov_info<P: std::convert::AsRef<std::path::Path>>(
 /// Returns the number of failed context lookups.
 pub fn write_lcov_info_with_addresses<
     T: Into<u64>,
-    U: Into<usize>,
+    U: Into<u32>,
     I: IntoIterator<Item = (T, U)>,
     P: std::convert::AsRef<std::path::Path>,
 >(
+    lcov: &mut BTreeMap<String, BTreeMap<u32, u32>>,
     project_state: &crate::ProjectState,
     contexts: &[Context<EndianReader<RunTimeEndian, Rc<[u8]>>>],
     addresses: I,
     filepath: P,
 ) -> anyhow::Result<usize> {
-    let mut lcov = BTreeMap::new();
-    let mut no_location = 0usize;
+    let mut no_locations = 0;
+
     for cov_entry in addresses {
-        let hitcount: usize = cov_entry.1.into();
+        let hitcount: u32 = cov_entry.1.into();
         let addr = cov_entry.0.into();
+
+        if let Some((file, line)) = project_state.debug_info.get(&addr) {
+            // TODO(corydu): Change this to use a StringIndex rather than cloning the String
+            lcov.entry(file.clone())
+                .or_insert_with(BTreeMap::new)
+                .entry(*line)
+                .and_modify(|curr| *curr += hitcount)
+                .or_insert(hitcount);
+        }
+
+        /*
+
         'outer: for context in contexts {
             // Try to get the addr2line information for the current address
             if let Some(loc) = context.find_location(addr)? {
@@ -2234,33 +2215,44 @@ pub fn write_lcov_info_with_addresses<
                         .entry(line)
                         .and_modify(|curr| *curr += hitcount)
                         .or_insert(hitcount);
+
                     continue 'outer; // skip checking second context
                 }
             } else if let Some(module_start) =
                 project_state.modules.get_module_start_containing(addr)
             {
-                // If not found, check if the module that contains this address
-                // is compiled with Position Independent code (PIE) and subtract
-                // the module start address to check for
-                if let Some(loc) = context.find_location(addr - module_start)? {
-                    // Insert valid file:line into the BTreeMap for producing lcov
-                    if let (Some(file), Some(line)) = (loc.file, loc.line) {
+                for offset in 0..0x100 {
+                    let Ok(iter) = context
+                        .find_location_range(addr - module_start, addr - module_start + offset)
+                    else {
+                        continue;
+                    };
+
+                    for (low, high, loc) in iter {
+                        let (Some(file), Some(line)) = (loc.file, loc.line) else {
+                            continue;
+                        };
+
                         lcov.entry(file)
                             .or_insert_with(BTreeMap::new)
                             .entry(line)
                             .and_modify(|curr| *curr += hitcount)
                             .or_insert(hitcount);
-                        continue 'outer; // skip checking second context
+
+                        break 'outer; // skip checking second context
                     }
                 }
+
+                log::warn!("Failed to find context range! {:#x}", addr - module_start);
             }
         }
-        no_location += 1;
+        */
     }
 
     let mut outfile = std::io::BufWriter::new(std::fs::File::create(filepath)?);
+
     writeln!(outfile, "TN:")?;
-    for (file, lines) in &lcov {
+    for (file, lines) in lcov {
         writeln!(outfile, "SF:{file}")?;
         for (line, hit_val) in lines {
             writeln!(outfile, "DA:{line},{hit_val}")?;
@@ -2269,7 +2261,7 @@ pub fn write_lcov_info_with_addresses<
     }
     outfile.flush()?;
 
-    Ok(no_location)
+    Ok(no_locations)
 }
 
 pub fn write_lighthouse_coverage<P: std::convert::AsRef<std::path::Path>>(
@@ -2341,10 +2333,50 @@ pub fn write_human_readable_text_coverage<P: std::convert::AsRef<std::path::Path
 
     for (&addr, &hitcount) in feedback.code_cov.iter() {
         let addr: u64 = addr.into();
-        let symbol = get_symbol_str(addr, symbols, &project_state.modules, contexts)?;
+        let symbol = get_symbol_str(
+            addr,
+            &project_state.debug_info,
+            symbols,
+            // &project_state.modules,
+            // contexts,
+        )?;
         writeln!(outfile, "{addr:x} | {hitcount} | {symbol}")?;
     }
     outfile.flush()?;
 
     Ok(())
+}
+
+/// Get the source Location for the given address. If not found, will try several instructions after
+/// the given address looking for a location that is known.
+pub fn get_addr_location<'a>(
+    addr: u64,
+    contexts: &'a ContextSlice,
+    modules: &Modules,
+) -> Result<Option<(&'a str, u32)>> {
+    let mut addrs = [addr, 0];
+    let mut num_addrs = 1;
+
+    if let Some(module_start) = modules.get_module_start_containing(addr) {
+        addrs[1] = addr - module_start;
+        num_addrs += 1;
+    }
+
+    for context in contexts {
+        for offset in 0..0x40 {
+            // TODO(corydu): single offsets vs querying for instruction length here?
+            for addr in addrs[..num_addrs].iter() {
+                let mut iter = context.find_location_range(*addr, *addr + offset)?;
+
+                // Go through all results and return the first valid file:line
+                while let Some((_low, _high, loc)) = iter.next() {
+                    if let ((Some(file), Some(line))) = (loc.file, loc.line) {
+                        return Ok(Some((file, line)));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
 }

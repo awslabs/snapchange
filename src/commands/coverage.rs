@@ -202,7 +202,14 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     // Get the lcov coverage file
     let coverage_lcov = coverage_dir.join(format!("{orig_file_name}.lcov.info"));
     log::info!("Writing lcov coverage to {}", coverage_lcov.display());
-    crate::stats::write_lcov_info(project_state, &contexts, &feedback, &coverage_lcov)?;
+    let mut lcov = BTreeMap::new();
+    crate::stats::write_lcov_info(
+        &mut lcov,
+        project_state,
+        &contexts,
+        &feedback,
+        &coverage_lcov,
+    )?;
 
     // write nicely formatted text coverage
     let symbols_file = coverage_dir.join(format!("{orig_file_name}.coverage_symbols"));

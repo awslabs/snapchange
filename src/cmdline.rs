@@ -17,6 +17,7 @@ use crate::config::Config;
 use crate::feedback::FeedbackTracker;
 use crate::fuzzer::ResetBreakpointType;
 use crate::stack_unwinder::StackUnwinders;
+use crate::stats;
 use crate::symbols::{Symbol, LINUX_KERNEL_SYMBOLS, LINUX_USERLAND_SYMBOLS};
 use crate::vbcpu::{VbCpu, VmSelector, X86FxState, X86XSaveArea, X86XSaveHeader, X86XsaveYmmHi};
 use crate::SymbolList;
@@ -107,6 +108,9 @@ pub struct ProjectState {
 
     /// A stack unwinder that can be used to unwind stack
     pub(crate) unwinders: StackUnwinders,
+
+    /// Debug information for all coverage breakpoints
+    pub(crate) debug_info: BTreeMap<u64, (String, u32)>,
 }
 
 /// Current coverage found in the project
@@ -929,6 +933,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         unwinders,
         #[cfg(feature = "redqueen")]
         redqueen_breakpoints,
+        debug_info: BTreeMap::new(),
     };
 
     // Check for sancov basic blocks in the target
@@ -949,6 +954,25 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
             covbps.extend(sancov_bps);
         } else {
             state.coverage_breakpoints = Some(sancov_bps);
+        }
+    }
+
+    // Add the debug information for the coverage breakpoints in the project
+    if let Some(covbps) = &state.coverage_breakpoints {
+        let contexts = stats::get_binary_contexts(&state.path)?;
+
+        for addr in covbps.iter().copied() {
+            let Ok(Some((file, line))) =
+                stats::get_addr_location(addr.0, &contexts, &state.modules)
+            else {
+                continue;
+            };
+
+            state.debug_info.insert(addr.0, (file.to_string(), line));
+        }
+
+        for (addr, (file, line)) in state.debug_info.iter() {
+            println!("{addr:#x} {file} {line}");
         }
     }
 
