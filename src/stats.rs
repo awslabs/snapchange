@@ -296,10 +296,15 @@ impl<FUZZER: Fuzzer> Drop for PerfStatTimer<FUZZER> {
             .wrapping_add(elapsed)
             .checked_sub(child_time)
             .unwrap_or_else(|| {
-                panic!(
+                log::warn!(
                     "Failed on drop: {:?} curr elapsed {:#x} elapsed {:#x} child time {:#x}",
-                    self.timer, stats.elapsed[self.timer as usize], elapsed, child_time
-                )
+                    self.timer,
+                    stats.elapsed[self.timer as usize],
+                    elapsed,
+                    child_time
+                );
+
+                0
             });
 
         // Update hit counts
@@ -1388,7 +1393,7 @@ pub fn worker<FUZZER: Fuzzer>(
                     (in_path, &mut coverage_blockers_in_path),
                     (total, &mut coverage_blockers_total),
                 ] {
-                    for (score, addr) in blockers {
+                    for (score, addr, parent_addrs) in blockers {
                         if let Some(sym_data) = symbols {
                             let addr = **addr;
                             if let Some(symbol) = crate::symbols::get_symbol(addr, sym_data) {
@@ -1420,6 +1425,30 @@ pub fn worker<FUZZER: Fuzzer>(
                                     }
                                 }
 
+                                if !parent_addrs.is_empty() {
+                                    line.push_str(" from ");
+                                }
+
+                                for addr in parent_addrs {
+                                    line.push_str(&format!(" {addr:#x}"));
+
+                                    if let Some(symbol) =
+                                        crate::symbols::get_symbol(*addr, sym_data)
+                                    {
+                                        line.push_str(&format!(":{symbol}"));
+                                    }
+
+                                    /*
+                                    if let Some((loc_file, loc_line)) = project_state.debug_info.get(&addr)
+                                    {
+                                        line.push_str(&format!(":{loc_file}:{loc_line}"));
+                                    };
+                                    */
+
+                                    line.push(' ');
+                                }
+
+                                // Add the line to the collection
                                 curr_collection.push(line);
                             }
                         }

@@ -295,6 +295,7 @@ impl From<&str> for Conditional {
 }
 
 /// Information on how to retrieve the left operand comparison value
+#[allow(missing_docs)]
 #[derive(Debug, Clone, PartialOrd, PartialEq)]
 pub enum Operand {
     /// A single register operand
@@ -320,79 +321,63 @@ pub enum Operand {
 
     /// A memory location to read the operand
     Load {
-        /// The operand to get the address to read from memory
         address: Box<Operand>,
     },
 
     /// Bitwise inversion of the operand
     Not {
-        /// The operand to get the address to read from memory
         src: Box<Operand>,
     },
 
     /// Sign inversion of the operand
     Neg {
-        /// The operand to get the address to read from memory
         src: Box<Operand>,
     },
 
     /// Sign inversion of the operand
     SignExtend {
-        /// The operand to get the address to read from memory
         src: Box<Operand>,
     },
 
     /// Arithmetic shift right
     ArithmeticShiftRight {
-        /// Left operand
         left: Box<Operand>,
-
-        /// Left operand
         right: Box<Operand>,
     },
 
     /// Bitwise AND
     And {
-        /// Left operand
         left: Box<Operand>,
-
-        /// Left operand
         right: Box<Operand>,
     },
 
     /// Bitwise OR
     Or {
-        /// Left operand
         left: Box<Operand>,
-
-        /// Left operand
         right: Box<Operand>,
     },
 
     /// Add the two operands
     Add {
-        /// Left operand
         left: Box<Operand>,
-
-        /// Left operand
         right: Box<Operand>,
     },
 
     /// Subtract the two operands
     Sub {
-        /// Left operand
         left: Box<Operand>,
-
-        /// Left operand
         right: Box<Operand>,
     },
 
     /// Multiply the two operands
     Mul {
-        /// Left operand
         left: Box<Operand>,
+        right: Box<Operand>,
+    },
 
-        /// Left operand
+    /// Divide the two operands
+    Div {
+        left: Box<Operand>,
         right: Box<Operand>,
     },
 
@@ -455,6 +440,7 @@ macro_rules! impl_read_for_type {
                 }
                 Operand::Sub { left, right } => Ok(left.$func(fuzzvm)? - right.$func(fuzzvm)?),
                 Operand::Mul { left, right } => Ok(left.$func(fuzzvm)? * right.$func(fuzzvm)?),
+                Operand::Div{ left, right } => Ok(left.$func(fuzzvm)? / right.$func(fuzzvm)?),
                 Operand::Or { left, right } => Ok(left.$func(fuzzvm)? | right.$func(fuzzvm)?),
                 Operand::Not { src } => Ok(!src.$func(fuzzvm)?),
                 Operand::Neg { src } => Ok(src.$func(fuzzvm)?.wrapping_neg()),
@@ -517,6 +503,7 @@ impl Operand {
             Operand::Add { left, right } => Ok(left.read_f32(fuzzvm)? + right.read_f32(fuzzvm)?),
             Operand::Sub { left, right } => Ok(left.read_f32(fuzzvm)? - right.read_f32(fuzzvm)?),
             Operand::Mul { left, right } => Ok(left.read_f32(fuzzvm)? * right.read_f32(fuzzvm)?),
+            Operand::Div { left, right } => Ok(left.read_f32(fuzzvm)? / right.read_f32(fuzzvm)?),
             Operand::Neg { src } => Ok(-src.read_f32(fuzzvm)?),
             Operand::LogicalShiftLeft { .. } => {
                 unimplemented!("Cannot LSL f32 values")
@@ -580,6 +567,7 @@ impl Operand {
             Operand::Add { left, right } => Ok(left.read_f64(fuzzvm)? + right.read_f64(fuzzvm)?),
             Operand::Sub { left, right } => Ok(left.read_f64(fuzzvm)? - right.read_f64(fuzzvm)?),
             Operand::Mul { left, right } => Ok(left.read_f64(fuzzvm)? * right.read_f64(fuzzvm)?),
+            Operand::Div { left, right } => Ok(left.read_f64(fuzzvm)? / right.read_f64(fuzzvm)?),
             Operand::Neg { src } => Ok(-src.read_f64(fuzzvm)?),
             Operand::LogicalShiftLeft { .. } => {
                 unimplemented!("Cannot LSL f64 values")
@@ -645,9 +633,11 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
     } = args;
 
     // Ignore U8 rules for now since we have the byte flipper as a normal mutator
+    /*
     if *size == Size::U8 {
         return Ok(crate::Execution::Continue);
     }
+    */
 
     macro_rules! impl_primitive_sizes {
         ($($size:ident, $ty:ty, $func:ident),*) => {

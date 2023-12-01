@@ -113,11 +113,12 @@ pub struct CoverageAnalysis {
 
     /// Currently cached blocker results for the current best options. This is only updated once
     /// nodes have been hit
-    cached_blocker_results: Vec<(usize, VirtAddr)>,
+    /// (score, virt_addr, parents addresses)
+    cached_blocker_results: Vec<(usize, VirtAddr, Vec<u64>)>,
 
     /// Currently cached total (in the fuzz path or not) results for the current best options.
     /// This is only updated once nodes have been hit
-    cached_total_results: Vec<(usize, VirtAddr)>,
+    cached_total_results: Vec<(usize, VirtAddr, Vec<u64>)>,
 }
 
 /// The found coverage blockers from the coverage analysis
@@ -125,13 +126,13 @@ pub struct Blockers<'a> {
     /// Coverage blockers that are currently in the fuzz path.
     ///
     /// These blockers currently have one of its parents hit
-    pub in_path: &'a Vec<(usize, VirtAddr)>,
+    pub in_path: &'a Vec<(usize, VirtAddr, Vec<u64>)>,
 
     /// Coverage blockers found in the entire target, regardless of if they
     /// are in the fuzz path or not.
     ///
     /// These could give insight into missed harness opportunities.
-    pub total: &'a Vec<(usize, VirtAddr)>,
+    pub total: &'a Vec<(usize, VirtAddr, Vec<u64>)>,
 }
 
 impl CoverageAnalysis {
@@ -398,13 +399,23 @@ impl CoverageAnalysis {
                 continue;
             }
 
+            // Accumulate all of the parent nodes of this node that have been hit
+            let mut hit_parents = Vec::new();
+            for tmp_node_index in 0..self.nodes.len() {
+                if self.dominator_tree_childrens[tmp_node_index].contains(&node_index)
+                    && self.hits[tmp_node_index]
+                {
+                    hit_parents.push(self.nodes[tmp_node_index].address);
+                }
+            }
+
             // If this node hasn't been hit yet, ignore it for now. We only want to display
             // nodes that have been hit and whose children haven't all been explored yet.
-            if !self.hits[node_index] {
+            if !self.hits[node_index] && !hit_parents.is_empty() {
                 // Add this score to the list of all current scores
-                blocker_scores.push((score, (VirtAddr(addr), node_index)));
+                blocker_scores.push((score, (VirtAddr(addr), node_index, hit_parents)));
             } else {
-                total_scores.push((score, (VirtAddr(addr), node_index)));
+                total_scores.push((score, (VirtAddr(addr), node_index, hit_parents)));
             }
         }
 
@@ -423,7 +434,7 @@ impl CoverageAnalysis {
         // With blocker_scores being sorted by score, add each node and then remove all
         // nodes under the added node. This will prevent the results being populated by
         // all nodes from the same path.
-        for (score, (addr, node_index)) in &blocker_scores {
+        for (score, (addr, node_index, hit_parents)) in &blocker_scores {
             /*
             // Ignore nodes that have been seen before from other nodes
             if !seen.insert(*node_index) {
@@ -438,10 +449,11 @@ impl CoverageAnalysis {
             }
 
             // Found a new result, add it!
-            self.cached_blocker_results.push((*score, *addr));
+            self.cached_blocker_results
+                .push((*score, *addr, hit_parents.to_vec()));
         }
 
-        for (score, (addr, node_index)) in &total_scores {
+        for (score, (addr, node_index, hit_parents)) in &total_scores {
             // Ignore nodes that have been seen before from other nodes
             if !seen.insert(*node_index) {
                 continue;
@@ -454,20 +466,22 @@ impl CoverageAnalysis {
             }
 
             // Found a new result, add it!
-            self.cached_total_results.push((*score, *addr));
+            let node = &self.nodes[*node_index];
+            self.cached_total_results
+                .push((*score, *addr, hit_parents.to_vec()));
         }
 
         if let Some(outfile) = DUMP_RAW_SCORES {
             let mut res = String::new();
             let mut dot = "digraph nodes {\n".to_string();
-            for (score, (addr, _node_index)) in &blocker_scores {
+            for (score, (addr, _node_index, _hit_parents)) in &blocker_scores {
                 let addr = addr.0;
                 res.push_str(&format!("{addr:#x} {score}\n"));
                 dot.push_str(&format!(
                     "\"{addr:x}\" [label=\"{addr:#x} Scores {score}\"];\n"
                 ));
             }
-            for (score, (addr, _node_index)) in &total_scores {
+            for (score, (addr, _node_index, _hit_parents)) in &total_scores {
                 let addr = addr.0;
                 res.push_str(&format!("{addr:#x} {score}\n"));
                 dot.push_str(&format!(

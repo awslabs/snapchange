@@ -191,6 +191,8 @@ impl FuzzInput for Vec<u8> {
         // Mutations applied to this input
         let mut mutations: Vec<String> = Vec::new();
 
+        let orig_len = input.len();
+
         // Perform some number of mutations on the input
         for _ in 0..num_change {
             // Special case the redqueen mutation if there are available rules
@@ -265,18 +267,33 @@ impl FuzzInput for Vec<u8> {
         rule: &RedqueenRule,
         candidate: &Self::RuleCandidate,
     ) -> Option<String> {
-        let (index, _endian) = candidate;
+        let (index, endian) = candidate;
 
         match rule {
-            RedqueenRule::Primitive(_from, to) => {
-                let size = to.len();
+            RedqueenRule::Primitive(from, to) => {
+                // Use the minimum number of bytes to compare values (removing the leading zeros)
+                let from_min_bytes = from.minimum_bytes();
+                let to_min_bytes = to.minimum_bytes();
+                let size = from_min_bytes.max(to_min_bytes);
 
                 // Ensure we can actually fit the rule in the current input
                 if *index + size >= self.len() {
                     return None;
                 }
 
-                self[*index..*index + size].copy_from_slice(to.as_bytes());
+                let bytes = &to.as_bytes()[..size];
+
+                match endian {
+                    Endian::Little => {
+                        self[*index..*index + size].copy_from_slice(&bytes);
+                    }
+                    Endian::Big => {
+                        for (offset, byte) in bytes.iter().rev().enumerate() {
+                            self[*index + offset] = *byte;
+                        }
+                    }
+                };
+
                 Some(format!("{to:x?}_offset_{index:#x}"))
             }
             RedqueenRule::SingleF32(_from, to) => {
@@ -287,7 +304,19 @@ impl FuzzInput for Vec<u8> {
                     return None;
                 }
 
-                self[*index..*index + size].copy_from_slice(to);
+                let bytes = to;
+
+                match endian {
+                    Endian::Little => {
+                        self[*index..*index + size].copy_from_slice(bytes);
+                    }
+                    Endian::Big => {
+                        for (offset, byte) in bytes.iter().rev().enumerate() {
+                            self[*index + offset] = *byte;
+                        }
+                    }
+                };
+
                 Some(format!("f32_{to:x?}_offset_{index:#x}"))
             }
             RedqueenRule::SingleF64(_from, to) => {
@@ -298,7 +327,19 @@ impl FuzzInput for Vec<u8> {
                     return None;
                 }
 
-                self[*index..*index + size].copy_from_slice(to);
+                let bytes = to;
+
+                match endian {
+                    Endian::Little => {
+                        self[*index..*index + size].copy_from_slice(bytes);
+                    }
+                    Endian::Big => {
+                        for (offset, byte) in bytes.iter().rev().enumerate() {
+                            self[*index + offset] = *byte;
+                        }
+                    }
+                };
+
                 Some(format!("f64_{to:x?}_offset_{index:#x}"))
             }
             RedqueenRule::SingleF80(_from, to) => {
@@ -407,6 +448,7 @@ impl FuzzInput for Vec<u8> {
         &[
             expensive_mutators::splice_corpus_extend,
             expensive_mutators::splice_from_dictionary_extend,
+            expensive_mutators::remove_slice,
         ]
     }
 
@@ -415,15 +457,17 @@ impl FuzzInput for Vec<u8> {
         _corpus: &[Arc<InputWithMetadata<Self>>],
         rng: &mut Rng,
         _dictionary: &Option<Vec<Vec<u8>>>,
-        _min_length: usize,
+        min_length: usize,
         max_length: usize,
     ) -> InputWithMetadata<Self> {
         debug_assert!(max_length > 1);
+
         // generate input with random length, but make it a power of two most of the time
-        let mut len = rng.gen_range(1..max_length);
+        let mut len = rng.gen_range(min_length..max_length);
         if rng.gen_bool(0.8) {
-            len = len.next_power_of_two();
+            len = len.next_power_of_two().max(max_length);
         }
+
         // in 80% of the cases; generate high entropy random input
         let result = if rng.gen_bool(0.8) {
             let mut result = vec![0u8; len];
@@ -562,6 +606,7 @@ fn get_redqueen_rule_candidates_for_vec(
                 // Only look for big endian operand redqueen if big != little endians
                 if !same_big_endian {
                     let from_be_bytes = from.iter().rev();
+
                     if curr_window.iter().zip(from_be_bytes).all(|(x, y)| *x == *y) {
                         candidates.push((index, Endian::Big));
                         if fast {

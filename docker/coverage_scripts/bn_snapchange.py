@@ -321,7 +321,7 @@ class SnapchangeCovAnalysis(SnapchangeTask):
                 node["address"] = start
                 node["children"] = list(set(x.target.start for x in bb.outgoing_edges))
                 node["dominator_tree_children"] = set(
-                    x.start for x in bb.dominator_tree_children
+                    x.start for x in bb.dominator_tree_children + bb.dominance_frontier
                 )
                 node["parents"] = set()
 
@@ -1003,6 +1003,7 @@ def run_cmp_analysis(bv, ignore=None, taskref=None):
                 # ```
                 while find_ssa_defs:
                     curr_instr = find_ssa_defs.pop()
+
                     if is_instr_const(curr_instr):
                         add_const_to_dict(
                             bv,

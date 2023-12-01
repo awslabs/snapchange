@@ -164,7 +164,7 @@ impl ProjectState {
     }
 
     /// Parse sancov coverage breakpoints if they are available in this target. Use
-    /// -fsanitize-coverage=pc-table to enable this.
+    /// -fsanitize-coverage=-trace-pc-guard,pc-table to enable this.
     pub fn parse_sancov_breakpoints(&mut self) -> Result<Option<BTreeSet<VirtAddr>>> {
         if let Some(symbol_path) = &self.symbols {
             let mut new_covbps = BTreeSet::new();
@@ -1908,12 +1908,24 @@ fn parse_cmp_operand(input: &str) -> Result<(Operand, &str)> {
             remaining,
         ))
     } else if let Some(args) = input.strip_prefix("mul ") {
-        // Parses add <operation>
+        // Parses mul <operation>
         let (left, remaining) = parse_cmp_operand(args)?;
         let (right, remaining) = parse_cmp_operand(remaining)?;
 
         Ok((
             Operand::Mul {
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            remaining,
+        ))
+    } else if let Some(args) = input.strip_prefix("div ") {
+        // Parses div <operation>
+        let (left, remaining) = parse_cmp_operand(args)?;
+        let (right, remaining) = parse_cmp_operand(remaining)?;
+
+        Ok((
+            Operand::Div {
                 left: Box::new(left),
                 right: Box::new(right),
             },

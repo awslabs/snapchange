@@ -70,7 +70,8 @@ pub(crate) fn splice_from_dictionary_extend(
     // select renadom dictionary entry
     let dict_idx = rng.gen_range(0..dictionary.len());
     let splice_from = &dictionary[dict_idx];
-    if splice_from.is_empty() { // should never happen...
+    if splice_from.is_empty() {
+        // should never happen...
         return None;
     }
     // random offset into the input
@@ -91,4 +92,26 @@ pub(crate) fn splice_from_dictionary_extend(
     Some(format!(
         "DictionarySpliceExtend_offset_{input_offset:#x}_splicelen_{splice_len}_dictidx_{dict_idx}"
     ))
+}
+
+/// Insert an element from the dictionary into the input
+pub fn remove_slice(
+    input: &mut Vec<u8>,
+    _corpus: &[Arc<InputWithMetadata<Vec<u8>>>],
+    rng: &mut Rng,
+    _dictionary: &Option<Vec<Vec<u8>>>,
+) -> Option<String> {
+    if input.len() <= 2 {
+        return None;
+    }
+
+    let offset = rng.gen_range(0..input.len() - 2);
+    let size = rng.gen_range(1..(input.len() - offset).max(1));
+    let range = offset..offset + size;
+    let mutation = format!("RemoveRange_offset_{range:?}");
+
+    // Remove the slice
+    *input = input.drain(range).collect();
+
+    Some(mutation)
 }

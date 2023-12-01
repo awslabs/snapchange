@@ -362,7 +362,7 @@ done
 
 
 SANITIZER_FUNCTIONS=''
-if nm "$BIN" | grep __sanitizer_cov_trace_cmp1; then
+if nm "$BIN" | grep __sanitizer_cov_trace_; then
     SANITIZER_FUNCTIONS="
     # Remove all coverage trace from libfuzzer since we are using breakpoint coverage in Snapchange
     set {unsigned char}(__sanitizer_cov_trace_cmp1)=0xc3
