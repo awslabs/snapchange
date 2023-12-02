@@ -43,7 +43,7 @@ use crate::stats::{PerfMark, PerfStatTimer, Stats};
 use crate::symbols::Symbol;
 
 use crate::vbcpu::VbCpu;
-use crate::{handle_vmexit, Execution, DIRTY_BITMAPS, SymbolList};
+use crate::{handle_vmexit, Execution, SymbolList, DIRTY_BITMAPS};
 use crate::{try_u32, try_u64, try_u8, try_usize};
 
 #[cfg(feature = "redqueen")]
@@ -4569,6 +4569,10 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             }
 
             for rule in rules.iter() {
+                if crate::FINISHED.load(Ordering::SeqCst) {
+                    break;
+                }
+
                 let input = orig_input.fork();
                 let candidates = input.get_redqueen_rule_candidates(rule);
 
@@ -4606,6 +4610,10 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 }
 
                 for candidate in &candidates {
+                    if crate::FINISHED.load(Ordering::SeqCst) {
+                        break;
+                    }
+
                     let mut new_input = orig_input.fork();
 
                     // Apply the given rule with the candidate

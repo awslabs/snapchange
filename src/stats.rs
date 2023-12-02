@@ -880,6 +880,7 @@ pub fn worker<FUZZER: Fuzzer>(
     tui: bool,
     config: &Config, // redqueen_rules: BTreeMap<u64, BTreeSet<RedqueenRule>>
     stop_after_first_crash: bool,
+    stop_after_time: Option<Duration>,
 ) -> Result<()> {
     let coverage_breakpoints = project_state.coverage_breakpoints.as_ref();
     // Create the data directory if it doesn't exist to store raw data from the fuzzer
@@ -1208,6 +1209,13 @@ pub fn worker<FUZZER: Fuzzer>(
         let seconds = elapsed % 60;
         let minutes = (elapsed / 60) % 60;
         let hours = elapsed / (60 * 60);
+
+        // Signal to finish if we've elapsed time
+        if let Some(stop_time) = stop_after_time {
+            if start.elapsed() > stop_time {
+                crate::FINISHED.store(true, Ordering::SeqCst);
+            }
+        }
 
         // Update the last coverage seen timer if new coverage has been seen
         if last_best_coverage < total_feedback.code_cov.len() {

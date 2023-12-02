@@ -15,8 +15,8 @@ use core_affinity::CoreId;
 use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
 
-use crate::{cmdline, SymbolList};
 use crate::cmdline::ProjectCoverage;
+use crate::{cmdline, SymbolList};
 
 use crate::config::Config;
 use crate::coverage_analysis::CoverageAnalysis;
@@ -223,7 +223,9 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         }
 
         if attempts > 0 && new_dict.is_empty() {
-            anyhow::bail!("Attempted to read dictionary entries, but failed. Check your `dict` directory!");
+            anyhow::bail!(
+                "Attempted to read dictionary entries, but failed. Check your `dict` directory!"
+            );
         }
 
         log::info!("loaded {} dictionary entries", new_dict.len());
@@ -435,7 +437,6 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         let clean_snapshot = clean_snapshot.clone();
 
         // make a Copy of those two that will be moved into the thread closure
-        let stop_after_time = args.stop_after_time;
         let stop_after_first_crash = args.stop_after_first_crash;
 
         // Start executing on this core
@@ -458,7 +459,6 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
                     &dictionary,
                     prev_coverage,
                     &config,
-                    stop_after_time,
                     stop_after_first_crash,
                     unwinders,
                     #[cfg(feature = "redqueen")]
@@ -569,6 +569,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
     };
 
     let stop_after_first_crash = args.stop_after_first_crash;
+    let stop_after_time = args.stop_after_time;
 
     // Spawn the stats thread if there isn't a single step trace happening
     let curr_stats = stats;
@@ -591,6 +592,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
             tui,
             &project_state.config,
             stop_after_first_crash,
+            stop_after_time,
         );
 
         if let Err(e) = res {
@@ -683,7 +685,6 @@ fn start_core<FUZZER: Fuzzer>(
     dictionary: &Option<Vec<Vec<u8>>>,
     mut feedback: FeedbackTracker,
     config: &Config,
-    stop_after_time: Option<Duration>,
     stop_after_first_crash: bool,
     unwinders: StackUnwinders,
     #[cfg(feature = "redqueen")] redqueen_breakpoints: Option<Vec<(u64, RedqueenArguments)>>,
@@ -1203,12 +1204,6 @@ fn start_core<FUZZER: Fuzzer>(
 
         // Reset the guest state
         fuzzvm.reset_guest_state(&mut fuzzer)?;
-
-        if let Some(t) = stop_after_time {
-            if fuzz_start_time.elapsed() >= t {
-                break;
-            }
-        }
     }
 
     // remove this thread from the list to avoid being "kicked" by the kick_cores_thread
