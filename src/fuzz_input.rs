@@ -273,26 +273,55 @@ impl FuzzInput for Vec<u8> {
             RedqueenRule::Primitive(from, to) => {
                 // Use the minimum number of bytes to compare values (removing the leading zeros)
                 let from_min_bytes = from.minimum_bytes();
-                let to_min_bytes = to.minimum_bytes();
-                let size = from_min_bytes.max(to_min_bytes);
+                let new_size = to.minimum_bytes();
+                let bytes: &[u8] = &to.as_bytes()[..new_size];
 
-                // Ensure we can actually fit the rule in the current input
-                if *index + size >= self.len() {
-                    return None;
-                }
-
-                let bytes = &to.as_bytes()[..size];
-
-                match endian {
-                    Endian::Little => {
-                        self[*index..*index + size].copy_from_slice(&bytes);
+                if from_min_bytes == new_size {
+                    // Ensure we can actually fit the rule in the current input
+                    if *index + new_size >= self.len() {
+                        return None;
                     }
-                    Endian::Big => {
-                        for (offset, byte) in bytes.iter().rev().enumerate() {
-                            self[*index + offset] = *byte;
+
+                    match endian {
+                        Endian::Little => {
+                            self[*index..*index + new_size].copy_from_slice(&bytes);
                         }
-                    }
-                };
+                        Endian::Big => {
+                            for (offset, byte) in bytes.iter().rev().enumerate() {
+                                self[*index + offset] = *byte;
+                            }
+                        }
+                    };
+                } else {
+                    // If the lengths are different, replace the from bytes with the to
+                    // bytes via .splice()
+
+                    /*
+                    log::info!(
+                        "Replacing {index:#x} {from:?} {:?} {:x?}",
+                        *index..*index + from_min_bytes,
+                        &bytes
+                    );
+
+                    let end = (*index + 0x10).min(self.len());
+                    log::info!("BEFORE: {:x?}", &self[*index..end]);
+                    */
+                    match endian {
+                        Endian::Little => {
+                            self.splice(*index..*index + from_min_bytes, bytes.iter().copied());
+                        }
+                        Endian::Big => {
+                            self.splice(
+                                *index..*index + from_min_bytes,
+                                bytes.iter().rev().copied(),
+                            );
+                        }
+                    };
+                    /*
+                    let end = (*index + 0x10).min(self.len());
+                    log::info!("AFTER: {:x?}", &self[*index..end]);
+                    */
+                }
 
                 Some(format!("{to:x?}_offset_{index:#x}"))
             }
@@ -578,15 +607,13 @@ fn get_redqueen_rule_candidates_for_vec(
     let fast = matches!(mode, GetRuleMode::Fast);
 
     match rule {
-        RedqueenRule::Primitive(from, to) => {
+        RedqueenRule::Primitive(from, _to) => {
             // Use the minimum number of bytes to compare values (removing the leading zeros)
             let from_min_bytes = from.minimum_bytes();
-            let to_min_bytes = to.minimum_bytes();
+            // let to_min_bytes = to.minimum_bytes();
 
-            let size = from_min_bytes.max(to_min_bytes);
-            let from = &from.as_bytes()[..size];
-
-            let from_le_bytes = from;
+            let size = from_min_bytes;
+            let from_le_bytes = &from.as_bytes()[..size];
 
             let same_big_endian = from_le_bytes
                 .iter()
@@ -605,7 +632,7 @@ fn get_redqueen_rule_candidates_for_vec(
 
                 // Only look for big endian operand redqueen if big != little endians
                 if !same_big_endian {
-                    let from_be_bytes = from.iter().rev();
+                    let from_be_bytes = from_le_bytes.iter().rev();
 
                     if curr_window.iter().zip(from_be_bytes).all(|(x, y)| *x == *y) {
                         candidates.push((index, Endian::Big));

@@ -52,7 +52,7 @@ use crate::{
     fuzz_input::FuzzInput,
 };
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::convert::TryInto;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
@@ -99,7 +99,7 @@ pub enum BreakpointHook<FUZZER: Fuzzer> {
 
     /// Call the redqueen parsing
     #[cfg(feature = "redqueen")]
-    Redqueen(RedqueenArguments),
+    Redqueen(Vec<RedqueenArguments>),
 
     /// intentionally ignore this breakpoint for breakpoint hooks.
     Ignore,
@@ -579,7 +579,7 @@ pub struct FuzzVm<'a, FUZZER: Fuzzer> {
 
     /// Parsed redqueen breakpoints used to gather runtime comparison operands
     #[cfg(feature = "redqueen")]
-    pub redqueen_breakpoints: Option<Vec<(u64, RedqueenArguments)>>,
+    pub redqueen_breakpoints: Option<HashMap<u64, Vec<RedqueenArguments>>>,
 
     /// Parsed redqueen breakpoints used to gather runtime comparison operands
     #[cfg(feature = "redqueen")]
@@ -659,7 +659,9 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         symbols: &'a Option<SymbolList>,
         config: Config,
         unwinders: StackUnwinders,
-        #[cfg(feature = "redqueen")] redqueen_breakpoints: Option<Vec<(u64, RedqueenArguments)>>,
+        #[cfg(feature = "redqueen")] redqueen_breakpoints: Option<
+            HashMap<u64, Vec<RedqueenArguments>>,
+        >,
     ) -> Result<Self> {
         // Create a PIT2 timer
         let pit_config = kvm_pit_config::default();
@@ -2636,7 +2638,11 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 #[cfg(feature = "redqueen")]
                 BreakpointHook::Redqueen(args) => {
                     let args = args.clone();
-                    execution = crate::cmp_analysis::gather_comparison(self, input, &args)?;
+                    for arg in args {
+                        crate::cmp_analysis::gather_comparison(self, input, &arg)?;
+                    }
+
+                    execution = Execution::Continue;
                 }
                 BreakpointHook::Ignore => {
                     execution = Execution::Continue;

@@ -24,7 +24,6 @@ use std::{
 
 #[cfg(feature = "redqueen")]
 use crate::{
-    SymbolList,
     cmdline,
     cmp_analysis::RedqueenCoverage,
     feedback::FeedbackLog,
@@ -35,8 +34,8 @@ use crate::{
     fuzzvm::FuzzVm,
     init_environment,
     stack_unwinder::StackUnwinders,
-    unblock_sigalrm, Cr3, KvmEnvironment, Memory, ProjectState, ResetBreakpointType, Symbol, VbCpu,
-    VirtAddr, THREAD_IDS,
+    unblock_sigalrm, Cr3, KvmEnvironment, Memory, ProjectState, ResetBreakpointType, Symbol,
+    SymbolList, VbCpu, VirtAddr, THREAD_IDS,
 };
 
 /// Execute the c subcommand to gather coverage for a particular input

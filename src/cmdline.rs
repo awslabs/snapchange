@@ -5,7 +5,7 @@ use clap::Parser;
 use log::debug;
 use thiserror::Error;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -103,7 +103,7 @@ pub struct ProjectState {
 
     #[cfg(feature = "redqueen")]
     /// The redqueen breakpoints used to capture comparison arguments during runtime
-    pub(crate) redqueen_breakpoints: Option<Vec<(u64, RedqueenArguments)>>,
+    pub(crate) redqueen_breakpoints: Option<HashMap<u64, Vec<RedqueenArguments>>>,
 
     /// A stack unwinder that can be used to unwind stack
     pub(crate) unwinders: StackUnwinders,
@@ -773,7 +773,8 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
 
     #[cfg(feature = "redqueen")]
     if !cmps_paths.is_empty() {
-        let mut result = Vec::new();
+        let mut result = HashMap::new();
+
         for cmps_path in &cmps_paths {
             let rules = parse_cmps(cmps_path)?;
             for (addr, _) in &rules {
@@ -1617,12 +1618,12 @@ fn parse_cores(str: &str) -> Result<usize, anyhow::Error> {
 /// # Errors
 ///
 /// * Failed to read cmps file
-pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
+pub fn parse_cmps(cmps_path: &Path) -> Result<HashMap<u64, Vec<RedqueenArguments>>> {
     // Read the breakpoints
     let data = std::fs::read_to_string(cmps_path).context("Failed to read cmps file")?;
     let lines: Vec<_> = data.lines().collect();
 
-    let mut result = Vec::new();
+    let mut result: HashMap<u64, Vec<RedqueenArguments>> = HashMap::new();
 
     let mut index = 0;
     let mut invalid = 0;
@@ -1667,44 +1668,6 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
 
         let addr = u64::from_str_radix(&addr.replace("0x", ""), 16)
             .expect("Failed to parse cmp analysis address");
-
-        // look ahead to see if the next line also has the same address. it's possible currently for the
-        // same address to have different comparisons (like checking doubles)
-        // example:
-        // 5555555558a0 zmm0 < zmm1
-        // 5555555558a0 zmm0 == zmm1
-        for _ in 0..4 {
-            // Break if there are no more lines
-            let Some(next_line) = lines.get(index) else {
-                break;
-            };
-
-            // Ignore empty lines
-            if next_line.is_empty() {
-                continue;
-            }
-
-            let next_line = lines[index];
-            let Some(
-                [next_line_addr, _next_line_cmp_size, _next_line_left, _next_line_op, _next_line_right],
-            ) = next_line.split(',').array_chunks().next()
-            else {
-                println!("ERROR: invalid cmp analysis rule found: {next_line:?}");
-                invalid += 1;
-                index += 1;
-                continue;
-            };
-
-            let next_line_addr = u64::from_str_radix(&next_line_addr.replace("0x", ""), 16)
-                .expect("Failed to parse next line addr: {next_line_addr}");
-
-            if addr != next_line_addr {
-                break;
-            }
-
-            // Update the index forward
-            index += 1;
-        }
 
         let mut size = match cmp_size {
             "0x1" => Size::U8,
@@ -1802,7 +1765,8 @@ pub fn parse_cmps(cmps_path: &Path) -> Result<Vec<(u64, RedqueenArguments)>> {
                     left_op,
                     right_op,
                 };
-                result.push((addr, arg));
+
+                result.entry(addr).or_default().push(arg);
             }
             (Err(e), _) => {
                 println!(

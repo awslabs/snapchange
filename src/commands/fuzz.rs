@@ -2,7 +2,7 @@
 
 use anyhow::{ensure, Context, Result};
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::io::AsRawFd;
@@ -687,7 +687,7 @@ fn start_core<FUZZER: Fuzzer>(
     config: &Config,
     stop_after_first_crash: bool,
     unwinders: StackUnwinders,
-    #[cfg(feature = "redqueen")] redqueen_breakpoints: Option<Vec<(u64, RedqueenArguments)>>,
+    #[cfg(feature = "redqueen")] redqueen_breakpoints: Option<HashMap<u64, Vec<RedqueenArguments>>>,
 ) -> Result<()> {
     /// Helper macro to time the individual components of resetting the guest state
     macro_rules! time {

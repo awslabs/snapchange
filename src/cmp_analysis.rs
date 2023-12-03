@@ -619,7 +619,7 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
     fuzzvm: &mut FuzzVm<FUZZER>,
     input: &InputWithMetadata<<FUZZER as Fuzzer>::Input>,
     args: &RedqueenArguments,
-) -> Result<crate::Execution> {
+) -> Result<()> {
     use std::ops::{Add, Sub};
 
     let _timer = fuzzvm.scoped_timer(crate::stats::PerfMark::GatherComparison);
@@ -1177,5 +1177,5 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
         F64,  f64,  read_f64, SingleF64
     );
 
-    Ok(crate::Execution::Continue)
+    Ok(())
 }
