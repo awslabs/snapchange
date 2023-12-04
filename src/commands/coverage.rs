@@ -110,7 +110,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         path: project_dir,
         ..
     } = project_state;
-    let contexts = crate::stats::get_binary_contexts(&project_state.path)?;
+    let debug_info = crate::stats::DebugInfo::new(project_state);
 
     // Use the current fuzzer
     let mut fuzzer = FUZZER::default();
@@ -160,8 +160,8 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
             .coverage_breakpoints
             .as_ref()
             .unwrap()
-            .iter()
-            .cloned(),
+            .keys()
+            .copied(),
         crate::fuzzer::BreakpointType::Repeated,
     )?;
     log::info!(
@@ -199,31 +199,30 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     );
     crate::stats::write_lighthouse_coverage(&project_state.modules, &feedback, &lighthouse_file)?;
 
-    // Get the lcov coverage file
-    let coverage_lcov = coverage_dir.join(format!("{orig_file_name}.lcov.info"));
-    log::info!("Writing lcov coverage to {}", coverage_lcov.display());
-    let mut lcov = BTreeMap::new();
-    crate::stats::write_lcov_info(
-        &mut lcov,
-        project_state,
-        &contexts,
-        &feedback,
-        &coverage_lcov,
-    )?;
+    if let Ok(debug_info) = crate::stats::DebugInfo::new(&project_state) {
+        // Get the lcov coverage file
+        let coverage_lcov = coverage_dir.join(format!("{orig_file_name}.lcov.info"));
+        log::info!("Writing lcov coverage to {}", coverage_lcov.display());
+        debug_info.write_coverage_to_lcov_info(&feedback, coverage_lcov)?;
 
-    // write nicely formatted text coverage
-    let symbols_file = coverage_dir.join(format!("{orig_file_name}.coverage_symbols"));
-    log::info!(
-        "Writing human readable coverage to file {}",
-        symbols_file.display()
-    );
-    crate::stats::write_human_readable_text_coverage(
-        project_state,
-        &contexts,
-        symbols.as_ref(),
-        &feedback,
-        symbols_file,
-    )?;
+        // write nicely formatted text coverage
+        let symbols_file = coverage_dir.join(format!("{orig_file_name}.coverage_symbols"));
+        log::info!(
+            "Writing human readable coverage to file {}",
+            symbols_file.display()
+        );
+        crate::stats::write_human_readable_text_coverage(
+            project_state,
+            &debug_info,
+            symbols.as_ref(),
+            &feedback,
+            symbols_file,
+        )?;
+
+    } else {
+        log::warn!("failed to load debug info");
+    }
+
 
     if display_context {
         fuzzvm.print_context()?;

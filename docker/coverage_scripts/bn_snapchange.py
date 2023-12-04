@@ -233,9 +233,15 @@ class SnapchangeCoverageBreakpoints(SnapchangeTask):
                         bad_blocks.append(bb.start)
 
         # Get all basic block and block edges that aren't that asan_report finish basic block
-        blocks = [
-            hex(bb.start) for func in funcs for bb in func if bb.start not in bad_blocks
-        ]
+        blocks = []
+
+        for func in funcs:
+            if self.cancelled:
+                return
+            for bb in func:
+                if bb.start in bad_blocks:
+                    continue
+                blocks.append(f"{bb.start:#x},{bb.length:#x}")
 
         if ignored_functions:
             log_info(f"ignored the following functions: {ignored_functions}", LOG_ID)
