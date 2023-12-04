@@ -4574,9 +4574,21 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 return Ok(());
             }
 
+            // Only check the global lock before the rules
+            if crate::FINISHED.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+
+            let mut start = Instant::now();
+
             for rule in rules.iter() {
-                if crate::FINISHED.load(Ordering::SeqCst) {
-                    break;
+                // Check if we are force exiting once a second
+                if start.elapsed() > Duration::from_secs(1) {
+                    if crate::FINISHED.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
+
+                    start = Instant::now();
                 }
 
                 let input = orig_input.fork();
@@ -4616,8 +4628,13 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 }
 
                 for candidate in &candidates {
-                    if crate::FINISHED.load(Ordering::SeqCst) {
-                        break;
+                    // Check if we are force exiting once a second
+                    if start.elapsed() > Duration::from_secs(1) {
+                        if crate::FINISHED.load(Ordering::SeqCst) {
+                            return Ok(());
+                        }
+
+                        start = Instant::now();
                     }
 
                     let mut new_input = orig_input.fork();
@@ -4668,6 +4685,9 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
             // Restore the original input redqueen rules
             self.redqueen_rules.insert(fuzz_hash, rules);
+        } else {
+            // Ensure this hash at least has an entry
+            self.redqueen_rules.insert(fuzz_hash, FxHashSet::new());
         }
 
         // Reset the guest state to remove redqueen breakpoints

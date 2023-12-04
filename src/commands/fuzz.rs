@@ -851,7 +851,9 @@ fn start_core<FUZZER: Fuzzer>(
         if fuzzvm.redqueen_breakpoints.is_some() {
             let original_file_hash = input.fuzz_hash();
             let mut new_input = !fuzzvm.redqueen_rules.contains_key(&original_file_hash);
-            let mut should_redqueen = new_input;
+
+            // let mut should_redqueen = new_input; // For checking each RQ once per core
+            let mut should_redqueen = false; // For checking each RQ once per global fuzzing cores
 
             // Currently, each RQ input will only be checked once globally. This is done
             // with a shared Arc<Mutex<BTreeSet<FuzzInputHash>>>. The timing here is to ensure that
