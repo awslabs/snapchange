@@ -54,7 +54,7 @@ debug = true
 incremental = true
 
 [features]
-default = ["redqueen"]
+default = []
 redqueen = []
 custom_feedback = []
 bb_range = []
