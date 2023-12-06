@@ -144,7 +144,7 @@ impl ProjectState {
             // The coverage left to hit
             let coverage_left = breakpoints
                 .keys()
-                .filter(|a| prev_coverage.code_cov.get(&a).cloned().unwrap_or(0u16) > 0)
+                .filter(|a| prev_coverage.code_cov.get(&a).cloned().unwrap_or(0u16) == 0)
                 .copied()
                 .collect();
 
