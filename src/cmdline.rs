@@ -552,6 +552,9 @@ pub enum ProjectSubCommand {
 
     /// Initialize the configuration file for this project
     InitConfig,
+
+    /// Write DebugInfo as json
+    WriteDebugInfoJson,
 }
 
 /// Translate an address from the project
@@ -659,13 +662,6 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         let file = file?;
 
         if let Some(extension) = file.path().extension() {
-            // Ignore parsing coverage breakpoints for "project" commands
-            if matches!(cmd, Some(SubCommand::Project(_)))
-                && matches!(extension.to_str(), Some("covbps"))
-            {
-                continue;
-            }
-
             // If we find a config file, use this config instead of the default
             if matches!(file.file_name().to_str(), Some("config.toml")) {
                 let data = &std::fs::read_to_string(file.path())?;
@@ -696,6 +692,16 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
                     binaries.push(file.path());
                 }
                 Some("covbps") => {
+                    // Ignore parsing coverage breakpoints for "project" commands, except for the one that
+                    // dumps debug info as json
+                    if let Some(SubCommand::Project(project_command)) = cmd {
+                        if !matches!(
+                            project_command.command,
+                            ProjectSubCommand::WriteDebugInfoJson
+                        ) {
+                            continue;
+                        }
+                    }
                     covbps_paths.push(file.path());
                 }
                 #[cfg(feature = "redqueen")]
@@ -786,7 +792,6 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     }
 
     let mut coverage_breakpoints: Option<BasicBlockMap> = None;
-    let mut coverage_breakpoints_src = None;
 
     for covbps_path in &covbps_paths {
         let covbps = coverage_breakpoints.get_or_insert(BasicBlockMap::default());
@@ -827,7 +832,6 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         }
 
         covbps.extend(bps);
-        coverage_breakpoints_src = Some(covbps_path.with_extension("covbps_src"));
     }
 
     // Check if the source lines for the coverage breakpoints has already been written
@@ -840,36 +844,6 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         // Also check for `vmlinux` file as well for looking into contexts
         binaries.push(dir.join("vmlinux"));
         vmlinux = Some(vmlinux_path);
-    }
-
-    if let (Some(covbps), Some(covbps_src)) = (&coverage_breakpoints, coverage_breakpoints_src) {
-        if !covbps_src.exists() {
-            let contexts = crate::stats::get_binary_contexts(&dir)?;
-
-            let mut res = String::new();
-
-            // For each coverage breakpoint, write its source line
-            'next_addr: for bb in covbps.keys() {
-                for ctx in contexts.iter() {
-                    if let Some(loc) = ctx.find_location(bb.0)? {
-                        let symbol = format!(
-                            "{:#x} {}:{}:{}\n",
-                            bb.0,
-                            loc.file.unwrap_or("??"),
-                            loc.line.unwrap_or(0),
-                            loc.column.unwrap_or(0)
-                        );
-
-                        res.push_str(&symbol);
-
-                        continue 'next_addr;
-                    }
-                }
-            }
-
-            // Write the coverage breakpoint source lines
-            std::fs::write(covbps_src, res)?;
-        }
     }
 
     let unwinders = {

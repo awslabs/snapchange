@@ -2180,6 +2180,11 @@ impl DebugInfo {
         self.locations.is_empty()
     }
 
+    /// Return the number of debuginfo locations
+    pub fn len(&self) -> usize {
+        self.locations.len()
+    }
+
     /// populate debug info given a project state and associated addr2line contexts.
     pub fn populate<'a>(
         &mut self,
@@ -2365,5 +2370,35 @@ impl<'a> LcovInfo<'a> {
         outfile.flush()?;
 
         Ok(())
+    }
+}
+
+// allow debug info to be dumped as json with serde_json
+use serde::ser::{SerializeMap, Serializer};
+
+impl Serialize for DebugInfo {
+    /// Serialize [`DebugInfo`] as a map `VirtAddr -> ["file:linenum", ...]`
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut str_vec = vec![];
+        let mut map = serializer.serialize_map(Some(self.vaddrs.len()))?;
+        for (k, v) in self.vaddrs.iter() {
+            // map.serialize_key(&k)?;
+            // let mut seq = serializer.serialize_seq(Some(v.len()))?;
+            str_vec.clear();
+            for loc_index in v.iter().copied() {
+                let (file_index, line) = self.locations[loc_index as usize];
+                let file = self.files[file_index as usize].as_str();
+                let e = format!("{}:{}", file, line);
+                // seq.serialize_element(&e)?;
+                str_vec.push(e);
+            }
+            // seq.end();
+            let k_str = format!("{:#x}", k.0);
+            map.serialize_entry(&k_str, &str_vec)?;
+        }
+        map.end()
     }
 }
