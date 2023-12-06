@@ -885,7 +885,6 @@ pub fn worker<FUZZER: Fuzzer>(
     stop_after_first_crash: bool,
     stop_after_time: Option<Duration>,
 ) -> Result<()> {
-    let coverage_breakpoints = project_state.coverage_breakpoints.as_ref();
     // Create the data directory if it doesn't exist to store raw data from the fuzzer
     let data_dir = project_dir.join("data");
     if !data_dir.exists() {
@@ -904,6 +903,8 @@ pub fn worker<FUZZER: Fuzzer>(
         std::fs::create_dir(&corpus_dir)?;
     }
 
+    log::info!("starting with previously seen coverage/feedback with {} entries", total_feedback.len());
+
     // Populate the current corpus filenames for monitoring when a new file is dropped
     // into `current_corpus`
     let mut corpus_filenames = ahash::AHashSet::with_capacity(input_corpus.len() * 2);
@@ -918,6 +919,7 @@ pub fn worker<FUZZER: Fuzzer>(
     }
 
     let debug_info = DebugInfo::new(project_state)?;
+    log::info!("loaded debug info with {} debug locations", debug_info.len());
     let mut lcov = debug_info.lcov_info_from_feedback(&total_feedback);
 
     // Create the web directory for displaying stats via the browser
