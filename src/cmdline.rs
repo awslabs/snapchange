@@ -122,7 +122,7 @@ pub struct ProjectCoverage {
     pub prev_coverage: FeedbackTracker,
 
     /// Coverage left to be seen by the fuzzer
-    pub coverage_left: BTreeSet<VirtAddr>,
+    pub coverage_left: crate::FxIndexSet<VirtAddr>,
 }
 
 impl ProjectState {
@@ -156,7 +156,7 @@ impl ProjectState {
         } else {
             Ok(ProjectCoverage {
                 prev_coverage,
-                coverage_left: BTreeSet::new(),
+                coverage_left: crate::FxIndexSet::default(),
             })
         }
     }
@@ -773,7 +773,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     let mut redqueen_breakpoints = None;
 
     #[cfg(feature = "redqueen")]
-    let mut redqueen_bp_addrs: FxHashSet<u64> = FxHashSet::default();
+    let mut redqueen_bp_addrs: FxHashSet<VirtAddr> = FxHashSet::default();
 
     #[cfg(feature = "redqueen")]
     if !cmps_paths.is_empty() {
@@ -782,7 +782,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         for cmps_path in &cmps_paths {
             let rules = parse_cmps(cmps_path)?;
             for (addr, _) in &rules {
-                redqueen_bp_addrs.insert(*addr);
+                redqueen_bp_addrs.insert(VirtAddr(*addr));
             }
 
             result.extend(rules);
