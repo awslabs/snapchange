@@ -46,11 +46,11 @@ if not args.binary.exists():
 # Analyze the binary using a temp directory
 with tempfile.TemporaryDirectory() as tempdir:
     project_dir = tempfile.TemporaryDirectory(dir=tempdir)
-    output_dir = tempfile.TemporaryDirectory(dir=tempdir)
+    # output_dir = tempfile.TemporaryDirectory(dir=tempdir)
     this_dir = Path(__file__).resolve().parent
-    output_file = output_dir.name + "/output"
+    # output_file = output_dir.name + "/output"
 
-    print(f"This dir {this_dir}")
+    # print(f"This dir {this_dir}")
 
     # Create the command to execute the python script
     command = [
@@ -74,12 +74,12 @@ with tempfile.TemporaryDirectory() as tempdir:
     # Execute the command
     output = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    print(output.stdout.decode())
-    print(output.stderr.decode())
+    # print(output.stdout.decode())
+    print(output.stderr.decode(), file=sys.stderr)
 
     # Only print lines from Ghidra for our executed script
     for line in output.stdout.decode().split("\n"):
-        if "bb.py>" not in line:
+        if "bb_worker.py>" not in line:
             continue
 
-        print(f"{line}")
+        print(line)
