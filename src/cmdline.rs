@@ -4,6 +4,7 @@ use anyhow::{anyhow, ensure, Context, Result};
 use clap::Parser;
 use log::debug;
 use rustc_hash::{FxHashMap, FxHashSet};
+use smallvec::SmallVec;
 use thiserror::Error;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -1056,7 +1057,7 @@ pub fn parse_coverage_breakpoints(cov_bp_path: &Path) -> Result<BasicBlockMap> {
             return;
         }
 
-        let parts: Vec<&str> = line.split(',').collect();
+        let parts: SmallVec<[&str; 2]> = line.split(',').collect();
         if parts.is_empty() {
             return;
         }
