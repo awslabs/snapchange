@@ -303,6 +303,19 @@ pub(crate) fn run(project_state: &ProjectState, args: &cmdline::Project) -> Resu
                 );
             }
         }
+        cmdline::ProjectSubCommand::WriteDebugInfoJson => {
+            log::info!("loading debug info from available binaries");
+            let debug_info = crate::stats::DebugInfo::new(project_state)?;
+            log::info!(
+                "loaded debug info with {} debug locations based on {} coverage breakpoints",
+                debug_info.len(),
+                project_state.coverage_breakpoints.as_ref().and_then(|covbps| Some(covbps.len())).unwrap_or(0_usize)
+            );
+            let filepath = project_state.path.join("debug_info.json");
+            std::fs::write(&filepath, serde_json::to_string(&debug_info)?)
+                .expect("Failed to write debug_info json");
+            log::info!("wrote debug info to {}", filepath.display());
+        }
         cmdline::ProjectSubCommand::Symbols | cmdline::ProjectSubCommand::InitConfig => {
             unreachable!()
         }

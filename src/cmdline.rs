@@ -3,10 +3,13 @@
 use anyhow::{anyhow, ensure, Context, Result};
 use clap::Parser;
 use log::debug;
+use rustc_hash::{FxHashMap, FxHashSet};
+use smallvec::SmallVec;
 use thiserror::Error;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
+use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -17,6 +20,7 @@ use crate::config::Config;
 use crate::feedback::FeedbackTracker;
 use crate::fuzzer::ResetBreakpointType;
 use crate::stack_unwinder::StackUnwinders;
+use crate::stats;
 use crate::symbols::{Symbol, LINUX_KERNEL_SYMBOLS, LINUX_USERLAND_SYMBOLS};
 use crate::vbcpu::{VbCpu, VmSelector, X86FxState, X86XSaveArea, X86XSaveHeader, X86XsaveYmmHi};
 use crate::SymbolList;
@@ -67,6 +71,9 @@ pub enum Error {
     UnimplementedCmpOperand(String),
 }
 
+/// Stores Basic Block Addresses and Sizes
+pub type BasicBlockMap = crate::FxIndexMap<VirtAddr, usize>;
+
 /// The files associated with the snapshot state
 #[derive(Debug)]
 pub struct ProjectState {
@@ -84,7 +91,7 @@ pub struct ProjectState {
 
     /// Addresses to apply single shot breakpoints for the purposes of coverage.
     /// Addresses assume the CR3 of the beginning of the snapshot.
-    pub(crate) coverage_breakpoints: Option<BTreeSet<VirtAddr>>,
+    pub(crate) coverage_breakpoints: Option<BasicBlockMap>,
 
     /// Module metadata containing where each module is loaded in the snapshot. Primarily
     /// used for dumping lighthouse coverage maps
@@ -116,7 +123,7 @@ pub struct ProjectCoverage {
     pub prev_coverage: FeedbackTracker,
 
     /// Coverage left to be seen by the fuzzer
-    pub coverage_left: BTreeSet<VirtAddr>,
+    pub coverage_left: crate::FxIndexSet<VirtAddr>,
 }
 
 impl ProjectState {
@@ -134,40 +141,32 @@ impl ProjectState {
             prev_coverage = serde_json::from_str(&data)?;
         }
 
-        if self.coverage_breakpoints.is_none() {
-            return Ok(ProjectCoverage {
+        if let Some(breakpoints) = self.coverage_breakpoints.as_ref() {
+            // The coverage left to hit
+            let coverage_left = breakpoints
+                .keys()
+                .filter(|a| prev_coverage.code_cov.get(&a).cloned().unwrap_or(0u16) == 0)
+                .copied()
+                .collect();
+
+            // Get the current coverage not yet seen across previous runs
+            Ok(ProjectCoverage {
                 prev_coverage,
-                coverage_left: BTreeSet::new(),
-            });
+                coverage_left,
+            })
+        } else {
+            Ok(ProjectCoverage {
+                prev_coverage,
+                coverage_left: crate::FxIndexSet::default(),
+            })
         }
-
-        let hits = prev_coverage
-            .code_cov
-            .iter()
-            .map(|x| *x.0)
-            .collect::<BTreeSet<VirtAddr>>();
-
-        // The coverage left to hit
-        let coverage_left = self
-            .coverage_breakpoints
-            .as_ref()
-            .unwrap()
-            .difference(&hits)
-            .copied()
-            .collect();
-
-        // Get the current coverage not yet seen across previous runs
-        Ok(ProjectCoverage {
-            coverage_left,
-            prev_coverage,
-        })
     }
 
     /// Parse sancov coverage breakpoints if they are available in this target. Use
     /// -fsanitize-coverage=-trace-pc-guard,pc-table to enable this.
-    pub fn parse_sancov_breakpoints(&mut self) -> Result<Option<BTreeSet<VirtAddr>>> {
+    pub fn parse_sancov_breakpoints(&mut self) -> Result<Option<BasicBlockMap>> {
         if let Some(symbol_path) = &self.symbols {
-            let mut new_covbps = BTreeSet::new();
+            let mut new_covbps = BasicBlockMap::default();
 
             // Look for the symbols for the start of the breakpoint table from sancov
             for start_sancov_pcs in std::fs::read_to_string(symbol_path)?
@@ -214,7 +213,7 @@ impl ProjectState {
                     }
 
                     // Add the new breakpoint
-                    new_covbps.insert(VirtAddr(addr));
+                    new_covbps.insert(addr.into(), 0);
 
                     // Increment the to the next breakpoint
                     start_bps += std::mem::size_of::<SanCovBp>() as u64;
@@ -554,6 +553,9 @@ pub enum ProjectSubCommand {
 
     /// Initialize the configuration file for this project
     InitConfig,
+
+    /// Write DebugInfo as json
+    WriteDebugInfoJson,
 }
 
 /// Translate an address from the project
@@ -661,13 +663,6 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         let file = file?;
 
         if let Some(extension) = file.path().extension() {
-            // Ignore parsing coverage breakpoints for "project" commands
-            if matches!(cmd, Some(SubCommand::Project(_)))
-                && matches!(extension.to_str(), Some("covbps"))
-            {
-                continue;
-            }
-
             // If we find a config file, use this config instead of the default
             if matches!(file.file_name().to_str(), Some("config.toml")) {
                 let data = &std::fs::read_to_string(file.path())?;
@@ -698,6 +693,16 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
                     binaries.push(file.path());
                 }
                 Some("covbps") => {
+                    // Ignore parsing coverage breakpoints for "project" commands, except for the one that
+                    // dumps debug info as json
+                    if let Some(SubCommand::Project(project_command)) = cmd {
+                        if !matches!(
+                            project_command.command,
+                            ProjectSubCommand::WriteDebugInfoJson
+                        ) {
+                            continue;
+                        }
+                    }
                     covbps_paths.push(file.path());
                 }
                 #[cfg(feature = "redqueen")]
@@ -769,7 +774,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     let mut redqueen_breakpoints = None;
 
     #[cfg(feature = "redqueen")]
-    let mut redqueen_bp_addrs: BTreeSet<u64> = BTreeSet::new();
+    let mut redqueen_bp_addrs: FxHashSet<VirtAddr> = FxHashSet::default();
 
     #[cfg(feature = "redqueen")]
     if !cmps_paths.is_empty() {
@@ -778,7 +783,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         for cmps_path in &cmps_paths {
             let rules = parse_cmps(cmps_path)?;
             for (addr, _) in &rules {
-                redqueen_bp_addrs.insert(*addr);
+                redqueen_bp_addrs.insert(VirtAddr(*addr));
             }
 
             result.extend(rules);
@@ -787,11 +792,10 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         redqueen_breakpoints = Some(result);
     }
 
-    let mut coverage_breakpoints: Option<BTreeSet<VirtAddr>> = None;
-    let mut coverage_breakpoints_src = None;
+    let mut coverage_breakpoints: Option<BasicBlockMap> = None;
 
     for covbps_path in &covbps_paths {
-        let covbps = coverage_breakpoints.get_or_insert(BTreeSet::new());
+        let covbps = coverage_breakpoints.get_or_insert(BasicBlockMap::default());
 
         #[allow(unused_mut)]
         let mut bps = parse_coverage_breakpoints(covbps_path)?;
@@ -800,7 +804,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         // redqueen breakpoints are not one-shot and will be reapplied
         // even when they are hit
         #[cfg(feature = "redqueen")]
-        bps.retain(|addr| !redqueen_bp_addrs.contains(&addr.0));
+        bps.retain(|start, _len| !redqueen_bp_addrs.contains(start));
 
         let module = covbps_path
             .file_prefix()
@@ -810,14 +814,15 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
 
         if let Some(module_range) = modules.get_module_range(module) {
             // Get the smallest coverage breakpoint for this module
-            let VirtAddr(min_addr) = bps
-                .iter()
+            let min_addr = bps
+                .keys()
+                .copied()
                 .min()
                 .ok_or_else(|| anyhow!("No smallest breakpoint found"))?;
 
             // If the smallest breakpoint isn't in the module range, then
             // the coverage breakpoints are probably invalid
-            if !module_range.contains(min_addr) {
+            if !module_range.contains(&min_addr.0) {
                 return Err(Error::CoverageBreakpointNotFoundInModuleRange(
                     *min_addr,
                     module.to_string(),
@@ -828,7 +833,6 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         }
 
         covbps.extend(bps);
-        coverage_breakpoints_src = Some(covbps_path.with_extension("covbps_src"));
     }
 
     // Check if the source lines for the coverage breakpoints has already been written
@@ -841,48 +845,6 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         // Also check for `vmlinux` file as well for looking into contexts
         binaries.push(dir.join("vmlinux"));
         vmlinux = Some(vmlinux_path);
-    }
-
-    if let (Some(covbps), Some(covbps_src)) = (&coverage_breakpoints, coverage_breakpoints_src) {
-        if !covbps_src.exists() {
-            let mut contexts = Vec::new();
-
-            for bin_file in &binaries {
-                if !bin_file.exists() {
-                    continue;
-                }
-
-                let file = File::open(bin_file)?;
-                let map = unsafe { memmap::Mmap::map(&file)? };
-                let object = addr2line::object::File::parse(&*map)?;
-                let ctx = addr2line::Context::new(&object)?;
-                contexts.push(ctx);
-            }
-
-            let mut res = String::new();
-
-            // For each coverage breakpoint, write its source line
-            'next_addr: for addr in covbps.iter() {
-                for ctx in &contexts {
-                    if let Some(loc) = ctx.find_location(addr.0)? {
-                        let symbol = format!(
-                            "{:#x} {}:{}:{}\n",
-                            addr.0,
-                            loc.file.unwrap_or("??"),
-                            loc.line.unwrap_or(0),
-                            loc.column.unwrap_or(0)
-                        );
-
-                        res.push_str(&symbol);
-
-                        continue 'next_addr;
-                    }
-                }
-            }
-
-            // Write the coverage breakpoint source lines
-            std::fs::write(covbps_src, res)?;
-        }
     }
 
     let unwinders = {
@@ -938,7 +900,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         std::fs::write(
             state.path.join(sancov_bps_file),
             sancov_bps
-                .iter()
+                .keys()
                 .map(|x| format!("{:#x}", x.0))
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -1054,19 +1016,28 @@ pub fn parse_symbols(
     Ok((symbols, reset_breakpoints))
 }
 
+fn parse_hex_str(addr_str: &str) -> std::result::Result<u64, std::num::ParseIntError> {
+    let hex_parse = if addr_str.starts_with("0x") {
+        &addr_str[2..]
+    } else {
+        addr_str
+    };
+    u64::from_str_radix(hex_parse, 16)
+}
+
 /// Parse the coverage breakpoints command line argument. This will read the given path
 /// and create a [`BTreeSet`] of the found coverage breakpoints
 ///
 /// # Errors
 ///
 /// * Failed to read coverage breakpoints file
-pub fn parse_coverage_breakpoints(cov_bp_path: &Path) -> Result<BTreeSet<VirtAddr>> {
+pub fn parse_coverage_breakpoints(cov_bp_path: &Path) -> Result<BasicBlockMap> {
     // Read the breakpoints
     let data =
         std::fs::read_to_string(cov_bp_path).context("Failed to read coverage breakpoints file")?;
 
     // Init the result
-    let mut cov_bps = BTreeSet::new();
+    let mut cov_bps = BasicBlockMap::default();
 
     // Parse the addresses for the VM
     data.split('\n').for_each(|line| {
@@ -1086,10 +1057,36 @@ pub fn parse_coverage_breakpoints(cov_bp_path: &Path) -> Result<BTreeSet<VirtAdd
             return;
         }
 
-        // Parse each line
-        match u64::from_str_radix(&line.replace("0x", ""), 16) {
+        let parts: SmallVec<[&str; 2]> = line.split(',').collect();
+        if parts.is_empty() {
+            return;
+        }
+        if parts.len() > 2 {
+            eprintln!(
+                "[COVBPS] failed to parse address from line: {:?} (reason: too many ',' chars)",
+                line
+            );
+            return;
+        }
+
+        let addr_str = parts[0];
+        match parse_hex_str(addr_str) {
             Ok(addr) => {
-                cov_bps.insert(VirtAddr(addr));
+                let len = if parts.len() == 2 {
+                    match parse_hex_str(parts[1]) {
+                        Ok(addr) => addr,
+                        Err(e) => {
+                            eprintln!(
+                                "[COVBPS] failed to parse address from line: {:?} (reason: {})",
+                                line, e
+                            );
+                            return;
+                        }
+                    }
+                } else {
+                    0
+                } as usize;
+                cov_bps.insert(VirtAddr(addr), len);
             }
             Err(e) => {
                 eprintln!(

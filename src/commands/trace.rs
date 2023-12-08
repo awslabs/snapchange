@@ -137,9 +137,9 @@ fn start_core<FUZZER: Fuzzer>(
         }
 
         if let Some(covbps) = project_state.coverage_breakpoints.as_ref() {
-            for addr in covbps.iter() {
+            for addr in covbps.keys().copied() {
                 let res = fuzzvm.set_breakpoint(
-                    *addr,
+                    addr,
                     cr3,
                     BreakpointType::Repeated,
                     BreakpointMemory::NotDirty,

@@ -432,11 +432,11 @@ pub(crate) fn run<FUZZER: Fuzzer>(
             let cr3 = Cr3(project_state.vbcpu.cr3);
             // Small scope to drop the clean snapshot lock
             let mut curr_clean_snapshot = clean_snapshot.write().unwrap();
-            for addr in covbps.iter() {
-                if let Ok(_orig_byte) = curr_clean_snapshot.read::<u8>(*addr, cr3) {
+            for addr in covbps.keys().copied() {
+                if let Ok(_orig_byte) = curr_clean_snapshot.read::<u8>(addr, cr3) {
                     // curr_clean_snapshot.write_bytes(*addr, cr3, &[0xcc])?;
                     // covbp_bytes.insert(*addr, orig_byte);
-                    covbp_bytes.insert(*addr);
+                    covbp_bytes.insert(addr);
                 }
             }
         }

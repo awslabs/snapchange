@@ -259,6 +259,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         coverage_left,
         prev_coverage,
     } = project_state.feedback()?;
+    log::info!("{} bps coverage left; observed {} coverage/feedback entries before", coverage_left.len(), prev_coverage.len());
 
     // Init the coverage breakpoints mapping to byte
     let mut covbp_bytes = BTreeMap::new();

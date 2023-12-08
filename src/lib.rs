@@ -208,6 +208,10 @@ pub mod _docs;
 // #[global_allocator]
 // static GLOBAL: MiMalloc = MiMalloc;
 
+pub(crate) type FxIndexMap<K, V> = indexmap::IndexMap<K, V, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
+pub(crate) type FxIndexSet<K> = indexmap::IndexSet<K, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
+pub(crate) type AIndexSet<K> = indexmap::IndexSet<K, ahash::RandomState>;
+
 /// `dbg!` but with hex output
 #[macro_export]
 macro_rules! dbg_hex {

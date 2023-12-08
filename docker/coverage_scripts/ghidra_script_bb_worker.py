@@ -31,6 +31,18 @@ seen = []
 # Bad function substrings
 bad_funcs = ["asan", "msan", "ubsan", "sanitizer", "lsan", "lcov", "intercept", "sancov", "ioctl_table_fill"]
 
+
+def write_blocks(blocks):
+    while blocks.hasNext():
+        block = blocks.next()
+        if block:
+            # Write the starting address of the basic block
+            address = block.getMinAddress().getOffset()
+            length = block.getMaxAddress().getOffset() - address
+            s = "0x%x,0x%x\n" % (address, length)
+            f.write(s)
+
+
 # Write the basic blocks to the outfile
 with open(outfile, 'w') as f:
     # Get the symbol table
@@ -64,12 +76,7 @@ with open(outfile, 'w') as f:
         # Found a valid function, dump the basic blocks for this function
         println("Good func! %s\n" % func_name)
         blocks = block_model.getCodeBlocksContaining(func.getBody(), monitor)
-        while blocks.hasNext():
-            block = blocks.next()
-            if block:
-                # Write the starting address of the basic block
-                address = block.getMinAddress().getOffset()
-                f.write("0x%x\n" % address)
+        write_blocks(blocks)
 
 
     # Go through all the functions that were not seen while looking at symbols
@@ -80,14 +87,6 @@ with open(outfile, 'w') as f:
         # Found a valid function, dump the basic blocks for this function
         println("Newfunc! 0x%x\n" % func.getEntryPoint())
         blocks = block_model.getCodeBlocksContaining(func.getBody(), monitor)
-        while blocks.hasNext():
-            block = blocks.next()
-            if block:
-                # Write the starting address of the basic block
-                address = block.getMinAddress().getOffset()
-                f.write("0x%x\n" % address)
-        
-    
-
+        write_blocks(blocks)
+ 
 println("Basic blocks written to %s" % outfile)
-   

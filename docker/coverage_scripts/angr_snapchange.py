@@ -37,7 +37,8 @@ import pyvex
 import claripy
 
 logger = logging.getLogger(Path(__file__).name)
-logger.setLevel(logging.DEBUG)
+# logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 STR_LEN_THRESHOLD = 128
 
@@ -146,11 +147,17 @@ addrs = set()
 outfile = cliargs.binary.parent / f"{binary_name}.angr.covbps"
 with outfile.open("w") as f:
     # angr/vex splits BBs after call instructions, so we have a couple of unnecessary breakpoints using this.
-    # `addrs = sorted([bb.addr for bb in cfg.graph.nodes()])`
-    # alternative:
-    for func in cfg.functions.values():
-        addrs.update(func.block_addrs)
-    f.write("\n".join(map(hex, sorted(addrs))))
+    # addrs = sorted([(bb.addr, bb.block.size) for bb in cfg.graph.nodes()])
+    for node in cfg.graph.nodes():
+        block = node.block
+        if block:
+            addrs.add((node.addr, block.size))
+        else:
+            logger.debug(f"odd: cfg node {node} without block")
+    # # alternative:
+    # for func in cfg.functions.values():
+    #     addrs.update(func.block_addrs)
+    f.write("\n".join(map(lambda bb: f"{bb[0]:#x},{bb[1]:#x}", sorted(list(addrs)))))
 
 logger.info("covbps done")
 
