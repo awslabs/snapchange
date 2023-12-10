@@ -61,8 +61,11 @@ pub struct Stats<FUZZER: Fuzzer> {
     /// Number of iterations this core has performed
     pub iterations: u64,
 
-    /// Number of iterations this core has performed in redqueen
+    /// Number of iterations (VM executions) this core has performed in redqueen
     pub rq_iterations: u64,
+
+    /// Number of inputs this core has performed in redqueen
+    pub rq_inputs: u64,
 
     /// Signals to a core to force exit
     pub forced_shutdown: bool,
@@ -259,8 +262,10 @@ pub struct PerfStatTimer<FUZZER: Fuzzer> {
 }
 impl<FUZZER: Fuzzer> PerfStatTimer<FUZZER> {
     pub fn new(core_stats: Arc<Mutex<Stats<FUZZER>>>, timer: PerfMark) -> PerfStatTimer<FUZZER> {
-        let parent = core_stats.lock().unwrap().perf_stats.current;
-        core_stats.lock().unwrap().perf_stats.current = Some(timer);
+        let mut stats = core_stats.lock().unwrap();
+        let parent = stats.perf_stats.current;
+        stats.perf_stats.current = Some(timer);
+        drop(stats);
 
         PerfStatTimer {
             timer,
@@ -903,7 +908,10 @@ pub fn worker<FUZZER: Fuzzer>(
         std::fs::create_dir(&corpus_dir)?;
     }
 
-    log::info!("starting with previously seen coverage/feedback with {} entries", total_feedback.len());
+    log::info!(
+        "starting with previously seen coverage/feedback with {} entries",
+        total_feedback.len()
+    );
 
     // Populate the current corpus filenames for monitoring when a new file is dropped
     // into `current_corpus`
@@ -919,7 +927,10 @@ pub fn worker<FUZZER: Fuzzer>(
     }
 
     let debug_info = DebugInfo::new(project_state)?;
-    log::info!("loaded debug info with {} debug locations", debug_info.len());
+    log::info!(
+        "loaded debug info with {} debug locations",
+        debug_info.len()
+    );
     let mut lcov = debug_info.lcov_info_from_feedback(&total_feedback);
 
     // Create the web directory for displaying stats via the browser
@@ -1092,6 +1103,7 @@ pub fn worker<FUZZER: Fuzzer>(
                 // Attempt to get this core's stats. If it fails, continue the next core
                 // and get the stats on the next loop iteration
                 let Ok(mut stats) = core_stats.try_lock() else {
+                    // log::info!("Core {core_id} holding stats lock 1");
                     continue;
                 };
 
@@ -1145,7 +1157,7 @@ pub fn worker<FUZZER: Fuzzer>(
             // Attempt to get this core's stats. If it fails, continue the next core
             // and get the stats on the next loop iteration
             let Ok(mut stats) = core_stats.try_lock() else {
-                // log::info!("Core {core_id} holding stats lock");
+                // log::info!("Core {core_id} holding stats lock 2");
                 continue;
             };
 
@@ -1430,6 +1442,7 @@ pub fn worker<FUZZER: Fuzzer>(
                 // First, gather all the corpi from all cores
                 for (core_id, core_stats) in stats.iter().enumerate() {
                     let Ok(mut curr_stats) = core_stats.try_lock() else {
+                        // log::info!("Core {core_id} holding stats lock 3 (old_corpus)");
                         locked_cores[core_id] = true;
                         continue;
                     };
@@ -1495,7 +1508,15 @@ pub fn worker<FUZZER: Fuzzer>(
                                         }
                                     }
 
-                                    total_corpus.insert(input.clone());
+                                    if total_corpus.insert(input.clone()) {
+                                        save_input_in_project(
+                                            &input,
+                                            project_dir,
+                                            "current_corpus",
+                                        )
+                                        .unwrap();
+                                    }
+                                } else {
                                 }
                             }
                         }
@@ -1510,6 +1531,7 @@ pub fn worker<FUZZER: Fuzzer>(
                     // Attempt to lock this core's stats for updating. If the lock is taken,
                     // skip it and update the core on the next iteration
                     let Ok(mut curr_stats) = core_stats.try_lock() else {
+                        // log::info!("Core {core_id} holding stats lock 3");
                         continue;
                     };
 
@@ -1521,25 +1543,24 @@ pub fn worker<FUZZER: Fuzzer>(
 
                         // Give each new core a small percentage (between 10% and 50%) of the total corpus
                         let mut new_corpus_len = corpus_len;
-                        if corpus_len > 100 {
-                            // Get the minimum number of files to add for this new corpus
-                            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                            let min = ((corpus_len as f64
-                                * (config.stats.minimum_total_corpus_percentage_sync as f64 / 100.))
-                                as usize)
-                                .min(config.stats.maximum_new_corpus_size);
 
-                            // Get the maximum number of files to add for this new corpus
-                            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                            let max = ((corpus_len as f64
-                                * (config.stats.maximum_total_corpus_percentage_sync as f64 / 100.))
-                                as usize)
-                                .min(config.stats.maximum_new_corpus_size + 1);
+                        // get the minimum number of files to add for this new corpus
+                        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                        let min = ((corpus_len as f64
+                            * (config.stats.minimum_total_corpus_percentage_sync as f64 / 100.))
+                            as usize)
+                            .min(config.stats.maximum_new_corpus_size);
 
-                            // Get a random number of files for this corpus from min to max
-                            if min < max {
-                                new_corpus_len = rng.gen_range(min..max);
-                            }
+                        // get the maximum number of files to add for this new corpus
+                        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                        let max = ((corpus_len as f64
+                            * (config.stats.maximum_total_corpus_percentage_sync as f64 / 100.))
+                            as usize)
+                            .min(config.stats.maximum_new_corpus_size + 1);
+
+                        // get a random number of files for this corpus from min to max
+                        if min < max {
+                            new_corpus_len = rng.gen_range(min..max);
                         }
 
                         // New corpus defaults to None. Set the Option to Some to start adding to
@@ -1988,7 +2009,7 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut corpus_len = 0;
 
     for input in &total_corpus {
-        corpus_len += save_input_in_project(input, project_dir)?;
+        corpus_len += save_input_in_project(input, project_dir, "current_corpus")?;
     }
 
     std::fs::write(

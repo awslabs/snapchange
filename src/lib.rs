@@ -193,6 +193,8 @@ pub mod mutators;
 
 mod stats_tui;
 pub mod utils;
+pub use utils::write_crash_input;
+
 pub use fuzz_input::{FuzzInput, InputWithMetadata};
 
 #[macro_use]
@@ -208,8 +210,10 @@ pub mod _docs;
 // #[global_allocator]
 // static GLOBAL: MiMalloc = MiMalloc;
 
-pub(crate) type FxIndexMap<K, V> = indexmap::IndexMap<K, V, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
-pub(crate) type FxIndexSet<K> = indexmap::IndexSet<K, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
+pub(crate) type FxIndexMap<K, V> =
+    indexmap::IndexMap<K, V, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
+pub(crate) type FxIndexSet<K> =
+    indexmap::IndexSet<K, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
 pub(crate) type AIndexSet<K> = indexmap::IndexSet<K, ahash::RandomState>;
 
 /// `dbg!` but with hex output
@@ -327,49 +331,6 @@ fn unblock_sigalrm() -> Result<()> {
 
 /// Maximum of crash files to write to a given directory
 pub(crate) const MAX_CRASHES: usize = 64;
-
-/// Write the given `input` into `crash_dir`/`path`, allowing the given [`Fuzzer`] to
-/// handle the crash as well.
-///
-/// # Returns
-///
-/// * Path to input file written
-pub fn write_crash_input(
-    crash_dir: &Path,
-    path: &str,
-    input: &[u8],
-    console_output: &[u8],
-) -> Result<Option<PathBuf>> {
-    let crash_dir = crash_dir.join(path);
-
-    if path.contains("Oops") {
-        return Ok(None);
-    }
-
-    if !crash_dir.exists() {
-        let _ = std::fs::create_dir_all(&crash_dir);
-    }
-
-    if crash_dir.read_dir()?.count() < MAX_CRASHES {
-        // Create the filename for this input
-        let h = crate::utils::hexdigest(&input);
-        // Write the input
-        let filepath = crash_dir.join(h);
-        if !filepath.exists() {
-            let _ = std::fs::write(&filepath, input);
-        }
-
-        // If there is console_output, write it as well
-        if !console_output.is_empty() {
-            let output_file = filepath.with_extension("console_output");
-            let _ = std::fs::write(output_file, console_output);
-        }
-
-        return Ok(Some(filepath));
-    }
-
-    Ok(None)
-}
 
 /// Handle the given [`FuzzVmExit`]
 fn handle_vmexit<FUZZER: Fuzzer>(
@@ -515,10 +476,8 @@ fn handle_vmexit<FUZZER: Fuzzer>(
                 Execution::Continue
             };
 
-            let input_bytes = input.input_as_bytes()?;
-
             if let Some(crash_file) =
-                write_crash_input(&crash_dir, &dirname, &input_bytes, &fuzzvm.console_output)?
+                write_crash_input(&crash_dir, &dirname, &input, &fuzzvm.console_output)?
             {
                 // Allow the fuzzer to handle the crashing state
                 // Useful for things like syscall fuzzer to write a C file from the input
@@ -1072,8 +1031,7 @@ pub mod prelude {
         fuzzvm::FuzzVm,
         rand,
         rng::Rng,
-        snapchange_main, Execution, FuzzInput,
-        InputWithMetadata
+        snapchange_main, Execution, FuzzInput, InputWithMetadata,
     };
 
     #[cfg(feature = "custom_feedback")]

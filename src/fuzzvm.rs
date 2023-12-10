@@ -54,6 +54,7 @@ use crate::{
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::convert::TryInto;
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -3382,6 +3383,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         // If we have stats, increase the dirty page count
         {
             let _timer = self.scoped_timer(PerfMark::AddDirtyPages);
+
             if let Some(stats) = self.core_stats.as_mut() {
                 stats.lock().unwrap().dirty_pages_kvm += kvm_dirty_pages as u64;
                 stats.lock().unwrap().dirty_pages_custom += custom_dirty_pages as u64;
@@ -4533,6 +4535,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         vm_timeout: Duration,
         corpus: &mut Vec<Arc<InputWithMetadata<FUZZER::Input>>>,
         total_feedback: &mut FeedbackTracker,
+        project_dir: &Path,
     ) -> Result<()> {
         let _timer = self.scoped_timer(PerfMark::GatherRedqueen);
 
@@ -4564,7 +4567,14 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 entropy_input.metadata.write().unwrap().entropy = true;
 
                 // Restart redqueen with the increased entropy input
-                self.gather_redqueen(&entropy_input, fuzzer, vm_timeout, corpus, total_feedback)?;
+                self.gather_redqueen(
+                    &entropy_input,
+                    fuzzer,
+                    vm_timeout,
+                    corpus,
+                    total_feedback,
+                    project_dir,
+                )?;
 
                 // Restore the original input redqueen rules
                 self.redqueen_rules.insert(fuzz_hash, rules);
@@ -4619,6 +4629,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                         vm_timeout,
                         corpus,
                         total_feedback,
+                        project_dir,
                     )?;
 
                     // Restore the original input redqueen rules
@@ -4671,11 +4682,32 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                         // Add the new input to the corpus
                         let input = Arc::new(new_input);
                         assert!(!input.metadata.read().unwrap().new_coverage.is_empty());
-                        corpus.push(input);
+                        corpus.push(input.clone());
+
+                        // Save every new input into a total corpus directory. Since we only keep
+                        // the inputs that have unique feedback globally, we discard inputs. This could
+                        // discard inputs that were used as the "original_file" for some other inputs.
+                        // In order to have a total history of inputs, we keep them in this corpus directory
+                        for curr_input in [&input, orig_input] {
+                            crate::utils::save_input_in_project(
+                                curr_input,
+                                project_dir,
+                                "all_local_corpi",
+                            )
+                            .unwrap();
+                        }
 
                         // Immediately send this input out to be sync'd
                         if let Some(stats) = self.core_stats.as_mut() {
-                            stats.lock().unwrap().old_corpus = Some(corpus.clone());
+                            let mut curr_stats = stats.lock().unwrap();
+
+                            match &mut curr_stats.old_corpus {
+                                None => {
+                                    let old_corpus = corpus.clone();
+                                    curr_stats.old_corpus = Some(old_corpus);
+                                }
+                                Some(ref mut corpus) => corpus.push(input),
+                            }
                         } else {
                             panic!("No core stats?!");
                         }

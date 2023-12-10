@@ -6,3 +6,4 @@ rm -rf data
 rm -rf web
 rm -rf metadata
 rm -rf traces
+rm -rf all_local_corpi

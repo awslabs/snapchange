@@ -259,7 +259,11 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         coverage_left,
         prev_coverage,
     } = project_state.feedback()?;
-    log::info!("{} bps coverage left; observed {} coverage/feedback entries before", coverage_left.len(), prev_coverage.len());
+    log::info!(
+        "{} bps coverage left; observed {} coverage/feedback entries before",
+        coverage_left.len(),
+        prev_coverage.len()
+    );
 
     // Init the coverage breakpoints mapping to byte
     let mut covbp_bytes = BTreeMap::new();
@@ -780,9 +784,6 @@ fn start_core<FUZZER: Fuzzer>(
         // Create the scoped timer
         let _total_timer = PerfStatTimer::new(core_stats.clone(), PerfMark::Total);
 
-        // Signal that this core is alive
-        core_stats.lock().unwrap().alive = true;
-
         if coverage_sync.elapsed() >= config.stats.coverage_sync_timer {
             time!(SyncCov1, {
                 // Append the current coverage
@@ -794,8 +795,14 @@ fn start_core<FUZZER: Fuzzer>(
             });
 
             time!(SyncCov3, {
-                // Send the current corpus to the main corpus collection
-                core_stats.lock().unwrap().old_corpus = Some(corpus.clone());
+                // Send the current corpus to the main corpus collection if
+                // the main thread is ready for it. Corpus is sync'ed on coverage
+                // since the main thread calculates the total coverage based on
+                // the new coverage found for a given input via its metadata.
+                if core_stats.lock().unwrap().old_corpus.is_none() {
+                    let old_corpus = corpus.clone();
+                    core_stats.lock().unwrap().old_corpus = Some(old_corpus);
+                }
             });
 
             // Reset the last sync counter
@@ -805,13 +812,26 @@ fn start_core<FUZZER: Fuzzer>(
         // Sync the corpus with the main stats
         if last_corpus_sync.elapsed() >= config.stats.merge_corpus_timer {
             time!(MergeCoverageSync, {
-                // Replace the fuzzer corpus
                 let mut curr_stats = core_stats.lock().unwrap();
 
-                // Send the current corpus to the main corpus collection
-                curr_stats.old_corpus = Some(corpus.clone());
-
+                // Check if the main stats thread has a new corpus for us
                 if let Some(new_corp) = curr_stats.new_corpus.take() {
+                    let mut old_corpus = corpus.clone();
+
+                    // Send the current corpus to the main corpus collection
+                    // or append the current corpus if the main thread hasn't picked
+                    // up this corpus
+                    if curr_stats.old_corpus.is_none() {
+                        curr_stats.old_corpus = Some(old_corpus);
+                    } else {
+                        curr_stats
+                            .old_corpus
+                            .as_mut()
+                            .unwrap()
+                            .append(&mut old_corpus);
+                    }
+
+                    // Replace this corpus if the main thread has a new corpus for this core
                     if !new_corp.is_empty() {
                         corpus = new_corp;
                     }
@@ -825,14 +845,17 @@ fn start_core<FUZZER: Fuzzer>(
         // Sync the current stats to the main stats
         if last_sync.elapsed() >= config.stats.stats_sync_timer {
             time!(StatsSync, {
-                // Add the current iterations to the coverage
-                core_stats.lock().unwrap().iterations += iters;
+                // Signal that this core is alive
+                if let Ok(mut stats) = core_stats.try_lock() {
+                    stats.alive = true;
+                    stats.iterations += iters;
 
-                // Reset the iteration counter
-                iters = 0;
+                    // Reset the last sync counter
+                    last_sync = Instant::now();
 
-                // Reset the last sync counter
-                last_sync = Instant::now();
+                    // Reset the iteration counter
+                    iters = 0;
+                }
             });
         }
 
@@ -850,11 +873,19 @@ fn start_core<FUZZER: Fuzzer>(
         // Gather redqueen for this input if there aren't already replacement rules found
         #[cfg(feature = "redqueen")]
         if fuzzvm.redqueen_breakpoints.is_some() {
+            // Choose whether to check each input in RQ once per core or once globally
+            const GLOBAL_RQ_CHECK: bool = true;
+
             let original_file_hash = input.fuzz_hash();
             let mut new_input = !fuzzvm.redqueen_rules.contains_key(&original_file_hash);
 
-            // let mut should_redqueen = new_input; // For checking each RQ once per core
-            let mut should_redqueen = false; // For checking each RQ once per global fuzzing cores
+            let mut should_redqueen = if GLOBAL_RQ_CHECK {
+                // For checking each RQ once per global fuzzing cores
+                false
+            } else {
+                // For checking each RQ once per core
+                new_input
+            };
 
             // Currently, each RQ input will only be checked once globally. This is done
             // with a shared Arc<Mutex<BTreeSet<FuzzInputHash>>>. The timing here is to ensure that
@@ -872,23 +903,34 @@ fn start_core<FUZZER: Fuzzer>(
                             continue;
                         }
 
-                        // New input for this core, check if this input has already been
-                        // redqueen'd by another core
-                        match core_stats.lock().unwrap().redqueen_seen.try_lock() {
-                            Ok(mut lock) => {
-                                // If this file hash hasn't been seen yet by any other core,
-                                // take the input for this core.
-                                if lock.insert(hash) {
-                                    input = temp_input.fork();
-                                    new_input = true;
-                                    should_redqueen = true;
-                                } else {
+                        // New input for this core
+
+                        // If we aren't using the global check, use this new input
+                        if !GLOBAL_RQ_CHECK {
+                            input = temp_input.fork();
+                            break 'next_input;
+                        }
+
+                        // If we are using global check, check if this input has been seen by
+                        // another core
+                        if let Ok(stats) = core_stats.try_lock() {
+                            match stats.redqueen_seen.try_lock() {
+                                Ok(mut lock) => {
+                                    // If this file hash hasn't been seen yet by any other core,
+                                    // take the input for this core.
+                                    if lock.insert(hash) {
+                                        input = temp_input.fork();
+                                        new_input = true;
+                                        should_redqueen = true;
+                                        break 'next_input;
+                                    } else {
+                                        continue 'next_input;
+                                    }
+                                }
+                                _ => {
+                                    counter += 1;
                                     continue 'next_input;
                                 }
-                            }
-                            _ => {
-                                counter += 1;
-                                continue 'next_input;
                             }
                         }
                     }
@@ -931,29 +973,21 @@ fn start_core<FUZZER: Fuzzer>(
                         vm_timeout,
                         &mut corpus,
                         &mut feedback,
+                        &project_dir,
                     )?;
 
                     // Signal this thread is in not in redqueen
                     core_stats.lock().unwrap().in_redqueen = false;
+                    core_stats.lock().unwrap().rq_inputs += 1;
                 });
             }
-
-            /*
-            // Sanity check redqueen breakpoints are being overwritten
-            for addr in FUZZER::redqueen_breakpoint_addresses() {
-                if fuzzvm.read::<u8>(VirtAddr(*addr), fuzzvm.cr3())? == 0xcc {
-                    log::info!("RQ addr still in place! {addr:#x}");
-                    panic!();
-                }
-            }
-            */
         }
 
         #[cfg(feature = "redqueen")]
         let redqueen_rules = fuzzvm.redqueen_rules.get(&input.fuzz_hash());
 
         // Mutate the input based on the fuzzer
-        time!(
+        let mutations = time!(
             InputMutate,
             fuzzer.mutate_input(
                 &mut input,
@@ -1114,11 +1148,9 @@ fn start_core<FUZZER: Fuzzer>(
             // Increment the timeouts count
             core_stats.lock().unwrap().timeouts += 1;
 
-            let input_bytes = input.input_as_bytes()?;
-
             // Attempt to write the crashing input and pass to fuzzer if it is a new input
             if let Some(crash_file) =
-                write_crash_input(&crash_dir, "timeout", &input_bytes, &fuzzvm.console_output)?
+                write_crash_input(&crash_dir, "timeout", &input, &fuzzvm.console_output)?
             {
                 if SINGLE_STEP && SINGLE_STEP_DEBUG.load(Ordering::SeqCst) {
                     std::fs::write(crash_file.with_extension("single_step"), instrs.join("\n"))?;
@@ -1137,7 +1169,7 @@ fn start_core<FUZZER: Fuzzer>(
 
             // Found a valid KASAN output, write out the crashing input
             if let Some(crash_file) =
-                write_crash_input(&crash_dir, &path, &input_bytes, &fuzzvm.console_output)?
+                write_crash_input(&crash_dir, &path, &input, &fuzzvm.console_output)?
             {
                 // Inc the number of crashes found
                 core_stats.lock().unwrap().crashes += 1;
@@ -1159,11 +1191,12 @@ fn start_core<FUZZER: Fuzzer>(
                 }
             }
 
-            let input_bytes = input.input_as_bytes()?;
+            // Store these mutations for this input
+            input.metadata.write().unwrap().mutations = mutations;
 
             // Attempt to write the crashing input and pass to fuzzer if it is a new input
             if let Some(crash_file) =
-                write_crash_input(&crash_dir, &path, &input_bytes, &fuzzvm.console_output)?
+                write_crash_input(&crash_dir, &path, &input, &fuzzvm.console_output)?
             {
                 if SINGLE_STEP && SINGLE_STEP_DEBUG.load(Ordering::SeqCst) {
                     std::fs::write(crash_file.with_extension("single_step"), instrs.join("\n"))?;
@@ -1173,8 +1206,6 @@ fn start_core<FUZZER: Fuzzer>(
                 // crashing state. Useful for things like syscall fuzzer to write a C
                 // file from the input
                 fuzzer.handle_crash(&input, &mut fuzzvm, &crash_file)?;
-
-                save_input_in_project(&input, project_dir)?;
             }
 
             if stop_after_first_crash {
@@ -1186,8 +1217,12 @@ fn start_core<FUZZER: Fuzzer>(
             input.add_new_coverage(new_coverage);
             assert!(!input.metadata.read().unwrap().new_coverage.is_empty());
 
-            // Save this input in the corpus dir
-            save_input_in_project(&input, project_dir)?;
+            // Save every new input into a total corpus directory. Since we only keep
+            // the inputs that have unique feedback globally, we discard inputs that overlap
+            // feeedback. This could discard inputs that were used as the "original_file" for
+            // some other inputs. In order to have a total history of inputs, we keep them in
+            // this corpus directory.
+            save_input_in_project(&input, project_dir, "all_local_corpi").unwrap();
 
             // Add the input to the corpus
             corpus.push(Arc::new(input));
@@ -1218,11 +1253,24 @@ fn start_core<FUZZER: Fuzzer>(
 
     // Write this current corpus to disk
     for input in &corpus {
-        save_input_in_project(input, &project_dir)?;
+        save_input_in_project(input, &project_dir, "current_corpus").unwrap();
     }
 
     // Save the corpus in old_corpus for stats to sync with
-    core_stats.lock().unwrap().old_corpus = Some(corpus);
+    // core_stats.lock().unwrap().old_corpus = Some(corpus);
+
+    // Send the current corpus to the main corpus collection
+    if core_stats.lock().unwrap().old_corpus.is_none() {
+        core_stats.lock().unwrap().old_corpus = Some(corpus);
+    } else {
+        core_stats
+            .lock()
+            .unwrap()
+            .old_corpus
+            .as_mut()
+            .unwrap()
+            .append(&mut corpus);
+    }
 
     // Signal this thread is dead
     core_stats.lock().unwrap().alive = false;

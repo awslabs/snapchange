@@ -7,11 +7,11 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
 use std::hash::Hash;
 use std::hash::Hasher;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use crate::SymbolList;
 use crate::fuzz_input::{FuzzInput, InputWithMetadata};
+use crate::SymbolList;
 use crate::{Symbol, VirtAddr};
 
 /// Fast `Vec<T: Copy` utility functions.
@@ -150,7 +150,13 @@ pub mod vec {
     /// fast_insert_three_at(&mut v, 3, b"<a>", b"aaaaaa", b"</a>");
     /// assert_eq!(&v, &b"<p><a>aaaaaa</a>bla</p>");
     /// ```
-    pub fn fast_insert_three_at<T: Copy>(dst: &mut Vec<T>, index: usize, a: &[T], b: &[T], c: &[T]) {
+    pub fn fast_insert_three_at<T: Copy>(
+        dst: &mut Vec<T>,
+        index: usize,
+        a: &[T],
+        b: &[T],
+        c: &[T],
+    ) {
         // verify safety conditions for the unsafe code
         assert!(index <= dst.len());
         assert!(!dst.as_ptr_range().contains(&a.as_ptr()));
@@ -452,7 +458,6 @@ pub fn rdtsc() -> u64 {
     unsafe { core::arch::x86_64::_rdtsc() }
 }
 
-
 /// calculate shannon entropy over a byte array
 pub fn byte_entropy<T: AsRef<[u8]>>(buf: T) -> f64 {
     let buf = buf.as_ref();
@@ -474,7 +479,6 @@ pub fn byte_entropy<T: AsRef<[u8]>>(buf: T) -> f64 {
 
     entropy
 }
-
 
 /// Returns the hash of the given input using [`DefaultHasher`]
 pub fn calculate_hash<T: Hash>(t: &T) -> u64 {
@@ -499,6 +503,7 @@ pub fn hexdigest<T: Hash>(t: &T) -> String {
 pub fn save_input_in_project<T: FuzzInput>(
     input: &InputWithMetadata<T>,
     project_dir: &Path,
+    dir: &str,
 ) -> Result<usize> {
     let input_bytes = input.input_as_bytes()?;
     let length = input_bytes.len();
@@ -506,7 +511,7 @@ pub fn save_input_in_project<T: FuzzInput>(
     // Create the filename for this input
     let filename = hexdigest(&input);
 
-    let corpus_dir = project_dir.join("current_corpus");
+    let corpus_dir = project_dir.join(dir);
     let metadata_dir = project_dir.join("metadata");
 
     // Ensure the corpus and metadata directories exist
@@ -690,4 +695,63 @@ pub mod libfuzzer {
         }
         Ok(())
     }
+}
+
+/// Write the given `input` into `crash_dir`/`path`, allowing the given [`Fuzzer`] to
+/// handle the crash as well.
+///
+/// # Returns
+///
+/// * Path to input file written
+pub fn write_crash_input<T: FuzzInput>(
+    crash_dir: &Path,
+    path: &str,
+    input: &InputWithMetadata<T>,
+    console_output: &[u8],
+) -> Result<Option<PathBuf>> {
+    let crash_dir = crash_dir.join(path);
+
+    if path.contains("Oops") {
+        return Ok(None);
+    }
+
+    let metadata_dir = crash_dir
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("metadata");
+
+    // Ensure the corpus and metadata directories exist
+    for dir in [&crash_dir, &metadata_dir] {
+        if !dir.exists() {
+            std::fs::create_dir_all(dir)?;
+        }
+    }
+
+    if crash_dir.read_dir()?.count() < crate::MAX_CRASHES {
+        // Create the filename for this input
+        let filename = crate::utils::hexdigest(&input);
+
+        // Write the metadata to the metadata folder
+        let filepath = metadata_dir.join(&filename);
+        std::fs::write(filepath, input.serialized_metadata()?)?;
+
+        // Write the input
+        let filepath = crash_dir.join(filename);
+        if !filepath.exists() {
+            let input_bytes = input.input_as_bytes()?;
+            let _ = std::fs::write(&filepath, input_bytes);
+        }
+
+        // If there is console_output, write it as well
+        if !console_output.is_empty() {
+            let output_file = filepath.with_extension("console_output");
+            let _ = std::fs::write(output_file, console_output);
+        }
+
+        return Ok(Some(filepath));
+    }
+
+    Ok(None)
 }
