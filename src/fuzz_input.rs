@@ -842,7 +842,7 @@ impl<T: FuzzInput> InputWithMetadata<T> {
         Self {
             input: self.input.clone(),
             metadata: RwLock::new(InputMetadata {
-                original_file: self.input.fuzz_hash(),
+                original_file: crate::utils::calculate_hash(&self),
                 mutations: Vec::new(),
                 new_coverage: Vec::new(),
                 entropy: false,
