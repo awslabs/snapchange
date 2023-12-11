@@ -1,3 +1,8 @@
+[stats]
+maximum_new_corpus_size = 5000
+minimum_total_corpus_percentage_sync = 99
+maximum_total_corpus_percentage_sync = 100
+
 [stats.merge_corpus_timer]
 secs = 2
 nanos = 0

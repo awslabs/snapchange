@@ -508,8 +508,9 @@ impl Operand {
             Operand::LogicalShiftLeft { .. } => {
                 unimplemented!("Cannot LSL f32 values")
             }
-            Operand::And { .. } => {
-                unimplemented!("Cannot AND f32 values")
+            Operand::And { left, .. } => {
+                // unimplemented!("Cannot AND f32 values: {:#x} {:x?} {:x?}", fuzzvm.rip(), left, right)
+                Ok(left.read_f32(fuzzvm)?)
             }
             Operand::Or { .. } => {
                 unimplemented!("Cannot OR f32 values")
@@ -572,8 +573,9 @@ impl Operand {
             Operand::LogicalShiftLeft { .. } => {
                 unimplemented!("Cannot LSL f64 values")
             }
-            Operand::And { .. } => {
-                unimplemented!("Cannot AND f64 values")
+            Operand::And { left, .. } => {
+                // unimplemented!("Cannot AND f64 values")
+                Ok(left.read_f64(fuzzvm)?)
             }
             Operand::Or { .. } => {
                 unimplemented!("Cannot OR f64 values")

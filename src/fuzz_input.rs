@@ -273,7 +273,7 @@ impl FuzzInput for Vec<u8> {
             RedqueenRule::Primitive(from, to) => {
                 // Use the minimum number of bytes to compare values (removing the leading zeros)
                 let from_min_bytes = from.minimum_bytes();
-                let new_size = to.minimum_bytes();
+                let new_size = to.minimum_bytes().max(from.minimum_bytes());
                 let bytes: &[u8] = &to.as_bytes()[..new_size];
 
                 if from_min_bytes == new_size {
@@ -503,14 +503,9 @@ impl FuzzInput for Vec<u8> {
             rng.fill_bytes(&mut result);
             result
         } else {
-            if rng.gen_bool(0.5) {
-                // in 10% use a low entropy input
-                let b = 0x41 + rng.gen_range(0..26);
-                vec![b; len]
-            } else {
-                // in 10% use a zero initialized buffer.
-                vec![0u8; len]
-            }
+            // in 10% use a low entropy input
+            let b = 0x41 + rng.gen_range(0..26);
+            vec![b; len]
         };
         InputWithMetadata::from_input(result)
     }
