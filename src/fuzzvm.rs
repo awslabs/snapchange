@@ -4536,6 +4536,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         corpus: &mut Vec<Arc<InputWithMetadata<FUZZER::Input>>>,
         total_feedback: &mut FeedbackTracker,
         project_dir: &Path,
+        entropy_threshold: usize,
     ) -> Result<()> {
         let _timer = self.scoped_timer(PerfMark::GatherRedqueen);
 
@@ -4557,31 +4558,29 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                     panic!("No rules still after increased entropy 1");
                 }
 
-                let entropy_input = self.increase_input_entropy(
-                    orig_input,
-                    &original_feedback,
-                    fuzzer,
-                    vm_timeout,
-                )?;
+                if let Some(entropy_input) =
+                    self.increase_input_entropy(orig_input, &original_feedback, fuzzer, vm_timeout)?
+                {
+                    entropy_input.metadata.write().unwrap().entropy = true;
 
-                entropy_input.metadata.write().unwrap().entropy = true;
+                    // Restart redqueen with the increased entropy input
+                    self.gather_redqueen(
+                        &entropy_input,
+                        fuzzer,
+                        vm_timeout,
+                        corpus,
+                        total_feedback,
+                        project_dir,
+                        entropy_threshold,
+                    )?;
 
-                // Restart redqueen with the increased entropy input
-                self.gather_redqueen(
-                    &entropy_input,
-                    fuzzer,
-                    vm_timeout,
-                    corpus,
-                    total_feedback,
-                    project_dir,
-                )?;
+                    // Restore the original input redqueen rules
+                    self.redqueen_rules.insert(fuzz_hash, rules);
 
-                // Restore the original input redqueen rules
-                self.redqueen_rules.insert(fuzz_hash, rules);
-
-                // No need to continue with this input since it was re-run with
-                // increased entropy
-                return Ok(());
+                    // No need to continue with this input since it was re-run with
+                    // increased entropy
+                    return Ok(());
+                }
             }
 
             // Only check the global lock before the rules
@@ -4608,34 +4607,34 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                 // been increased entropy ("colorization" from the redqueen paper),
                 // then attempt to increase the entropy and then use that new input
                 // instead of this input
-                if candidates.is_empty() {
-                    if orig_input.metadata.read().unwrap().entropy {
-                        panic!("No rules still after increased entropy 2");
-                    }
-
-                    let entropy_input = self.increase_input_entropy(
+                if candidates.is_empty()
+                    || candidates.len() > entropy_threshold
+                        && !orig_input.metadata.read().unwrap().entropy
+                {
+                    if let Some(entropy_input) = self.increase_input_entropy(
                         orig_input,
                         &original_feedback,
                         fuzzer,
                         vm_timeout,
-                    )?;
+                    )? {
+                        entropy_input.metadata.write().unwrap().entropy = true;
 
-                    entropy_input.metadata.write().unwrap().entropy = true;
+                        // Restart redqueen with the increased entropy input
+                        self.gather_redqueen(
+                            &entropy_input,
+                            fuzzer,
+                            vm_timeout,
+                            corpus,
+                            total_feedback,
+                            project_dir,
+                            entropy_threshold,
+                        )?;
 
-                    // Restart redqueen with the increased entropy input
-                    self.gather_redqueen(
-                        &entropy_input,
-                        fuzzer,
-                        vm_timeout,
-                        corpus,
-                        total_feedback,
-                        project_dir,
-                    )?;
+                        // Restore the original input redqueen rules
+                        self.redqueen_rules.insert(fuzz_hash, rules);
 
-                    // Restore the original input redqueen rules
-                    self.redqueen_rules.insert(fuzz_hash, rules);
-
-                    return Ok(());
+                        return Ok(());
+                    }
                 }
 
                 for candidate in &candidates {
@@ -4822,7 +4821,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         orig_feedback: &FeedbackTracker,
         fuzzer: &mut FUZZER,
         vm_timeout: Duration,
-    ) -> Result<InputWithMetadata<FUZZER::Input>> {
+    ) -> Result<Option<InputWithMetadata<FUZZER::Input>>> {
         let _timer = self.scoped_timer(PerfMark::IncreaseInputEntropy);
 
         let mut queue = Vec::new();
@@ -4859,10 +4858,10 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         }
 
         if best_input.fuzz_hash() != orig_input.fuzz_hash() {
-            panic!("Entropy failed..");
+            Ok(Some(best_input))
+        } else {
+            Ok(None)
         }
-
-        Ok(best_input)
     }
 }
 

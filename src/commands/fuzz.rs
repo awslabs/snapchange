@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use core_affinity::CoreId;
 use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
+use rand::Rng as _;
 
 use crate::cmdline::ProjectCoverage;
 use crate::{cmdline, SymbolList};
@@ -974,6 +975,7 @@ fn start_core<FUZZER: Fuzzer>(
                         &mut corpus,
                         &mut feedback,
                         &project_dir,
+                        config.redqueen.entropy_threshold,
                     )?;
 
                     // Signal this thread is in not in redqueen
@@ -998,6 +1000,31 @@ fn start_core<FUZZER: Fuzzer>(
                 redqueen_rules
             )
         );
+
+        // Small chance to redqueen after mutation
+        /*
+        if fuzzvm.core_id <= config.redqueen.cores && fuzzvm.rng.gen_bool(0.01) {
+            time!(Redqueen, {
+                // Signal this thread is in redqueen
+                core_stats.lock().unwrap().in_redqueen = true;
+                core_stats.lock().unwrap().iterations = 0;
+
+                // Execute redqueen for this input
+                fuzzvm.gather_redqueen(
+                    &input,
+                    &mut fuzzer,
+                    vm_timeout,
+                    &mut corpus,
+                    &mut feedback,
+                    &project_dir,
+                )?;
+
+                // Signal this thread is in not in redqueen
+                core_stats.lock().unwrap().in_redqueen = false;
+                core_stats.lock().unwrap().rq_inputs += 1;
+            });
+        }
+        */
 
         // Set the input into the VM as per the fuzzer
         time!(InputSet, fuzzer.set_input(&input, &mut fuzzvm)?);
@@ -1216,6 +1243,9 @@ fn start_core<FUZZER: Fuzzer>(
             let new_coverage = feedback.take_log();
             input.add_new_coverage(new_coverage);
             assert!(!input.metadata.read().unwrap().new_coverage.is_empty());
+
+            // Store these mutations for this input
+            input.metadata.write().unwrap().mutations = mutations;
 
             // Save every new input into a total corpus directory. Since we only keep
             // the inputs that have unique feedback globally, we discard inputs that overlap

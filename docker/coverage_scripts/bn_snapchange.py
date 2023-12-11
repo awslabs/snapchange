@@ -15,6 +15,7 @@ import string
 import struct
 import sys
 from pathlib import Path
+from collections import deque
 
 if __name__ == "__main__":
     # disable plugin loading etc. if we are in headless script mode - need to
@@ -1285,10 +1286,265 @@ def dump_all(bv):
     """
     _dump(bv, bps=True, analysis=True, cmps=True, autodict=True)
 
+def arithmetic_backslice(curr_instr):
+    '''
+    Gather a backslice from a register, collecting the arithmetic operations along the way
 
+    Used to solve situations like this:
+
+    eax = zx.d([rbp - 0x12 {var_1a}].w)
+    edx = (rax - 0x1000).d
+    eax = zx.d([rbp - 0x1a {var_22}].b)
+    eax = eax << 4
+    eax = eax + 9
+    if (edx != eax) then 131 @ 0x5555555584d2 else 134 @ 0x5555555584ba
+
+    uint16_t len4 = *(uint16_t*)data;   data += 2;                        
+    uint8_t  val4 = *(uint8_t*)data;    data += 1;                        
+    CHECK((len4 - 0x1000) == (val4 * 0x10) + 9);      
+    '''
+    orig_instr = curr_instr
+    find_ssa_defs = [curr_instr]
+
+    assert(curr_instr.operation == LowLevelILOperation.LLIL_REG)
+
+    # Get the architecture regs from this instruction
+    arch_regs = curr_instr.function.arch.regs
+    orig_reg = arch_regs[orig_instr.src.name].full_width_reg
+
+    left_mods = []
+    right_mods = []
+
+    starting_index = curr_instr.function.get_instruction_start(curr_instr.instr.address)
+
+    while find_ssa_defs:
+        curr_instr = find_ssa_defs.pop()
+
+        match curr_instr.operation:
+            case LowLevelILOperation.LLIL_REG:
+                ssa_reg = curr_instr.ssa_form
+                if hasattr(ssa_reg, "full_reg"):
+                    ssa_reg = ssa_reg.full_reg
+                elif hasattr(ssa_reg, "src"):
+                    ssa_reg = ssa_reg.src
+                    
+                if not hasattr(ssa_reg, 'reg'):
+                    # log_warn(f"Failed to backslice @ {orig_instr.address:#x} {orig_instr}")
+                    continue
+
+                definition = (
+                    curr_instr.function.ssa_form.get_ssa_reg_definition(
+                        ssa_reg
+                    )
+                )
+
+                if definition:
+                    if hasattr(definition, 'non_ssa_form'):
+                        find_ssa_defs.append(definition.non_ssa_form)
+            case LowLevelILOperation.LLIL_SET_REG:
+                find_ssa_defs.append(curr_instr.src)
+            case LowLevelILOperation.LLIL_CONST:
+                right_mods.append(hex(curr_instr.constant))
+            case LowLevelILOperation.LLIL_SX | LowLevelILOperation.LLIL_ZX:
+                if curr_instr.src.operation == LowLevelILOperation.LLIL_REG:
+                    # Only continue to backslice through sign extension to its full width reg
+                    # Example:
+                    # Accept eax -> rax
+                    # Reject ecx -> rdx
+                    if orig_reg != arch_regs[curr_instr.src.src.name].full_width_reg:
+                        log_debug(f"SX not into the same register @ {curr_instr.address:#x}.. skipping")
+                        continue
+
+
+                # NOTE(corydu): size is in bytes
+                mask = (1 << (curr_instr.size * 8)) - 1
+                if mask <= 0xffffffffffffffff:
+                    left_mods.append('and')
+                    right_mods.append(f'{mask:#x}')
+                find_ssa_defs.append(curr_instr.src)
+            case LowLevelILOperation.LLIL_ADD:
+                if curr_instr.right.operation == LowLevelILOperation.LLIL_CONST:
+                    const = curr_instr.right.constant
+
+                    if const < 0:
+                        left_mods.append('add')
+                        right_mods.append(f'{const * -1:#x}')
+                    else:
+                        left_mods.append('sub')
+                        right_mods.append(f'{const:#x}')
+
+                    if curr_instr.left.operation == LowLevelILOperation.LLIL_REG:
+                        find_ssa_defs.append(curr_instr.left)
+
+                if curr_instr.left.operation == LowLevelILOperation.LLIL_REG \
+                        and curr_instr.right.operation == LowLevelILOperation.LLIL_REG:
+
+                    if curr_instr.left.src.name == curr_instr.right.src.name:
+                        # If add rax, rax, this is effectively mul 2, so we can reverse this with a div 2 or shift right 1
+                        left_mods.append('lsr')
+                        right_mods.append('0x1')
+                        find_ssa_defs.append(curr_instr.left)
+                    else:
+                        # TODO(corydu): For now, assumes the right register is unchanged
+                        # 
+                        # rax = rax - rdx    <-- Would fail if this rdx was re-written further down
+                        # rax = rax + 0x49 
+                        # (rdx = 0x1234)     <-- Like here 
+                        # rax = rax u>> 3
+                        # rax = rax << 4
+                        # if ([rbp - 0x10 {var_18}].q != rax) then 296 @ 0x555555558770 else 299 @ 0x555555558758
+                        curr_instr_index =  curr_instr.function.get_instruction_start(curr_instr.instr.address)
+                        checked_reg = arch_regs[curr_instr.right.src.name].full_width_reg
+                        for index in range(curr_instr_index, starting_index):
+                            check_instr = curr_instr.function[index]
+                            if check_instr.operation == LowLevelILOperation.LLIL_SET_REG:
+                                # Check if we can just use this register as the operand
+                                dst_reg = arch_regs[check_instr.dest.name].full_width_reg
+                                if dst_reg == checked_reg:
+                                    log_warn(f"CHECK {curr_instr.address:#x}. Intermediate register cannot be used")
+                                    break
+                        else:
+                            left_mods.append(f'sub')
+                            right_mods.append(f'reg {curr_instr.right.src.name}')
+
+            case LowLevelILOperation.LLIL_SUB:
+                if curr_instr.right.operation == LowLevelILOperation.LLIL_CONST:
+                    # case: ??, 0x1234
+                    const = curr_instr.right.constant
+                    if const < 0:
+                        left_mods.append('sub')
+                        right_mods.append(f'{const * -1:#x}')
+                    else:
+                        left_mods.append('add')
+                        right_mods.append(f'{const:#x}')
+
+                    if curr_instr.left.operation == LowLevelILOperation.LLIL_REG:
+                        find_ssa_defs.append(curr_instr.left)
+                if curr_instr.left.operation == LowLevelILOperation.LLIL_REG \
+                        and curr_instr.right.operation == LowLevelILOperation.LLIL_REG:
+                    # case: <REG>, <REG>
+
+                    if curr_instr.left.src.name == curr_instr.right.src.name:
+                        # sub rax, rax is zero
+                        right_mods.append('0x0')
+                    else:
+                        # TODO(corydu): For now, assumes the left register is unchanged
+                        # 
+                        # rax = rax - rdx    <-- Would fail if this rdx was re-written further down
+                        # rax = rax + 0x49 
+                        # (rdx = 0x1234)     <-- Like here 
+                        # rax = rax u>> 3
+                        # rax = rax << 4
+                        # if ([rbp - 0x10 {var_18}].q != rax) then 296 @ 0x555555558770 else 299 @ 0x555555558758
+                        curr_instr_index =  curr_instr.function.get_instruction_start(curr_instr.instr.address)
+                        checked_reg = arch_regs[curr_instr.right.src.name].full_width_reg
+                        for index in range(curr_instr_index, starting_index):
+                            check_instr = curr_instr.function[index]
+                            if check_instr.operation == LowLevelILOperation.LLIL_SET_REG:
+                                # Check if we can just use this register as the operand
+                                dst_reg = arch_regs[check_instr.dest.name].full_width_reg
+                                if dst_reg == checked_reg:
+                                    log_warn(f"CHECK {curr_instr.address:#x}. Intermediate register cannot be used")
+                                    break
+                        else:
+                            left_mods.append(f'add')
+                            right_mods.append(f'reg {curr_instr.right.src.name}')
+
+                        find_ssa_defs.append(curr_instr.left)
+            case LowLevelILOperation.LLIL_MUL:
+                if curr_instr.right.operation == LowLevelILOperation.LLIL_CONST:
+                    left_mods.append('div')
+                    right_mods.append(f'{curr_instr.right.constant:#x}')
+
+                if curr_instr.left.operation == LowLevelILOperation.LLIL_REG:
+                    find_ssa_defs.append(curr_instr.left)
+            case LowLevelILOperation.LLIL_MULU_DP:
+                find_ssa_defs.append(curr_instr.left)
+                left_mods.append('div')
+                find_ssa_defs.append(curr_instr.right)
+            case LowLevelILOperation.LLIL_DIVU  | LowLevelILOperation.LLIL_DIVS \
+                | LowLevelILOperation.LLIL_DIVS_DP | LowLevelILOperation.LLIL_DIVU_DP:
+                left_mods.append('mul')
+                find_ssa_defs.append(curr_instr.left)
+                find_ssa_defs.append(curr_instr.right)
+            case LowLevelILOperation.LLIL_LSL:
+                if curr_instr.right.operation == LowLevelILOperation.LLIL_CONST:
+                    left_mods.append('lsr')
+                    right_mods.append(f'{curr_instr.right.constant:#x}')
+                    
+                if curr_instr.left.operation == LowLevelILOperation.LLIL_REG:
+                    find_ssa_defs.append(curr_instr.left)
+            case LowLevelILOperation.LLIL_LSR | LowLevelILOperation.LLIL_ASR:
+                if curr_instr.right.operation == LowLevelILOperation.LLIL_CONST:
+                    left_mods.append('lsl')
+                    right_mods.append(f'{curr_instr.right.constant:#x}')
+
+                if curr_instr.left.operation == LowLevelILOperation.LLIL_REG:
+                    find_ssa_defs.append(curr_instr.left)
+            case LowLevelILOperation.LLIL_AND:
+                if curr_instr.left.operation == LowLevelILOperation.LLIL_REG:
+                    find_ssa_defs.append(curr_instr.left)
+            case LowLevelILOperation.LLIL_SET_REG:
+                left_mods.append(f'reg {curr_instr.dest.name}')
+                find_ssa_defs.append(curr_instr.src)
+            case LowLevelILOperation.LLIL_LOW_PART:
+                find_ssa_defs.append(curr_instr.src)
+            case LowLevelILOperation.LLIL_SET_REG_SPLIT:
+                find_ssa_defs.append(curr_instr.src)
+            case LowLevelILOperation.LLIL_REG_SPLIT:
+                ssa_form = curr_instr.ssa_form
+
+                '''
+                definition = (
+                    curr_instr.function.ssa_form.get_ssa_reg_definition(
+                        ssa_form.hi
+                    )
+                )
+
+                if definition:
+                    if hasattr(definition, 'non_ssa_form'):
+                        definition = definition.non_ssa_form
+                        if definition.operation == LowLevelILOperation.LLIL_SET_REG:
+                            print(definition)
+                            (l1, r1) = arithmetic_backslice(definition.src)
+                            right_mods.append(f'lsl l1{l1} r1{r1} 0x64')
+                '''
+
+                definition = (
+                    curr_instr.function.ssa_form.get_ssa_reg_definition(
+                        ssa_form.lo
+                    )
+                )
+
+                if definition:
+                    if hasattr(definition, 'non_ssa_form'):
+                        definition = definition.non_ssa_form
+                        if definition.operation == LowLevelILOperation.LLIL_SET_REG:
+                            find_ssa_defs.append(definition.src)
+            case LowLevelILOperation.LLIL_CALL:
+                pass
+            case LowLevelILOperation.LLIL_LOAD:
+                mask = (1 << (curr_instr.size * 8)) - 1
+                if mask <= 0xffffffffffffffff:
+                    left_mods.append('and')
+                    right_mods.append(f'{mask:#x}')
+                pass
+            case LowLevelILOperation.LLIL_CONST_PTR:
+                pass
+            case LowLevelILOperation.LLIL_CONST:
+                pass
+            case _:
+                log_warn(f'{curr_instr.address:#x} UNKNOWN OP FOR BACKSLICE {str(curr_instr.operation)}')
+           
+
+    left_side = ' '.join(reversed(left_mods))
+    right_side = ' '.join(right_mods)
+    return (left_side, right_side)
+    
 def get_cmp_analysis_from_instr_llil(curr_instr):
     if not hasattr(curr_instr, "operation"):
         return curr_instr
+
 
     if curr_instr.operation == LowLevelILOperation.LLIL_IF:
         return get_cmp_analysis_from_instr_llil(curr_instr.condition)
@@ -1312,13 +1568,85 @@ def get_cmp_analysis_from_instr_llil(curr_instr):
         LowLevelILOperation.LLIL_FCMP_O,
         LowLevelILOperation.LLIL_FCMP_UO,
     ]:
+        # Set the breakpoint on the instruction AFTER the cmp
+        bv = curr_instr.function.view
+
+
+        # Step over cmp or test or sub instructions for the result
+        bp_address = curr_instr.address
+        dis = curr_instr.function.view.get_disassembly(bp_address).split()
+        if ("cmp" in dis or "test" in dis or "comiss" in dis or "comisd" in dis or "fucomi" in dis or "fcomi" in dis): 
+            # NOTE(corydu): We can't skip over the fcomip instructions since it also pops the register stack
+            bp_address = bp_address + bv.get_instruction_length(bp_address)
+            dis = curr_instr.function.view.get_disassembly(bp_address)
+
+        if bp_address == curr_instr.address:
+            print("CHECK", hex(curr_instr.address), dis)
+
         # log_warn(f'{pad}TRACE {str(curr_instr.left):20} {str(curr_instr.right):20}')
         left = get_cmp_analysis_from_instr_llil(curr_instr.left)
         right = get_cmp_analysis_from_instr_llil(curr_instr.right)
+
+
         # result = {"left": left, "right": right}
         op = "_".join(str(curr_instr.operation).split("_")[1:])
 
-        output = f"{curr_instr.address:#x},{curr_instr.size:#x},{left},{op},{right}\n"
+        orig_output = f"{bp_address:#x},{curr_instr.size:#x},{left},{op},{right}\n"
+        output = orig_output
+
+        # If either side of the operation is a register, attempt to see if there is a valid
+        # arithmetic backslice that we could apply for a proper rule. For example:
+        #    ecx = [rbp - 0x28 {var_30_1}].d
+        #    ecx = ecx << 1
+        #    ecx = ecx + 6
+        #    rcx = sx.q(ecx)
+        #    if (rax != rcx) then 122 @ 0x55555555fc83 else 131 @ 0x55555555fc62
+        # 
+        # Should generate the following rules:
+        #     ADDR,rax,NEQ,rcx
+        #     ADDR,lsr sub rax 0x6 0x1,NEQ,lsr sub rcx 0x6 0x1
+        left_mods = ()
+        right_mods = ()
+        for (side, reg_instr) in [('left', curr_instr.left), ('right', curr_instr.right)]:
+            # Only check for arithmetic backslice for register operands
+            if reg_instr.operation != LowLevelILOperation.LLIL_REG:
+                continue
+
+            # If temp if in this register, attempt to find it's definition
+            if str(reg_instr.src.name) not in reg_instr.function.arch.regs:
+                ssa_reg = reg_instr.ssa_form.src
+                definition = reg_instr.function.ssa_form.get_ssa_reg_definition(ssa_reg)
+                reg_instr = definition.src.non_ssa_form
+
+            if reg_instr.operation == LowLevelILOperation.LLIL_REG:
+                (left_mod, right_mod) = arithmetic_backslice(reg_instr)
+
+                # Do not apply for a backslice that didn't return any modifications
+                if len(left_mod) == 0:
+                    continue
+
+                # Only apply the arithmetic backslice to non-const operands
+                if side == 'left' and left[:2] != '0x':
+                    left_mods = (left_mod, right_mod)
+                if side == 'right' and right[:2] != '0x':
+                    right_mods = (left_mod, right_mod)
+
+        # Output the backslice for the left only, right only, and left and right if those
+        # backslices exist
+        orig_left = ''
+        orig_right = ''
+        if left_mods:
+            orig_left = f"{left_mods[0]} {left} {left_mods[1]}"
+            output += f"{bp_address:#x},{curr_instr.size:#x},{orig_left},{op},{right}\n"
+            output += f"{bp_address:#x},{curr_instr.size:#x},{orig_left},{op},{left_mods[0]} {right} {left_mods[1]}\n"
+        if right_mods:
+            orig_right = f"{right_mods[0]} {right} {right_mods[1]}"
+            output += f"{bp_address:#x},{curr_instr.size:#x},{left},{op},{orig_right}\n"
+            output += f"{bp_address:#x},{curr_instr.size:#x},{right_mods[0]} {left} {right_mods[1]},{op},{orig_right}\n"
+        if left_mods and right_mods:
+            output += f"{bp_address:#x},{curr_instr.size:#x},{orig_left},{op},{orig_right}\n"
+            output += f"{bp_address:#x},{curr_instr.size:#x},{right_mods[0]} {orig_left} {right_mods[1]},{op},{left_mods[0]} {orig_right} {left_mods[1]}\n"
+
         return output
     elif curr_instr.operation == LowLevelILOperation.LLIL_FLAG:
         if isinstance(curr_instr, LowLevelILFlag):
@@ -1350,9 +1678,11 @@ def get_cmp_analysis_from_instr_llil(curr_instr):
             curr_instr = get_cmp_analysis_from_instr_llil(definition.src.non_ssa_form)
             return curr_instr
 
+        
         # print(f'{pad}TRACE {curr_instr} {str(curr_instr.operation)}')
         # res = get_cmp_analysis_from_instr_llil(curr_instr.src, address, iters + 1)
         result = f"reg {curr_instr.src.name}"
+
         return result
     elif curr_instr.operation == LowLevelILOperation.LLIL_NOT:
         src = get_cmp_analysis_from_instr_llil(curr_instr.src)
@@ -1423,18 +1753,22 @@ def get_cmp_analysis_from_instr_llil(curr_instr):
             elif "zmm" in str(curr_instr):
                 size = 64
 
-            output = f"{curr_instr.address:#x},{size:#x},{left},{op},{right}\n"
+            # Set the breakpoint on the instruction AFTER the cmp
+            bv = curr_instr.function.view
+            bp_address = curr_instr.address + bv.get_instruction_length(curr_instr.address)
+
+            output = f"{bp_address:#x},{size:#x},{left},{op},{right}\n"
             return output
 
         log_debug(
-            f"{curr_instr.address:#x} UNKNOWN intrinsic @ {curr_instr.address:#x}: `{curr_instr.operation}` | {curr_instr!r}"
+            f"{bp_address:#x} UNKNOWN intrinsic @ {curr_instr.address:#x}: `{curr_instr.operation}` | {curr_instr!r}"
         )
         return None
     elif curr_instr.operation == LowLevelILOperation.LLIL_FLOAT_CONV:
         return get_cmp_analysis_from_instr_llil(curr_instr.src)
 
     log_warn(
-        f"{curr_instr.address:#x} UNKNOWN instr @ {curr_instr.address:#x}: `{curr_instr}` ({curr_instr!r})"
+        f"{bp_address:#x} UNKNOWN instr @ {curr_instr.address:#x}: `{curr_instr}` ({curr_instr!r})"
     )
     return None
 
@@ -1507,7 +1841,7 @@ def get_collapsed_rule(bv, instr):
             if hasattr(definition.dest, "constant"):
                 func_name = bv.get_symbol_at(definition.dest.constant)
             else:
-                log_warn(f"Call with no constant? Possibly by register? {definition}")
+                # log_warn(f"Call with no constant? Possibly by register? {definition}")
                 func_name = "unknown_func"
 
             func_alias = FUNCTION_ALIASES.get(func_name)

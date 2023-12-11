@@ -378,6 +378,58 @@ char *check_the_parity_byte(char *data) {
   return data + 1 + sz;
 }
 
+char *arithmetic_adjustments(char *data) {
+  // Mixed type u16 and u8 with arithmetic checks
+  uint16_t len1 = *(uint16_t*)data;
+  data += 2;
+  uint8_t val1 = *(uint8_t*)data;
+  data += 1;
+  CHECK(len1 == (val1 * 1) + 9);
+
+  uint16_t len4 = *(uint16_t*)data;
+  data += 2;
+  uint8_t val4 = *(uint8_t*)data;
+  data += 1;
+  CHECK((len4 - 0x1000) == (val4 * 0x10) + 9);
+
+  uint16_t len11 = *(uint16_t*)data;
+  data += 2;
+  uint8_t val11 = *(uint8_t*)data;
+  data += 1;
+  CHECK((len11 + 4) == (val11 * 150) + 9);
+
+  // Mixed type u32 and u16 with arithmetic checks
+  uint32_t len12 = *(uint32_t*)data;
+  data += 4;
+  uint16_t val12 = *(uint16_t*)data;
+  data += 2;
+  CHECK((len12 - 0x100) == (val12 * 0x3) + 0x1234);
+
+  // Mixed type u32 and u32 with arithmetic checks
+  uint32_t len13 = *(uint32_t*)data;
+  data += 4;
+  uint32_t val13 = *(uint32_t*)data;
+  data += 4;
+  CHECK((len13 + 6) == (((((val13 << 2) >> 3) + 6) * 5) - 15));
+
+  // Mixed type u64 and u64 with arithmetic checks
+  uint64_t len14 = *(uint64_t*)data;
+  data += 8;
+  uint64_t val14 = *(uint64_t*)data;
+  data += 8;
+  CHECK((len14 - 8) == (((((val14 / 8) + 5) * 15) - 2) >> 3) << 4);
+
+  // Mixed type u64 and u8 with arithmetic checks
+  uint64_t len15 = *(uint64_t*)data;
+  data += 8;
+  uint8_t val15 = *(uint8_t*)data;
+  data += 1;
+  CHECK(((len15 * 2) - 5) == (val15 + 4));
+    
+  return data;
+}
+
+
 int fuzzme(const char *buf, size_t sz) {
   if (sz > INPUT_SIZE) {
     return -1;
@@ -392,6 +444,9 @@ int fuzzme(const char *buf, size_t sz) {
   // input is a very large buffer that should accomodate for all the following
   // memory accesses
   char *data = input;
+
+  // Check some basic arithmetic adjustments from the input bytes
+  data = arithmetic_adjustments(data);
 
   // we have multiple compares with constants - most should be relatively easy
   // to handle for current fuzzers.
@@ -421,6 +476,7 @@ int fuzzme(const char *buf, size_t sz) {
   // (input-to-state) they are easy to identify.
   data = check_dynamic_compares(data);
   data = check_dynamic_branchless_compares(data);
+
 
   // here we do some some basic checksum tests, i.e., to capture the pattern
   // [ data | checksum(data) ], common to various file formats or network
