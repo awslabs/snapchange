@@ -1,6 +1,7 @@
 //! Command line arguments
 
 use anyhow::{anyhow, ensure, Context, Result};
+use clap::builder::ArgAction;
 use clap::Parser;
 use log::debug;
 use smallvec::SmallVec;
@@ -415,9 +416,13 @@ pub(crate) enum MinimizeCodeCovLevel {
 /// Minimize subcommand
 #[derive(Parser, Debug)]
 pub struct Minimize {
-    /// Enable single step, single execution trace of the guest using the given file as
-    /// the input
+    /// Minimize the given file or alternatively, if a directory is passed, everything inside of the
+    /// directory.
     pub(crate) path: PathBuf,
+
+    /// Whether to replace the original file with the minimized file.
+    #[clap(short = 'I', long)]
+    pub(crate) in_place: bool,
 
     /// Set the timeout (in seconds) of the execution of the VM. [0-9]+(ns|us|ms|s|m|h)
     #[clap(long, value_parser = parse_timeout, default_value = "60s")]
@@ -428,29 +433,57 @@ pub struct Minimize {
     #[clap(short, long, default_value_t = 50000)]
     pub(crate) iterations_per_stage: u32,
 
-    /// Only check the RIP register for checking if the register state is the same after
-    /// minimizing an input
-    #[clap(short, long)]
-    pub(crate) rip_only: bool,
-
-    /// Ignore the feedback returned through coverage breakpoints and custom feedback,
-    /// when checking for same state after minimizing an input.
-    #[clap(long)]
-    pub(crate) ignore_feedback: bool,
-
     /// Specify, which type of code coverage feedback should be considered, when minimizing
     /// the given input. `none` ignores all code coverage. `basic-blocks` is the regular fuzzing
     /// coverage. `symbols` is function-level coverage when symbols are available. `hitcounts`
     /// is basic-block coverage considering hitcounts.
-    #[clap(long, value_enum, default_value_t = MinimizeCodeCovLevel::None)]
-    pub(crate) consider_coverage: MinimizeCodeCovLevel,
+    #[clap(long, value_enum)]
+    pub(crate) consider_coverage: Option<MinimizeCodeCovLevel>,
+
+    /// Only check the RIP register for checking if the register state is the same after
+    /// minimizing an input
+    #[clap(
+        short, long,
+        default_value("false"),
+        default_missing_value("true"),
+        num_args(0..=1),
+        require_equals(true),
+        action = ArgAction::Set,
+    )]
+    pub(crate) rip_only: bool,
+
+    /// Ignore the feedback returned through coverage breakpoints and custom feedback,
+    /// when checking for same state after minimizing an input.
+    #[clap(
+        long,
+        default_value("false"),
+        default_missing_value("true"),
+        num_args(0..=1),
+        require_equals(true),
+        action = ArgAction::Set,
+    )]
+    pub(crate) ignore_feedback: bool,
 
     /// Ignore stack contents when checking for same state after minimizing an input.
-    #[clap(long)]
+    #[clap(
+        long,
+        default_value("true"),
+        default_missing_value("true"),
+        num_args(0..=1),
+        require_equals(true),
+        action = ArgAction::Set,
+    )]
     pub(crate) ignore_stack: bool,
 
     /// Ignore the consoel output when checking for same state after minimizing an input.
-    #[clap(long)]
+    #[clap(
+        long,
+        default_value("true"),
+        default_missing_value("true"),
+        num_args(0..=1),
+        require_equals(true),
+        action = ArgAction::Set,
+    )]
     pub(crate) ignore_console_output: bool,
 
     /// Dump the observed feedback into a file. Useful when debugging minimization according to

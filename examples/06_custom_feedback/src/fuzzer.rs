@@ -478,12 +478,25 @@ impl snapchange::FuzzInput for WasdArray {
         // Return the mutation applied
         mutations
     }
+    
+    // this is requrired to conform to snapchange's API
+    type MinState = NullMinimizerState;
+    /// dummy init minimize
+    fn init_minimize(&mut self) -> (Self::MinState, MinimizeControlFlow) {
+        NullMinimizerState::init()
+    }
 
     /// Minimize a `WasdArray` by truncating it or removing directions.
-    fn minimize(input: &mut Self, rng: &mut Rng) {
+    fn minimize(
+        &mut self,
+        _state: &mut Self::MinState,
+        _current_iteration: u32,
+        _last_successful_iteration: u32,
+        rng: &mut Rng,
+    ) -> MinimizeControlFlow {
         // Cannot minimize an empty input
         if input.data.is_empty() {
-            return;
+            return MinimizeControlFlow::Stop;
         }
 
         enum MinimizeAction {
@@ -511,5 +524,7 @@ impl snapchange::FuzzInput for WasdArray {
                 input.data.remove(idx);
             }
         }
+
+        MinimizeControlFlow::Continue
     }
 }

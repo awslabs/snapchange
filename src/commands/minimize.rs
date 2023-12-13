@@ -14,7 +14,7 @@ use kvm_ioctls::VmFd;
 
 use crate::cmdline::{self, MinimizeCodeCovLevel};
 use crate::config::Config;
-use crate::fuzz_input::{FuzzInput, InputWithMetadata};
+use crate::fuzz_input::{FuzzInput, InputWithMetadata, MinimizeControlFlow, MinimizerState};
 use crate::fuzzer::{BreakpointType, Fuzzer};
 use crate::fuzzvm::FuzzVm;
 use crate::memory::Memory;
@@ -34,6 +34,7 @@ enum Counters {
     CheckResult,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct MinimizerConfig {
     ignore_reg_state: bool,
     ignore_feedback: bool,
@@ -52,9 +53,10 @@ fn start_core<FUZZER: Fuzzer>(
     snapshot_fd: i32,
     clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<SymbolList>,
-    symbol_reset_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
-    coverage_breakpoints: Option<FxHashSet<VirtAddr>>,
-    input_case: &PathBuf,
+    symbol_reset_breakpoints: Option<&BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
+    coverage_breakpoints: Option<&FxHashSet<VirtAddr>>,
+    input_fuzzcase: &PathBuf,
+    output_fuzzcase: &PathBuf,
     vm_timeout: Duration,
     max_iterations: u32,
     config: Config,
@@ -133,7 +135,7 @@ fn start_core<FUZZER: Fuzzer>(
         snapshot_fd.as_raw_fd(),
         clean_snapshot,
         None, // do not setup regular coverage breakpoints
-        symbol_reset_breakpoints,
+        symbol_reset_breakpoints.cloned(),
         symbols,
         config,
         StackUnwinders::default(),
@@ -145,11 +147,11 @@ fn start_core<FUZZER: Fuzzer>(
 
     // Get the initial input
 
-    let input_bytes = std::fs::read(&input_case)?;
+    let input_bytes = std::fs::read(&input_fuzzcase)?;
     let start_input_size = input_bytes.len();
 
     let starting_input: InputWithMetadata<FUZZER::Input> =
-        InputWithMetadata::from_path(input_case, project_dir)?;
+        InputWithMetadata::from_path(input_fuzzcase, project_dir)?;
     let mut input = starting_input.fork();
 
     let start_length = input.len();
@@ -172,7 +174,7 @@ fn start_core<FUZZER: Fuzzer>(
     orig_feedback.ensure_clean(); // remove the feedback log
     if min_params.dump_feedback {
         let data = serde_json::to_string(&orig_feedback)?;
-        let mut save_path = std::path::PathBuf::from(input_case);
+        let mut save_path = std::path::PathBuf::from(input_fuzzcase);
         save_path.set_extension("feedback");
         std::fs::write(save_path, data)?;
     }
@@ -234,11 +236,28 @@ fn start_core<FUZZER: Fuzzer>(
 
     let mut last_feedback = None;
     let mut last_execution = Execution::Continue;
-    for iters in 0..max_iterations {
+    let mut current_iteration = 0u32;
+    let mut last_successful_iteration = 0u32;
+    let mut last_metric_change_at = 0u32;
+    let mut max_iterations = max_iterations;
+    let (mut minimizer_state, initial_cf) = input.input.init_minimize();
+    match initial_cf {
+        MinimizeControlFlow::Stop => {
+            // odd, but ok...
+            max_iterations = 0;
+        }
+        MinimizeControlFlow::ContinueFor(required_iterations) => {
+            if (current_iteration + required_iterations) < max_iterations {
+                max_iterations += required_iterations;
+            }
+        }
+        _ => {}
+    }
+    while current_iteration < max_iterations {
         if timer.elapsed() > Duration::from_secs(1) {
             log::info!(
-                "Iters {iters:6}/{max_iterations} | Exec/sec {:6.2}",
-                f64::from(iters) / start.elapsed().as_secs_f64()
+                "Iters {current_iteration:6}/{max_iterations} Last success at {last_successful_iteration} | Exec/sec {:6.2}",
+                f64::from(current_iteration) / start.elapsed().as_secs_f64()
             );
             if let Some(length) = input.len() {
                 log::info!(
@@ -280,9 +299,27 @@ fn start_core<FUZZER: Fuzzer>(
         let mut curr_input = time!(InputClone, { input.fork() });
 
         // Minimize the input based on the Input type
-        time!(InputMinimize, {
-            FUZZER::Input::minimize(&mut curr_input, &mut rng);
+        let cf = time!(InputMinimize, {
+            curr_input.minimize(
+                &mut minimizer_state,
+                current_iteration,
+                last_successful_iteration,
+                &mut rng,
+            )
         });
+
+        match cf {
+            // minimize was not able to create a new input, so we try with the next iteration
+            MinimizeControlFlow::Skip => {
+                continue;
+            }
+            MinimizeControlFlow::ContinueFor(required_iterations) => {
+                if (current_iteration + required_iterations) < max_iterations {
+                    max_iterations += required_iterations;
+                }
+            }
+            _ => {}
+        }
 
         let (execution, mut feedback) = time!(
             RunInput,
@@ -349,8 +386,15 @@ fn start_core<FUZZER: Fuzzer>(
                 feedback.ensure_clean(); // remove the feedback log
                 last_feedback = Some(feedback.clone());
                 last_execution = execution;
+                last_successful_iteration = current_iteration;
             }
         });
+
+        if matches!(cf, MinimizeControlFlow::Stop) || minimizer_state.is_stop_state() {
+            break;
+        }
+
+        current_iteration += 1;
     }
 
     if input == starting_input {
@@ -367,21 +411,13 @@ fn start_core<FUZZER: Fuzzer>(
         result_bytes.len()
     );
 
-    // Get the new minimized filename
-    let orig_file_name = input_case
-        .file_name()
-        .unwrap_or_else(|| std::ffi::OsStr::new("UNKNOWNFILENAME"));
-    let mut min_file = std::path::PathBuf::from(orig_file_name);
-    min_file.as_mut_os_string().push(".min"); // we are not using set_extension, since we do not
-                                              // want to replace an existing extension.
-
-    log::info!("Writing minimized file: {:?}", min_file);
-    std::fs::write(&min_file, &result_bytes)?;
+    log::info!("Writing minimized file: {:?}", output_fuzzcase);
+    std::fs::write(&output_fuzzcase, &result_bytes)?;
 
     if min_params.dump_feedback {
         if let Some(feedback) = last_feedback {
             let data = serde_json::to_string(&feedback)?;
-            let mut save_path = min_file.clone();
+            let mut save_path = output_fuzzcase.clone();
             save_path.as_mut_os_string().push(".feedback");
             std::fs::write(save_path, data)?;
         } else {
@@ -392,7 +428,7 @@ fn start_core<FUZZER: Fuzzer>(
     if last_execution.is_crash() {
         // Allow the fuzzer to handle the crashing state
         // Useful for things like syscall fuzzer to write a C file from the input
-        fuzzer.handle_crash(&input, &mut fuzzvm, &min_file)?;
+        fuzzer.handle_crash(&input, &mut fuzzvm, &output_fuzzcase)?;
     }
 
     Ok(())
@@ -424,10 +460,27 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         ignore_stack: args.ignore_stack,
         ignore_reg_state: args.rip_only,
         ignore_feedback: args.ignore_feedback,
-        codecov_level: args.consider_coverage,
         ignore_console: args.ignore_console_output,
         dump_feedback: args.dump_feedback_to_file,
+        codecov_level: args.consider_coverage.unwrap_or_else(|| {
+            // try to guess what we are minimizing and decide what kind of code coverage we want to
+            // look at.
+            let current_corpus = Some(std::ffi::OsStr::new("current_corpus"));
+            if args.path.file_name() == current_corpus
+                || args
+                    .path
+                    .parent()
+                    .map_or(true, |parent| parent.file_name() == current_corpus)
+            {
+                log::info!("guessing you want to minimize based on code coverage with hitcounts");
+                MinimizeCodeCovLevel::Hitcounts
+            } else {
+                MinimizeCodeCovLevel::None
+            }
+        }),
     };
+
+    log::debug!("{:?}", minparams);
 
     // only use coverage breakpoints if we are supposed to ignore the coverage feedback.
     let covbps = if !args.ignore_feedback && minparams.codecov_level > MinimizeCodeCovLevel::None {
@@ -451,7 +504,11 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         None
     };
 
-    let filepaths = crate::utils::get_files(&args.path, true)?;
+    let filepaths = if args.path.is_dir() {
+        crate::utils::get_files(&args.path, true)?
+    } else {
+        vec![args.path.clone()]
+    };
 
     let mut minimized = 0_u32;
     for (infile, outfile) in filepaths

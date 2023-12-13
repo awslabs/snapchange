@@ -26,12 +26,48 @@ use crate::cmp_analysis::RedqueenCoverage;
 #[cfg(feature = "redqueen")]
 use rustc_hash::FxHashSet;
 
+/// Returned by the [`FuzzInput::minimize`] function to signal how to progress further.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum MinimizeControlFlow {
+    /// Continue with minimization
+    #[default]
+    Continue,
+    /// Stop minimization after the current step
+    Stop,
+    /// Skip the current step, e.g., because the current minimization rule could not be applied.
+    Skip,
+    /// Continue minimization for at least that many steps.
+    ContinueFor(u32),
+}
+
+impl MinimizeControlFlow {
+    /// continue minimization for at least one more iteration
+    pub fn one_more() -> Self {
+        Self::ContinueFor(1)
+    }
+
+    /// continue minimization
+    pub fn cont() -> Self {
+        Self::Continue
+    }
+
+    /// stop minimization after current step
+    pub fn stop() -> Self {
+        Self::Stop
+    }
+}
+
 /// An abstract input used in fuzzing. This trait provides methods for mutating, generating, and
 /// minimizing an input. This trait also has required methods for enabling Redqueen analysis
 /// for an input.
 pub trait FuzzInput:
     Sized + Debug + Default + Clone + Send + Hash + Eq + std::panic::UnwindSafe
 {
+    /// Type that represents minimization state. Use [`NullMinimizerState`] if you do not have a
+    /// useful state for your minimization algorithm. The state type must implement the
+    /// [`MinimizerState`] trait.
+    type MinState: MinimizerState + std::panic::RefUnwindSafe;
+
     /// Function signature for a mutator of this type
     #[allow(clippy::type_complexity)]
     type MutatorFunc = fn(
@@ -91,8 +127,22 @@ pub trait FuzzInput:
         max_length: usize,
     ) -> InputWithMetadata<Self>;
 
+    /// init stateful minimization
+    fn init_minimize(&mut self) -> (Self::MinState, MinimizeControlFlow) {
+        panic!(
+            "Minimize not implemented for {:?}",
+            std::any::type_name::<Self>()
+        );
+    }
+
     /// Minimize the given `input` based on a minimization strategy
-    fn minimize(_input: &mut Self, _rng: &mut Rng) {
+    fn minimize(
+        &mut self,
+        _state: &mut Self::MinState,
+        _current_iteration: u32,
+        _last_successful_iteration: u32,
+        _rng: &mut Rng,
+    ) -> MinimizeControlFlow {
         panic!(
             "Minimize not implemented for {:?}",
             std::any::type_name::<Self>()
@@ -157,6 +207,44 @@ pub trait FuzzInput:
     /// return length of the input, if applicable.
     fn len(&self) -> Option<usize> {
         None
+    }
+}
+
+/// This is the trait to implement when you want to do provide a type for stateful minimization.
+/// See [`BytesMinimizeState`] for an example.
+pub trait MinimizerState:
+    Sized + Debug + Default + Clone + Send + Hash + Eq + std::panic::UnwindSafe
+{
+    /// Return true if the state is a stop state, i.e., there is nothing else to try.
+    fn is_stop_state(&self) -> bool;
+}
+
+/// In case there is no useful minimization state, use this type as your minimization state.
+///
+/// ```rust,ignore
+///
+/// impl FuzzInput for YourType {
+///    type MinState = NullMinimizerState;
+///
+///    fn init_minimize(&mut self) -> (Self::MinState, MinimizeControlFlow) {
+///        NullMinimizerState::init()
+///    }
+///
+/// }
+/// ```
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+pub struct NullMinimizerState;
+
+impl MinimizerState for NullMinimizerState {
+    fn is_stop_state(&self) -> bool {
+        false
+    }
+}
+
+impl NullMinimizerState {
+    /// to be used in [`FuzzInput::
+    const fn init() -> (Self, MinimizeControlFlow) {
+        (Self {}, MinimizeControlFlow::Continue)
     }
 }
 
@@ -257,6 +345,143 @@ impl FuzzInput for Vec<u8> {
 
         // Return the mutation applied
         mutations
+    }
+
+    type MinState = BytesMinimizeState;
+
+    fn init_minimize(&mut self) -> (Self::MinState, MinimizeControlFlow) {
+        (
+            BytesMinimizeState::TruncateTo(1),
+            MinimizeControlFlow::ContinueFor(self.len().try_into().unwrap()),
+        )
+    }
+
+    /// Minimize a `Vec<u8>` with a variety of different techniques
+    fn minimize(
+        &mut self,
+        state: &mut Self::MinState,
+        current_iteration: u32,
+        last_successful_iteration: u32,
+        rng: &mut Rng,
+    ) -> MinimizeControlFlow {
+        // Cannot minimize an empty input
+        if self.is_empty() {
+            *state = BytesMinimizeState::End;
+            return MinimizeControlFlow::Stop;
+        }
+        use BytesMinimizeState::*;
+        let mut cf = MinimizeControlFlow::Continue;
+        // Advance the state machine
+        *state = match *state {
+            // == deterministic minimization steps ===
+            TruncateTo(size) => {
+                // first attempt to truncate the size to the minimum; we start by truncating to a single
+                // byte and then gradually increase the length we truncate to. If we find that a
+                // truncation works, then we will see that size == self.len() and transition to the next
+                // strategy.
+                if size < self.len() {
+                    TruncateTo(size + 1)
+                } else {
+                    // otherwise we transition to the next strategy. Replace with a constant
+                    // starting from the back. We start by replacing whole 
+                    if self.len() >= 8 {
+                        cf = MinimizeControlFlow::ContinueFor((self.len() / 8).try_into().unwrap());
+                        ReplaceConstBytes(self.len() - 8, &[b'A'; 8])
+                    } else {
+                        cf = MinimizeControlFlow::ContinueFor(self.len().try_into().unwrap());
+                        Replace(self.len() - 1, b'A')
+                    }
+                }
+            }
+            ReplaceConstBytes(0, data) => {
+                if data == [b'A'; 8] && self.len() >= 8 {
+                    cf = MinimizeControlFlow::ContinueFor((self.len() / 8).try_into().unwrap());
+                    ReplaceConstBytes(self.len() - 8, &[0_u8; 8])
+                } else {
+                    cf = MinimizeControlFlow::ContinueFor(self.len().try_into().unwrap());
+                    Replace(self.len() - 1, 0)
+                }
+            }
+            ReplaceConstBytes(index, data) => ReplaceConstBytes(index.saturating_sub(8), data),
+            Replace(0, b'A') => {
+                cf = MinimizeControlFlow::ContinueFor(self.len().try_into().unwrap());
+                Replace(self.len() - 1, 0)
+            }
+            Replace(0, 0) => Slices,
+            Replace(index, what) => Replace(index - 1, what),
+            // == probabilistic minimization steps ===
+            // loop endlessly between states as long as the fuzzer wants
+            Slices => MultiBytes,
+            MultiBytes => SingleBytes,
+            SingleBytes => MultiBytes,
+            // == end state ===
+            End => End,
+        };
+
+        log::trace!("minimize with {:?}", state);
+
+        // Perform the minimization strategy for this state
+        match *state {
+            TruncateTo(size) => {
+                self.truncate(size);
+            }
+            ReplaceConstBytes(index, byte_slice) => {
+                let repl_len = byte_slice.len();
+                if self[index..].len() >= repl_len {
+                    self[index..(index + repl_len)].copy_from_slice(byte_slice);
+                } else {
+                    return MinimizeControlFlow::Skip;
+                }
+            }
+            Replace(index, byte) => {
+                if let Some(b) = self.get_mut(index) {
+                    if *b != byte {
+                        *b = byte;
+                    } else {
+                        return MinimizeControlFlow::Skip;
+                    }
+                } else {
+                    return MinimizeControlFlow::Skip;
+                }
+            }
+            Slices => {
+                let curr_input_len = self.len();
+
+                let a = rng.gen_range(0..curr_input_len);
+                let b = rng.gen_range(0..curr_input_len);
+                let (first, second) = if a < b { (a, b) } else { (b, a) };
+                self.splice(first..second, []);
+            }
+            MultiBytes => {
+                let count = rng.gen_range(0u32..32);
+                for _ in 0..count {
+                    let curr_input_len = self.len();
+                    if curr_input_len > 1 {
+                        let index = rng.gen_range(0..curr_input_len);
+                        self.remove(index);
+                    } else {
+                        break;
+                    }
+                }
+            }
+            SingleBytes => {
+                let index = rng.gen_range(0..self.len());
+                self.remove(index);
+            }
+            End => {
+                return MinimizeControlFlow::Stop;
+            }
+        }
+
+        if current_iteration > (3 * last_successful_iteration)
+            && matches!(state, Slices | MultiBytes | SingleBytes)
+        {
+            log::debug!("At iteration {current_iteration} and no progress since {last_successful_iteration} - giving up");
+            *state = End;
+            MinimizeControlFlow::Stop
+        } else {
+            cf
+        }
     }
 
     #[cfg(feature = "redqueen")]
@@ -508,63 +733,6 @@ impl FuzzInput for Vec<u8> {
         InputWithMetadata::from_input(result)
     }
 
-    /// Minimize a `Vec<u8>` with a variety of different techniques
-    fn minimize(input: &mut Self, rng: &mut Rng) {
-        // Cannot minimize an empty input
-        if input.is_empty() {
-            return;
-        }
-
-        // Randomly pick the type of minimization
-        let state = match rng.next() % 12 {
-            0..4 => MinimizeState::Slices,
-            4..8 => MinimizeState::MultiBytes,
-            8..10 => MinimizeState::SingleBytes,
-            10..12 => MinimizeState::Replace(0xcd),
-            _ => unreachable!(),
-        };
-
-        // Perform the minimization strategy for this state
-        match state {
-            MinimizeState::Slices => {
-                let curr_input_len = input.len();
-
-                let a = rng.gen::<usize>() % curr_input_len;
-                let b = rng.gen::<usize>() % curr_input_len;
-                let (first, second) = if a < b { (a, b) } else { (b, a) };
-
-                let _slice_len = rng.gen::<usize>() % (curr_input_len - second);
-
-                input.splice(first..second, []);
-            }
-            MinimizeState::MultiBytes => {
-                for _ in 0..=(rng.gen::<usize>() % 32) {
-                    if input.is_empty() {
-                        return;
-                    }
-
-                    let curr_input_len = input.len();
-                    input.remove(rng.gen::<usize>() % curr_input_len);
-                }
-            }
-            MinimizeState::SingleBytes => {
-                let curr_input_len = input.len();
-                input.remove(rng.gen::<usize>() % curr_input_len);
-            }
-            MinimizeState::Replace(redqueen_byte) => {
-                let curr_input_len = input.len();
-
-                for _ in 0..rng.gen::<usize>() % 32 {
-                    // Get the new offset to replace
-                    let offset = rng.gen::<usize>() % curr_input_len;
-
-                    // Found a newly replaced byte, replace it
-                    input[offset] = redqueen_byte;
-                }
-            }
-        }
-    }
-
     /// return shannon byte entropy for the bytes slice
     fn entropy_metric(&self) -> Option<f64> {
         Some(crate::utils::byte_entropy(self))
@@ -695,8 +863,17 @@ fn get_redqueen_rule_candidates_for_vec(
 /// Slice   - Attempt to delete slices of data to make the input smaller
 /// Bytes   - Attempt to delele individual bytes to make the input smaller
 /// Replace - Attempt to find unnecessary byte values by replacing bytes with `?`
-#[derive(Debug)]
-enum MinimizeState {
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum BytesMinimizeState {
+    /// Attempt to truncate to the given size
+    TruncateTo(usize),
+
+    /// This state tries to identify unnecessary bytes in the input
+    ReplaceConstBytes(usize, &'static [u8]),
+
+    /// This state tries to identify unnecessary bytes in the input
+    Replace(usize, u8),
+
     /// This state tries to delete bytes of the input to make the input smaller
     Slices,
 
@@ -706,9 +883,23 @@ enum MinimizeState {
     /// This state tries to delete single bytes of the input to make the input smaller
     SingleBytes,
 
-    /// This state tries to identify unnecessary bytes in the input with a `?` to signify
-    /// the byte is not needed for the crash
-    Replace(u8),
+    /// Randomize
+
+    /// signal immediate stop of minimization (currently unused)
+    End,
+}
+
+impl MinimizerState for BytesMinimizeState {
+    /// test if the given state represents a stop state
+    fn is_stop_state(&self) -> bool {
+        matches!(self, Self::End)
+    }
+}
+
+impl Default for BytesMinimizeState {
+    fn default() -> Self {
+        Self::End
+    }
 }
 
 /// Endianness for the redqueen rules

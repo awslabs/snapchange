@@ -5,17 +5,12 @@
 #![allow(clippy::cast_lossless)]
 
 use anyhow::Result;
-use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
 use thiserror::Error;
 
-use snapchange::addrs::{Cr3, VirtAddr};
-use snapchange::fuzzer::{AddressLookup, Fuzzer};
-use snapchange::fuzzvm::FuzzVm;
-use snapchange::rng::Rng;
-use snapchange::InputWithMetadata;
+use snapchange::prelude::*;
 
 use crate::constants;
 
@@ -498,8 +493,21 @@ impl snapchange::FuzzInput for Syscalls {
         InputWithMetadata::from_input(Syscalls { data: res })
     }
 
+    // this is requrired to conform to snapchange's API
+    type MinState = NullMinimizerState;
+    /// dummy init minimize
+    fn init_minimize(&mut self) -> (Self::MinState, MinimizeControlFlow) {
+        NullMinimizerState::init()
+    }
+
     /// Minimize the given `input` based on a minimization strategy
-    fn minimize(input: &mut Self, rng: &mut Rng) {
+    fn minimize(
+        &mut self,
+        _state: &mut Self::MinState,
+        _current_iteration: u32,
+        _last_successful_iteration: u32,
+        rng: &mut Rng,
+    ) -> MinimizeControlFlow {
         match rng.next() % 5 {
             0 => {
                 // Remove a random syscall
@@ -508,7 +516,7 @@ impl snapchange::FuzzInput for Syscalls {
 
                 // Don't remove the first FsOpen syscall
                 if index == 0 {
-                    return;
+                    return MinimizeControlFlow::Skip;
                 }
 
                 input.data.remove(index);
@@ -522,7 +530,7 @@ impl snapchange::FuzzInput for Syscalls {
                     Syscall::FsConfig { key, .. } => {
                         let key_len = key.len();
                         if key_len == 0 {
-                            return;
+                            return MinimizeControlFlow::Skip;
                         }
 
                         let a = rng.gen::<usize>() % key_len;
@@ -545,7 +553,7 @@ impl snapchange::FuzzInput for Syscalls {
                     Syscall::FsConfig { val, .. } => {
                         let val_len = val.len();
                         if val_len == 0 {
-                            return;
+                            return MinimizeControlFlow::Skip;
                         }
                         let a = rng.gen::<usize>() % val_len;
                         let b = rng.gen::<usize>() % val_len;
@@ -567,7 +575,7 @@ impl snapchange::FuzzInput for Syscalls {
                     Syscall::FsConfig { key, .. } => {
                         let key_len = key.len();
                         if key_len == 0 {
-                            return;
+                            return MinimizeControlFlow::Skip;
                         }
 
                         key.iter_mut().for_each(|x| *x = 0xcd);
@@ -586,7 +594,7 @@ impl snapchange::FuzzInput for Syscalls {
                     Syscall::FsConfig { val, .. } => {
                         let val_len = val.len();
                         if val_len == 0 {
-                            return;
+                            return MinimizeControlFlow::Skip;
                         }
 
                         val.iter_mut().for_each(|x| *x = 0xcd);
@@ -605,7 +613,7 @@ impl snapchange::FuzzInput for Syscalls {
                     Syscall::FsConfig { key, .. } => {
                         let key_len = key.len();
                         if key_len == 0 {
-                            return;
+                            return MinimizeControlFlow::Skip;
                         }
 
                         key.iter_mut().for_each(|x| *x = 0xcd);
@@ -617,5 +625,6 @@ impl snapchange::FuzzInput for Syscalls {
             }
             _ => unreachable!(),
         }
+        MinimizeControlFlow::Continue
     }
 }

@@ -14,7 +14,7 @@ use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
 
 #[cfg(feature = "redqueen")]
-use std::{collections::BTreeMap, fs::File, os::unix::io::AsRawFd, path::PathBuf, time::Duration};
+use std::{fs::File, os::unix::io::AsRawFd, path::PathBuf, time::Duration};
 
 #[cfg(feature = "redqueen")]
 use crate::{
@@ -25,11 +25,11 @@ use crate::{
     fuzz_input::{FuzzInput, InputWithMetadata},
     fuzzer::Fuzzer,
     fuzzvm,
-    fuzzvm::FuzzVm,
+    fuzzvm::{CoverageBreakpoints, FuzzVm, ResetBreakpoints},
     init_environment,
     stack_unwinder::StackUnwinders,
-    unblock_sigalrm, Cr3, KvmEnvironment, Memory, ProjectState, ResetBreakpointType, SymbolList,
-    VbCpu, VirtAddr, THREAD_IDS,
+    unblock_sigalrm, KvmEnvironment, Memory, ProjectState, SymbolList,
+    VbCpu, THREAD_IDS,
 };
 
 /// Execute the c subcommand to gather coverage for a particular input
@@ -39,7 +39,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
     args: &cmdline::RedqueenAnalysis,
 ) -> Result<()> {
     ensure!(
-        project_state.coverage_breakpoints.is_some(),
+        project_state.coverage_basic_blocks.is_some(),
         "Must have covbps to gather coverage"
     );
 
@@ -62,7 +62,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         .ok_or_else(|| anyhow!("No valid cores"))?;
 
     // Init the fake coverage breakpoints for this command
-    let covbp_bytes = BTreeMap::new();
+    let covbp_bytes = CoverageBreakpoints::default();
 
     // Start executing on this core
     start_core::<FUZZER>(
@@ -93,12 +93,13 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     snapshot_fd: i32,
     clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<SymbolList>,
-    symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
-    coverage_breakpoints: BTreeMap<VirtAddr, u8>,
+    symbol_breakpoints: Option<ResetBreakpoints>,
+    coverage_breakpoints: CoverageBreakpoints,
     input_case: &PathBuf,
     project_state: &ProjectState,
 ) -> Result<()> {
     // Store the thread ID of this thread used for passing the SIGALRM to this thread
+
     let thread_id = unsafe { libc::pthread_self() };
     *THREAD_IDS[core_id.id].lock().unwrap() = Some(thread_id);
 
