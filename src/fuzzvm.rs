@@ -4216,7 +4216,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
             {
                 let _timer = self.scoped_timer(PerfMark::RqRecordCodeCov);
                 if let FuzzVmExit::CoverageBreakpoint(rip) = &ret {
-                    feedback.record_codecov(VirtAddr(*rip));
+                    feedback.record_codecov_hitcount(VirtAddr(*rip));
                 }
             }
 
