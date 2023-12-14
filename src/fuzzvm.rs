@@ -43,7 +43,7 @@ use crate::stats::{PerfMark, PerfStatTimer, Stats};
 use crate::symbols::Symbol;
 
 use crate::vbcpu::VbCpu;
-use crate::{handle_vmexit, Execution, SymbolList, DIRTY_BITMAPS};
+use crate::{handle_vmexit, Execution, SymbolList};
 use crate::{try_u32, try_u64, try_u8, try_usize};
 
 #[cfg(feature = "redqueen")]
@@ -2751,11 +2751,6 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
             // Store the pointer for this bitmap in the densely packed bitmap storage
             let core_id = try_usize!(self.core_id);
-
-            DIRTY_BITMAPS[core_id][slot].store(
-                self.dirty_bitmaps[slot].as_mut_ptr().cast::<libc::c_void>(),
-                Ordering::SeqCst,
-            );
 
             self.number_of_pages[slot] = try_u32!(memory_size / page_size);
         }

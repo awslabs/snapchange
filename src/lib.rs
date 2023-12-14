@@ -288,17 +288,6 @@ lazy_static::lazy_static! {
      pub static ref THREAD_IDS: Vec<Mutex<Option<u64>>> = (0..MAX_CORES)
          .map(|_| Mutex::new(None))
          .collect();
-
-    /// Densely packed dirty bitmap pointers for each core
-    pub static ref DIRTY_BITMAPS: Vec<[AtomicPtr<libc::c_void>; 3]> = (0..MAX_CORES)
-        .map(|_| {
-            [
-                AtomicPtr::new(std::ptr::null_mut()),
-                AtomicPtr::new(std::ptr::null_mut()),
-                AtomicPtr::new(std::ptr::null_mut())
-            ]
-        })
-        .collect();
 }
 
 /// Set by a timer, signals the main thread to kick all cores out of execution

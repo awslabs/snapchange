@@ -188,8 +188,6 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         let _timer = self.scoped_timer(PerfMark::ClearDirtyLogs);
 
         for (slot, bitmap) in self.dirty_bitmaps.iter_mut().enumerate() {
-            // for (slot, bitmap) in DIRTY_BITMAPS[usize::try_from(self.core_id).unwrap()].iter().enumerate() {
-
             let dirty_bitmap = bitmap.as_mut_ptr().cast::<libc::c_void>();
 
             let clear_log = kvm_clear_dirty_log {

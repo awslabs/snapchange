@@ -303,7 +303,7 @@ impl<FUZZER: Fuzzer> Drop for PerfStatTimer<FUZZER> {
             .wrapping_add(elapsed)
             .checked_sub(child_time)
             .unwrap_or_else(|| {
-                log::warn!(
+                log::debug!(
                     "Failed on drop: {:?} curr elapsed {:#x} elapsed {:#x} child time {:#x}",
                     self.timer,
                     stats.elapsed[self.timer as usize],
