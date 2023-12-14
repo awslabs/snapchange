@@ -451,24 +451,48 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         None
     };
 
-    // Start executing on this core
-    start_core::<FUZZER>(
-        core_id,
-        &vm,
-        &project_state.vbcpu,
-        &cpuids,
-        physmem_file.as_raw_fd(),
-        clean_snapshot,
-        &symbols,
-        symbol_breakpoints,
-        covbps,
-        &args.path,
-        args.timeout,
-        args.iterations_per_stage,
-        project_state.config.clone(),
-        minparams,
-        &project_state.path,
-    )?;
+    let filepaths = crate::utils::get_files(&args.path, true)?;
+
+    let mut minimized = 0_u32;
+    for (infile, outfile) in filepaths
+        .iter()
+        // only check files that are not minimized already
+        .filter(|p| p.extension().map_or(true, |x| x != "min"))
+        .map(|infile| {
+            if args.in_place {
+                let outfile = infile.clone();
+                (infile, outfile)
+            } else {
+                let outfile = infile.with_extension("min");
+                (infile, outfile)
+            }
+        })
+    {
+        // TODO(mrodler): the second iteration of this panics! fix this.
+        // Start executing on this core
+        start_core::<FUZZER>(
+            core_id,
+            &vm,
+            &project_state.vbcpu,
+            &cpuids,
+            physmem_file.as_raw_fd(),
+            clean_snapshot.clone(),
+            &symbols,
+            symbol_breakpoints.as_ref(),
+            covbps.as_ref(),
+            &infile,
+            &outfile,
+            args.timeout,
+            args.iterations_per_stage,
+            project_state.config.clone(),
+            minparams.clone(),
+            &project_state.path,
+        )?;
+        minimized += 1;
+    }
+    if minimized > 1 {
+        log::info!("minimized {} files", minimized);
+    }
 
     // Success
     Ok(())

@@ -492,6 +492,31 @@ pub fn hexdigest<T: Hash>(t: &T) -> String {
     format!("{h:016x}")
 }
 
+/// Get all of the files found in the given path recursively
+pub fn get_files<P: std::convert::AsRef<std::path::Path>>(
+    path: P,
+    recurse: bool,
+) -> Result<Vec<PathBuf>, std::io::Error> {
+    let mut files = Vec::new();
+    let entries = std::fs::read_dir(path)?;
+
+    for entry in entries {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            if recurse {
+                let dir_files = get_files(&entry.path(), recurse)?;
+                files.extend(dir_files);
+            }
+        } else if file_type.is_file() {
+            files.push(entry.path());
+        }
+    }
+
+    Ok(files)
+}
+
 /// Save the [`InputWithMetadata`] into the project directory using the hash of input as the filename
 ///
 /// # Errors

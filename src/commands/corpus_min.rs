@@ -22,27 +22,8 @@ use crate::fuzzvm::{FuzzVm, FuzzVmExit};
 use crate::memory::Memory;
 use crate::{cmdline, fuzzvm, unblock_sigalrm, SymbolList, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
-use crate::{Cr3, Execution, ResetBreakpointType, VbCpu, VirtAddr};
-
-/// Get all of the files found in the given path recursively
-fn get_files(path: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
-    let mut files = Vec::new();
-    let entries = std::fs::read_dir(path)?;
-
-    for entry in entries {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-
-        if file_type.is_dir() {
-            let dir_files = get_files(&entry.path())?;
-            files.extend(dir_files);
-        } else if file_type.is_file() {
-            files.push(entry.path());
-        }
-    }
-
-    Ok(files)
-}
+use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
+use crate::utils::get_files;
 
 /// Execute the Coverage subcommand to gather coverage for a particular input
 pub(crate) fn run<FUZZER: Fuzzer>(
@@ -100,7 +81,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
     );
 
     // Gather the paths to gather the coverage for
-    let paths = get_files(&args.input_dir)?;
+    let paths = get_files(&args.input_dir, true)?;
 
     log::info!("Found {} coverage", covbp_bytes.keys().len());
     log::info!("Found {} files to minimize", paths.len());
@@ -251,7 +232,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
     }
 
     // Gather the paths to gather the coverage for
-    let new_paths = get_files(&args.input_dir)?;
+    let new_paths = get_files(&args.input_dir, true)?;
     log::info!("Reduced corpus from {} to {}", paths.len(), new_paths.len());
 
     let cov_out = project_state.path.join("coverage.addresses.min");
