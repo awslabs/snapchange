@@ -135,7 +135,7 @@ impl std::str::FromStr for VirtAddr {
 
 /// A wrapper around the cr3
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
 pub struct Cr3(pub u64);
 
 impl std::ops::Deref for Cr3 {

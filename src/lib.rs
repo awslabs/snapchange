@@ -842,7 +842,7 @@ struct KvmEnvironment {
     symbols: Option<SymbolList>,
 
     /// Parsed symbol breakpoints if any coverage breakpoints are available in the project
-    symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
+    symbol_breakpoints: Option<fuzzvm::ResetBreakpoints>,
 }
 
 /// Perform KVM initialization routines and common project setup steps for all

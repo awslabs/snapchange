@@ -16,7 +16,7 @@ use crate::cmdline::{self, MinimizeCodeCovLevel};
 use crate::config::Config;
 use crate::fuzz_input::{FuzzInput, InputWithMetadata, MinimizeControlFlow, MinimizerState};
 use crate::fuzzer::{BreakpointType, Fuzzer};
-use crate::fuzzvm::FuzzVm;
+use crate::fuzzvm::{FuzzVm, ResetBreakpoints};
 use crate::memory::Memory;
 use crate::stack_unwinder::StackUnwinders;
 use crate::{fuzzvm, unblock_sigalrm, SymbolList, THREAD_IDS};
@@ -53,7 +53,7 @@ fn start_core<FUZZER: Fuzzer>(
     snapshot_fd: i32,
     clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<SymbolList>,
-    symbol_reset_breakpoints: Option<&BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
+    symbol_reset_breakpoints: Option<&ResetBreakpoints>,
     coverage_breakpoints: Option<&FxHashSet<VirtAddr>>,
     input_fuzzcase: &PathBuf,
     output_fuzzcase: &PathBuf,
@@ -487,7 +487,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         // Init the coverage breakpoints mapping to byte
         let mut covbp_bytes = FxHashSet::default();
         // Write the remaining coverage breakpoints into the "clean" snapshot
-        if let Some(covbps) = project_state.coverage_breakpoints.as_ref() {
+        if let Some(covbps) = project_state.coverage_basic_blocks.as_ref() {
             let cr3 = Cr3(project_state.vbcpu.cr3);
             // Small scope to drop the clean snapshot lock
             let mut curr_clean_snapshot = clean_snapshot.write().unwrap();

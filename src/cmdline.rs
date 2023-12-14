@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use std::num::NonZeroUsize;
 
 use crate::addrs::{Cr3, VirtAddr};
 use crate::cmp_analysis::{Conditional, Operand, RedqueenArguments, Size};
@@ -21,6 +22,7 @@ use crate::stack_unwinder::StackUnwinders;
 use crate::symbols::{Symbol, LINUX_KERNEL_SYMBOLS, LINUX_USERLAND_SYMBOLS};
 use crate::vbcpu::{VbCpu, VmSelector, X86FxState, X86XSaveArea, X86XSaveHeader, X86XsaveYmmHi};
 use crate::SymbolList;
+use crate::fuzzvm::ResetBreakpoints;
 
 /// Custom errors [`FuzzVm`](crate::fuzzvm::FuzzVm) can throw
 #[derive(Error, Debug)]
@@ -88,7 +90,7 @@ pub struct ProjectState {
 
     /// Addresses to apply single shot breakpoints for the purposes of coverage.
     /// Addresses assume the CR3 of the beginning of the snapshot.
-    pub(crate) coverage_breakpoints: Option<BasicBlockMap>,
+    pub(crate) coverage_basic_blocks: Option<BasicBlockMap>,
 
     /// Module metadata containing where each module is loaded in the snapshot. Primarily
     /// used for dumping lighthouse coverage maps
@@ -138,7 +140,7 @@ impl ProjectState {
             prev_coverage = serde_json::from_str(&data)?;
         }
 
-        if let Some(breakpoints) = self.coverage_breakpoints.as_ref() {
+        if let Some(breakpoints) = self.coverage_basic_blocks.as_ref() {
             // The coverage left to hit
             let coverage_left = breakpoints
                 .keys()
@@ -661,9 +663,6 @@ pub struct WriteMem {
     pub(crate) cr3: Option<VirtAddr>,
 }
 
-/// Set of addresses that, if hit, signal a crash in the guest
-pub type ResetBreakpoints = BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>;
-
 /// Get the [`ProjectState`] from the given project directory
 ///
 /// # Errors
@@ -913,7 +912,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         vbcpu,
         physical_memory,
         symbols,
-        coverage_breakpoints,
+        coverage_basic_blocks: coverage_breakpoints,
         modules,
         binaries,
         vmlinux,
@@ -937,10 +936,10 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         )?;
 
         // Add the sancov breakpoints to the total coverage breakpoints
-        if let Some(covbps) = state.coverage_breakpoints.as_mut() {
+        if let Some(covbps) = state.coverage_basic_blocks.as_mut() {
             covbps.extend(sancov_bps);
         } else {
-            state.coverage_breakpoints = Some(sancov_bps);
+            state.coverage_basic_blocks = Some(sancov_bps);
         }
     }
 
@@ -960,7 +959,7 @@ pub fn parse_symbols(
 ) -> Result<(Option<SymbolList>, Option<ResetBreakpoints>)> {
     // Init the resulting values
     let mut symbols = None;
-    let mut reset_breakpoints = Some(BTreeMap::new());
+    let mut reset_breakpoints = Some(ResetBreakpoints::default());
 
     if let Some(ref syms) = symbols_arg {
         let mut curr_symbols = crate::SymbolList::new();
@@ -983,7 +982,7 @@ pub fn parse_symbols(
             });
         }
 
-        let mut symbol_bps = BTreeMap::new();
+        let mut symbol_bps = ResetBreakpoints::default();
 
         // Sanity check the symbols are sorted
         for sym in &curr_symbols {

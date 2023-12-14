@@ -34,7 +34,7 @@ fn start_core<FUZZER: Fuzzer>(
     snapshot_fd: i32,
     clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<SymbolList>,
-    symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
+    symbol_breakpoints: Option<crate::fuzzvm::ResetBreakpoints>,
     vm_timeout: Duration,
     config: Config,
     next_file_index: Arc<AtomicUsize>,

@@ -2213,7 +2213,7 @@ impl DebugInfo {
         contexts: &'a ContextSlice,
     ) -> Result<()> {
         let cov_bps = project_state
-            .coverage_breakpoints
+            .coverage_basic_blocks
             .as_ref()
             .ok_or(anyhow::anyhow!(
                 "Coverage breakpoints required for source coverage"

@@ -22,7 +22,7 @@ use crate::coverage_analysis::CoverageAnalysis;
 use crate::enable_manual_dirty_log_protect;
 use crate::fuzz_input::{FuzzInput, InputWithMetadata};
 use crate::fuzzer::Fuzzer;
-use crate::fuzzvm::FuzzVm;
+use crate::fuzzvm::{FuzzVm, ResetBreakpoints, CoverageBreakpoints};
 use crate::rng::Rng;
 use crate::stats::PerfStatTimer;
 use crate::stats::{self, PerfMark};
@@ -263,7 +263,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
     );
 
     // Init the coverage breakpoints mapping to byte
-    let mut covbp_bytes = BTreeMap::new();
+    let mut covbp_bytes = fuzzvm::CoverageBreakpoints::default();
 
     // Start timer for writing all coverage breakpoints
     let start = Instant::now();
@@ -678,8 +678,8 @@ fn start_core<FUZZER: Fuzzer>(
     snapshot_fd: i32,
     clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<SymbolList>,
-    symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
-    coverage_breakpoints: Option<BTreeMap<VirtAddr, u8>>,
+    symbol_breakpoints: Option<ResetBreakpoints>,
+    coverage_breakpoints: Option<CoverageBreakpoints>,
     core_stats: &Arc<Mutex<Stats<FUZZER>>>,
     project_dir: &PathBuf,
     vm_timeout: Duration,
