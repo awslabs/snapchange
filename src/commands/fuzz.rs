@@ -3,6 +3,7 @@
 use anyhow::{ensure, Context, Result};
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -70,11 +71,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
     } = init_environment(&project_state)?;
 
     // Get the number of cores to fuzz with
-    let mut cores = args.cores.unwrap_or(1);
-    if cores == 0 {
-        log::warn!("No cores given. Defaulting to 1 core");
-        cores = 1;
-    }
+    let cores: usize = args.cores.map_or(1, |c| c.into());
 
     // Init list of all cores executing
     let mut threads = Vec::new();

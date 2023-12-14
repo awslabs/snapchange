@@ -55,11 +55,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
     );
 
     // Get the number of cores to fuzz with
-    let mut cores = args.cores.unwrap_or(1);
-    if cores == 0 {
-        log::warn!("No cores given. Defaulting to 1 core");
-        cores = 1;
-    }
+    let cores: usize = args.cores.map_or(1, |c| c.into());
 
     let KvmEnvironment {
         kvm,

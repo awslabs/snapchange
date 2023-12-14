@@ -356,7 +356,7 @@ pub struct Fuzz {
     /// Number of cores to fuzz with. Negative numbers interpretted as MAX_CORES - CORES. Prefix
     /// with `/N` to specify a fraction of available cores.
     #[clap(short, long, allow_hyphen_values = true, value_parser = parse_cores)]
-    pub(crate) cores: Option<usize>,
+    pub(crate) cores: Option<NonZeroUsize>,
 
     /// Set the timeout (in seconds) of the execution of the VM. [0-9]+(ns|us|ms|s|m|h)
     #[clap(long, value_parser = parse_timeout, default_value = "1s")]
@@ -465,7 +465,7 @@ pub struct CorpusMin {
     /// Number of cores to fuzz with. Negative numbers interpretted as MAX_CORES - CORES. Prefix
     /// with `/N` to specify a fraction of available cores.
     #[clap(short, long, allow_hyphen_values = true, value_parser = parse_cores)]
-    pub(crate) cores: Option<usize>,
+    pub(crate) cores: Option<NonZeroUsize>,
 
     /// The path to the corpus containing input files to minimize
     #[clap(short, long, default_value = "./snapshot/current_corpus")]
@@ -527,9 +527,10 @@ pub struct FindInput {
     pub(crate) timeout: Duration,
 
     /// Number of cores to fuzz with. Negative numbers interpretted as MAX_CORES - CORES. Prefix
-    /// with `/N` to specify a fraction of available cores.
+    /// with `/N` to specify a fraction of available cores. Use `/1` for all cores.
+    /// Recommended: `/2` on systems with hyperthreading.
     #[clap(short, long, allow_hyphen_values = true, value_parser = parse_cores)]
-    pub(crate) cores: Option<usize>,
+    pub(crate) cores: Option<NonZeroUsize>,
 }
 
 /// Subcommands available for the command line specific to the project
@@ -1574,21 +1575,21 @@ pub fn parse_timeout(input: &str) -> anyhow::Result<Duration> {
     Ok(res)
 }
 
-fn parse_cores(str: &str) -> Result<usize, anyhow::Error> {
+fn parse_cores(str: &str) -> Result<NonZeroUsize, anyhow::Error> {
     let num_cores = core_affinity::get_core_ids().unwrap().len();
 
     let cores = if let Some(cores) = str.strip_prefix('/') {
-        let i = cores.parse::<usize>()?;
+        let i = cores.parse::<NonZeroUsize>()?;
         num_cores / i
     } else {
         let i = str.parse::<i64>()?;
         if i < 0 {
-            ((num_cores as i64) + i) as usize
+            ((num_cores as i64) + i).try_into()?
         } else {
-            i as usize
+            i.try_into()?
         }
     };
-    Ok(cores)
+    Ok(cores.try_into()?)
 }
 
 /// Parse the cmp analysis breakpoints. This will read the given path and parse
