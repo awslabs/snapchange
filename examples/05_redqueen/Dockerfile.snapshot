@@ -1,16 +1,18 @@
 FROM ubuntu:latest as target
 
 RUN apt-get update -q && \
-	apt-get install -q -y gdb python3 binutils python-is-python3 libc6-dbg libssl-dev libssl3 && \
+	apt-get install -q -y gdb python3 binutils python-is-python3 libc6-dbg libssl-dev libssl3 clang make && \
 	apt-get clean -y
 
 # Copy the binary and create a sample input
-COPY harness/test_cmpsolves /opt
+COPY harness /opt/harness
+RUN ls -la /opt/harness
+RUN cd /opt/harness && CC=clang CXX='-g' make test_cmpsolves
 RUN truncate -s 16383 /opt/input
 	
 FROM snapchange_snapshot
 COPY --from=target / "$SNAPSHOT_INPUT"
 
-ENV SNAPSHOT_ENTRYPOINT=/opt/test_cmpsolves
+ENV SNAPSHOT_ENTRYPOINT=/opt/harness/test_cmpsolves
 ENV SNAPSHOT_ENTRYPOINT_ARGUMENTS=/opt/input
-ENV GENERATE_COVERAGE_BREAKPOINTS=0
+ENV GENERATE_COVERAGE_BREAKPOINTS=1

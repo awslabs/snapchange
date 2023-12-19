@@ -885,7 +885,11 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
                                 fuzzvm.set_redqueen_rule_candidates(&input, rule);
                             }
                         }
-                        _ => panic!("Unknown BYTES operation: {operation:?}")
+
+                        _ => {
+                            let rip = fuzzvm.rip();
+                            panic!("Unknown BYTES operation: {operation:?} {args:x?} {rip:#x}")
+                        }
                     }
                 }
                 Size::X87 => {

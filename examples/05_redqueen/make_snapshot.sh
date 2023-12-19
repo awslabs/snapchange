@@ -21,8 +21,4 @@ docker run -i \
 # cargo add snapchange --path ../../ --features redqueen
 
 # Copy the generated redqueen coverage breakpoints and compare breakpoints
-cp harness/*cmps ./snapshot
-cp harness/*covbps ./snapshot
-cp harness/*analysis ./snapshot
 cp harness/config.toml ./snapshot/config.toml
-
