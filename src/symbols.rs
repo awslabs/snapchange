@@ -1,7 +1,6 @@
 //! Utilites for obtaining symbols for a given address for a variety of operating systems
 
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 
 use crate::fuzzer::ResetBreakpointType;
 

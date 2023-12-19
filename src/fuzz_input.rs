@@ -191,8 +191,6 @@ impl FuzzInput for Vec<u8> {
         // Mutations applied to this input
         let mut mutations: Vec<String> = Vec::new();
 
-        let orig_len = input.len();
-
         // Perform some number of mutations on the input
         for _ in 0..num_change {
             // Special case the redqueen mutation if there are available rules

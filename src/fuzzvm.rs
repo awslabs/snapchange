@@ -52,15 +52,17 @@ use crate::{
     fuzz_input::FuzzInput,
 };
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::BTreeMap;
 use std::convert::TryInto;
-use std::path::Path;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "redqueen")]
-use std::collections::BTreeSet;
+use std::{
+    collections::{BTreeSet, HashMap},
+    path::Path,
+    sync::atomic::Ordering,
+};
 
 /// APIC base we are expecting the guest to adhere to. Primarily comes into play when
 /// mapping guest memory regions in KVM as we need to leave to leave a gap in the guest
@@ -2748,10 +2750,6 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
 
             // Create the dirty bitmap for this core for this slot
             self.dirty_bitmaps[slot] = vec![0; bitmap_size];
-
-            // Store the pointer for this bitmap in the densely packed bitmap storage
-            let core_id = try_usize!(self.core_id);
-
             self.number_of_pages[slot] = try_u32!(memory_size / page_size);
         }
 

@@ -2,11 +2,9 @@
 
 use anyhow::{anyhow, ensure, Context, Result};
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::convert::Into;
-use std::fs::File;
+use std::collections::BTreeMap;
 use std::os::unix::io::AsRawFd;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -16,11 +14,11 @@ use kvm_ioctls::VmFd;
 
 use crate::fuzz_input::InputWithMetadata;
 use crate::fuzzer::Fuzzer;
-use crate::fuzzvm::{FuzzVm, FuzzVmExit};
+use crate::fuzzvm::FuzzVm;
 use crate::memory::Memory;
 use crate::{cmdline, fuzzvm, unblock_sigalrm, SymbolList, THREAD_IDS};
-use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
-use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VirtAddr};
+use crate::{init_environment, KvmEnvironment, ProjectState};
+use crate::{Cr3, ResetBreakpointType, VirtAddr};
 
 /// Execute the Coverage subcommand to gather coverage for a particular input
 pub(crate) fn run<FUZZER: Fuzzer>(
@@ -110,8 +108,6 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
         path: project_dir,
         ..
     } = project_state;
-    let debug_info = crate::stats::DebugInfo::new(project_state);
-
     // Use the current fuzzer
     let mut fuzzer = FUZZER::default();
 
@@ -212,17 +208,14 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
             symbols_file.display()
         );
         crate::stats::write_human_readable_text_coverage(
-            project_state,
             &debug_info,
             symbols.as_ref(),
             &feedback,
             symbols_file,
         )?;
-
     } else {
         log::warn!("failed to load debug info");
     }
-
 
     if display_context {
         fuzzvm.print_context()?;

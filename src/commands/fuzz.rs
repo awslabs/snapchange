@@ -2,8 +2,6 @@
 
 use anyhow::{ensure, Context, Result};
 
-use std::collections::{HashMap, VecDeque};
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
@@ -14,7 +12,6 @@ use std::time::{Duration, Instant};
 use core_affinity::CoreId;
 use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
-use rand::Rng as _;
 
 use crate::cmdline::ProjectCoverage;
 use crate::{cmdline, SymbolList};
@@ -34,12 +31,14 @@ use crate::{block_sigalrm, kick_cores, Stats, FINISHED};
 use crate::memory::Memory;
 use crate::{fuzzvm, unblock_sigalrm, write_crash_input, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
-use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
+use crate::{Cr3, Execution, ResetBreakpointType, VbCpu, VirtAddr};
 
 use crate::feedback::FeedbackTracker;
 
 #[cfg(feature = "redqueen")]
 use crate::cmp_analysis::RedqueenArguments;
+#[cfg(feature = "redqueen")]
+use std::collections::HashMap;
 
 use crate::stack_unwinder::StackUnwinders;
 
@@ -774,7 +773,6 @@ fn start_core<FUZZER: Fuzzer>(
     // Get the crash dir for this project
     let crash_dir = project_dir.join("crashes");
 
-    let fuzz_start_time = std::time::Instant::now();
     core_stats.lock().unwrap().perf_stats.start_time = crate::utils::rdtsc();
 
     // Cache the shared redqueen seen state to avoid having to shared lock as much as possible
@@ -1192,8 +1190,6 @@ fn start_core<FUZZER: Fuzzer>(
 
         // Check if the input hit any kasan_report blocks
         if let Some(path) = fuzzvm.get_kasan_crash_path() {
-            let input_bytes = input.input_as_bytes()?;
-
             // Found a valid KASAN output, write out the crashing input
             if let Some(crash_file) =
                 write_crash_input(&crash_dir, &path, &input, &fuzzvm.console_output)?

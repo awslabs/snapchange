@@ -100,7 +100,6 @@
 #![feature(stdsimd)]
 #![feature(avx512_target_feature)]
 #![feature(core_intrinsics)]
-#![feature(const_discriminant)]
 #![feature(associated_type_defaults)]
 #![feature(variant_count)]
 #![feature(path_file_prefix)]
@@ -125,12 +124,12 @@ use vmm_sys_util::fam::FamStructWrapper;
 
 extern crate bitflags;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 pub use rand;

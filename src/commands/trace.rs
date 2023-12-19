@@ -3,8 +3,7 @@
 use anyhow::{anyhow, ensure, Context, Result};
 use rustc_hash::FxHashSet;
 
-use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;

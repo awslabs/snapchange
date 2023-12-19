@@ -14,13 +14,7 @@ use kvm_bindings::CpuId;
 use kvm_ioctls::VmFd;
 
 #[cfg(feature = "redqueen")]
-use std::{
-    collections::{BTreeMap, VecDeque},
-    fs::File,
-    os::unix::io::AsRawFd,
-    path::PathBuf,
-    time::Duration,
-};
+use std::{collections::BTreeMap, fs::File, os::unix::io::AsRawFd, path::PathBuf, time::Duration};
 
 #[cfg(feature = "redqueen")]
 use crate::{
@@ -34,8 +28,8 @@ use crate::{
     fuzzvm::FuzzVm,
     init_environment,
     stack_unwinder::StackUnwinders,
-    unblock_sigalrm, Cr3, KvmEnvironment, Memory, ProjectState, ResetBreakpointType, Symbol,
-    SymbolList, VbCpu, VirtAddr, THREAD_IDS,
+    unblock_sigalrm, Cr3, KvmEnvironment, Memory, ProjectState, ResetBreakpointType, SymbolList,
+    VbCpu, VirtAddr, THREAD_IDS,
 };
 
 /// Execute the c subcommand to gather coverage for a particular input
@@ -105,8 +99,6 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     project_state: &ProjectState,
 ) -> Result<()> {
     // Store the thread ID of this thread used for passing the SIGALRM to this thread
-
-    use crate::SymbolList;
     let thread_id = unsafe { libc::pthread_self() };
     *THREAD_IDS[core_id.id].lock().unwrap() = Some(thread_id);
 

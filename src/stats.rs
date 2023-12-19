@@ -12,14 +12,14 @@ use crossterm::event::KeyCode;
 use ahash::{AHashMap, AHashSet};
 use rand::seq::IteratorRandom;
 use rand::Rng as _;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use tui::text::Span;
 use tui::widgets::ListItem;
 use tui_logger::{TuiWidgetEvent, TuiWidgetState};
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::convert::{From, Into};
+use std::collections::BTreeSet;
+use std::convert::Into;
 use std::fs::File;
 use std::io::Write;
 use std::mem::variant_count;
@@ -39,7 +39,6 @@ use crate::fuzzer::Fuzzer;
 use crate::fuzzvm::FuzzVmExit;
 use crate::rng::Rng;
 use crate::stats_tui::StatsApp;
-use crate::symbols::Symbol;
 use crate::utils::save_input_in_project;
 use crate::{FxIndexMap, FxIndexSet, SymbolList};
 
@@ -2151,7 +2150,6 @@ pub fn write_text_coverage<P: std::convert::AsRef<std::path::Path>>(
 
 /// Write human readable coverage to a text file.
 pub fn write_human_readable_text_coverage<P: std::convert::AsRef<std::path::Path>>(
-    project_state: &crate::ProjectState,
     debug_info: &DebugInfo,
     symbols: Option<&SymbolList>,
     feedback: &FeedbackTracker,

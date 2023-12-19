@@ -466,7 +466,6 @@ impl CoverageAnalysis {
             }
 
             // Found a new result, add it!
-            let node = &self.nodes[*node_index];
             self.cached_total_results
                 .push((*score, *addr, hit_parents.to_vec()));
         }

@@ -4,7 +4,6 @@ use anyhow::Result;
 use thiserror::Error;
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::VecDeque;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::path::{Path, PathBuf};

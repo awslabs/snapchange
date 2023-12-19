@@ -3,13 +3,10 @@
 use anyhow::{anyhow, ensure, Context, Result};
 use clap::Parser;
 use log::debug;
-use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 use thiserror::Error;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fs::File;
-use std::num::NonZeroUsize;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -20,7 +17,6 @@ use crate::config::Config;
 use crate::feedback::FeedbackTracker;
 use crate::fuzzer::ResetBreakpointType;
 use crate::stack_unwinder::StackUnwinders;
-use crate::stats;
 use crate::symbols::{Symbol, LINUX_KERNEL_SYMBOLS, LINUX_USERLAND_SYMBOLS};
 use crate::vbcpu::{VbCpu, VmSelector, X86FxState, X86XSaveArea, X86XSaveHeader, X86XsaveYmmHi};
 use crate::SymbolList;
@@ -774,7 +770,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
     let mut redqueen_breakpoints = None;
 
     #[cfg(feature = "redqueen")]
-    let mut redqueen_bp_addrs: FxHashSet<VirtAddr> = FxHashSet::default();
+    let mut redqueen_bp_addrs: rustc_hash::FxHashSet<VirtAddr> = rustc_hash::FxHashSet::default();
 
     #[cfg(feature = "redqueen")]
     if !cmps_paths.is_empty() {

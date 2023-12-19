@@ -2,7 +2,7 @@
 use anyhow::{anyhow, ensure, Context, Result};
 use rustc_hash::FxHashSet;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -19,9 +19,9 @@ use crate::fuzzer::{BreakpointType, Fuzzer};
 use crate::fuzzvm::FuzzVm;
 use crate::memory::Memory;
 use crate::stack_unwinder::StackUnwinders;
-use crate::{fuzzvm, unblock_sigalrm, THREAD_IDS, SymbolList};
+use crate::{fuzzvm, unblock_sigalrm, SymbolList, THREAD_IDS};
 use crate::{init_environment, KvmEnvironment, ProjectState};
-use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
+use crate::{Cr3, Execution, ResetBreakpointType, VbCpu, VirtAddr};
 
 /// Stages to measure performance during minimization
 #[derive(Debug, Copy, Clone)]
@@ -286,7 +286,13 @@ fn start_core<FUZZER: Fuzzer>(
 
         let (execution, mut feedback) = time!(
             RunInput,
-            fuzzvm.gather_feedback(&mut fuzzer, &curr_input, vm_timeout, covbps_addrs.iter().cloned(), bp_type)?
+            fuzzvm.gather_feedback(
+                &mut fuzzer,
+                &curr_input,
+                vm_timeout,
+                covbps_addrs.iter().cloned(),
+                bp_type
+            )?
         );
 
         // Check if the VM resulted in the same crashing state. If so, keep the minimized input as the
