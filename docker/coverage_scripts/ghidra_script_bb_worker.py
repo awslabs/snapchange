@@ -208,6 +208,7 @@ def get_emulated_pcode(instr):
     Emulate the pcode for a given instruction and return the ending emulated state.
     The goal is to calculate the total equation for setting status flags.
     '''
+    # Default to return nothing when looking for the parity flag
     emu = {'pf': ''}
 
     for pcode in instr.getPcode():
@@ -229,7 +230,7 @@ def get_emulated_pcode(instr):
             'FLOAT_EQUAL': 'FCMP_E',
             'FLOAT_LESS': 'FCMP_LT',
 
-            # Probably useless
+            # Probably unused operands for us currently
             'POPCOUNT': 'UNUSEDpopcount',
             'FLOAT_NAN': 'UNUSEDfloat_nan',
             'BOOL_OR': 'UNUSEDor',
@@ -275,7 +276,7 @@ def get_emulated_pcode(instr):
 
     return emu
 
-def flatten(x):
+def flatten(data):
     '''
     Flatten a list of lists to a single list
 
@@ -283,8 +284,11 @@ def flatten(x):
     Input  ['sub', ['load_from', ['add', u'reg rbp', '-0x20']], '0x4000'] 
     Output ['sub', 'load_from', 'add', u'reg rbp', '-0x20', '0x4000'] 
     '''
+    if not isinstance(data, list):
+        return [data]
+
     res = []
-    for items in x:
+    for items in data:
         if isinstance(items, list):
             res += flatten(items)
         else:
@@ -352,63 +356,7 @@ with open(rq_outfile, 'w') as f:
         # Check if the operands are an address or dynamic operand type to mark it as 'load_from'
         left_is_addr = OperandType.isAddress(left_op_type) or OperandType.isDynamic(left_op_type)
         right_is_addr = OperandType.isAddress(right_op_type) or OperandType.isDynamic(right_op_type)
-
-        '''
-        for (name, bit) in [
-                ('ADDRESS', 0x2000),
-                ('BIT', 0x8000),
-                ('BYTE', 0x10000),
-                ('CODE', 0x40),
-                ('COP', 0x200000),
-                ('DATA', 0x80),
-                ('DYNAMIC', 0x400000),
-                ('FLAG', 0x800),
-                ('FLOAT', 0x100000),
-                ('IMMEDIATE', 0x8),
-                ('IMPLICIT', 0x20),
-                ('INDIRECT', 0x4),
-                ('LIST', 0x400),
-                ('PORT', 0x100),
-                ('QUADWORD', 0x40000),
-                ('READ', 0x1),
-                ('REGISTER', 0x200),
-                ('RELATIVE', 0x10),
-                ('SCALAR', 0x4000),
-                ('SIGNED', 0x80000),
-                ('TEXT', 0x1000),
-                ('WORD', 0x20000),
-                ('WRITE', 0x2)
-        ]:
-            if left_op_type & bit > 0:
-                println("LEFT %s %s" % (left_op_type, name))
-
-        for (name, bit) in [('ADDRESS', 0x2000),
-                ('BIT', 0x8000),
-                ('BYTE', 0x10000),
-                ('CODE', 0x40),
-                ('COP', 0x200000),
-                ('DATA', 0x80),
-                ('DYNAMIC', 0x400000),
-                ('FLAG', 0x800),
-                ('FLOAT', 0x100000),
-                ('IMMEDIATE', 0x8),
-                ('IMPLICIT', 0x20),
-                ('INDIRECT', 0x4),
-                ('LIST', 0x400),
-                ('PORT', 0x100),
-                ('QUADWORD', 0x40000),
-                ('READ', 0x1),
-                ('REGISTER', 0x200),
-                ('RELATIVE', 0x10),
-                ('SCALAR', 0x4000),
-                ('SIGNED', 0x80000),
-                ('TEXT', 0x1000),
-                ('WORD', 0x20000),
-                ('WRITE', 0x2)]:
-            if right_op_type & bit > 0:
-                println("RIGHT %s %s" % (right_op_type, name))
-        '''
-       
+      
         pcode_conditionals = [
             "INT_EQUAL",
             "INT_NOTEQUAL",
@@ -450,14 +398,14 @@ with open(rq_outfile, 'w') as f:
         for _ in range(4):
             next_instr = instr.getNext()
             for pcode in next_instr.getPcode():
-                println("  PCODE: %s" % pcode)
+                # println("  PCODE: %s" % pcode)
                 for input in pcode.getInputs():
-                    println("  INPUT: %s" % input)
+                    # println("  INPUT: %s" % input)
                     if input.isRegister():
                         (name, reg_size) = get_register_name_and_size(input)
-                        println("    -->: %s %s" % (name, size))
+                        # println("    -->: %s %s" % (name, size))
                         if name in ['zf', 'cf', 'sf', 'of']:     # Is PF needed?
-                            println("    --> FOUND: %s" % name)
+                            # println("    --> FOUND: %s" % name)
                             checked_flags.append(name)
 
 
@@ -479,33 +427,30 @@ with open(rq_outfile, 'w') as f:
             # For each checked flag, add a specific rule for this
             emu = get_emulated_pcode(orig_instr)
             for flag in checked_flags:
-                println("  EMU: %s" % (emu[flag]))
+                # println("  EMU: %s" % (emu[flag]))
                 curr_value = emu[flag]
                 if 'UNUSED' in curr_value[0]:
                     curr_value = curr_value[1]
 
                 [cmp, left, right] = curr_value
-                println("  CMP: %s -- %s" % (cmp, flag))
-                println("  left: %s" % left)
-                println("  right: %s %s" % (right, type(right)))
+                # println("  CMP: %s -- %s" % (cmp, flag))
+                # println("  left: %s" % left)
+                # println("  right: %s %s" % (right, type(right)))
                 assert('CMP' in cmp)
 
                 if right == 0x0 or right == '0x0':
                     # For the case of comparing: 'rax & rbx == 0' or 'rax - rbx == 0'
                     # Convert the equation just rax == rbx
-                    [new_cmp, new_left, new_right] = left
-                    if new_cmp in ['and', 'sub']:
+                    if left[0] in ['and', 'sub']:
+                        [new_cmp, new_left, new_right] = left
                         left = new_left
                         right = new_right
 
-                if not isinstance(left, list):
-                    left = [left]
+                # Flatten the nested lists
                 left = ' '.join(flatten(left))
-
-                if not isinstance(right, list):
-                    right = [right]
                 right = ' '.join(flatten(right))
 
+                # Quick check to make sure the comparison is an expected comparison
                 assert('CMP' in cmp)
                 line =  "0x%s,0x%x,%s,%s,%s" % (bp_addr, size, left, cmp, right)
 
@@ -513,7 +458,7 @@ with open(rq_outfile, 'w') as f:
                 if size in [4, 8] and 'ymm' in line:
                     line = line.replace("ymm", "xmm")
 
-                println("   %s" % line)
+                # println("   %s" % line)
                 f.write("%s\n" % line)
         else:
             raise Exception("ERROR: NO SIZE FOUND: %s" % bp_addr)
