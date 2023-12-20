@@ -276,7 +276,7 @@ impl FuzzInput for Vec<u8> {
 
                 if from_min_bytes == new_size {
                     // Ensure we can actually fit the rule in the current input
-                    if *index + new_size >= self.len() {
+                    if *index + new_size > self.len() {
                         return None;
                     }
 
@@ -606,14 +606,15 @@ fn get_redqueen_rule_candidates_for_vec(
             // let to_min_bytes = to.minimum_bytes();
 
             let size = from_min_bytes;
-            let from_le_bytes = &from.as_bytes()[..size];
+            assert!(size > 0);
 
+            let from_le_bytes = &from.as_bytes()[..size];
             let same_big_endian = from_le_bytes
                 .iter()
                 .zip(from_le_bytes.iter().rev())
                 .all(|(x, y)| *x == *y);
 
-            for index in 0..input.len().saturating_sub(size) {
+            for index in 0..input.len().saturating_sub(size.saturating_sub(1)) {
                 let curr_window = &input[index..index + size];
 
                 if curr_window == from_le_bytes {
@@ -771,7 +772,7 @@ impl<T: FuzzInput> std::cmp::Eq for InputWithMetadata<T> {}
 impl<T: FuzzInput> std::hash::Hash for InputWithMetadata<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.input.hash(state);
-        self.metadata.read().unwrap().hash(state);
+        // self.metadata.read().unwrap().hash(state);
     }
 }
 impl<T: FuzzInput> std::default::Default for InputWithMetadata<T> {

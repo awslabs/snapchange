@@ -104,26 +104,16 @@ impl<'de> Deserialize<'de> for FeedbackLog {
         // Get a Vec of hex strings from the deserializer
         let hex: String = Deserialize::deserialize(deserializer)?;
 
-        // Convert the hex strings back into CoverageType
-        if let Some([addr, hit_count]) = hex.split(&",").array_chunks().next() {
-            let addr = u64::from_str_radix(&addr[2..], 16)
-                .expect("Failed to parse coverage address {address}");
-
-            return Ok(FeedbackLog::VAddr((
-                VirtAddr(addr),
-                hit_count.parse::<u16>().unwrap(),
-            )));
-        }
-
         #[cfg(feature = "redqueen")]
         if let Some(redqueen) = hex.strip_prefix("RQ|") {
             if let Some([addr, rflags, hit_count]) = redqueen.split(&",").array_chunks().next() {
                 let virt_addr = u64::from_str_radix(&addr[2..], 16)
-                    .expect("Failed to deserialize virt addr: {addr}");
+                    .expect(&format!("Failed to deserialize virt addr: {hex} {addr}"));
                 let rflags = u64::from_str_radix(&rflags[2..], 16)
-                    .expect("Failed to deserialize rflags: {rflags}");
-                let hit_count = u32::from_str_radix(&hit_count[2..], 16)
-                    .expect("Failed to deserialize hit_count {hit_count}");
+                    .expect(&format!("Failed to deserialize rflags: {hex} {rflags}"));
+                let hit_count = hit_count.parse::<u32>().expect(&format!(
+                    "Failed to deserialize hit_count {hex} {hit_count}"
+                ));
 
                 return Ok(FeedbackLog::Redqueen(RedqueenCoverage {
                     virt_addr: VirtAddr(virt_addr),
@@ -133,6 +123,17 @@ impl<'de> Deserialize<'de> for FeedbackLog {
             } else {
                 panic!("Invalid format for redqueen found: {hex}");
             }
+        }
+
+        // Convert the hex strings back into CoverageType
+        if let Some([addr, hit_count]) = hex.split(&",").array_chunks().next() {
+            let addr = u64::from_str_radix(&addr[2..], 16)
+                .expect(&format!("Failed to parse coverage address {hex} {addr}"));
+
+            return Ok(FeedbackLog::VAddr((
+                VirtAddr(addr),
+                hit_count.parse::<u16>().unwrap(),
+            )));
         }
 
         #[cfg(feature = "custom_feedback")]

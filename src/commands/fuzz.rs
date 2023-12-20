@@ -25,7 +25,7 @@ use crate::fuzzvm::FuzzVm;
 use crate::rng::Rng;
 use crate::stats::PerfStatTimer;
 use crate::stats::{self, PerfMark};
-use crate::utils::save_input_in_project;
+use crate::utils::{hexdigest, save_input_in_project};
 use crate::{block_sigalrm, kick_cores, Stats, FINISHED};
 
 use crate::memory::Memory;
@@ -161,22 +161,15 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
 
             // Add the input to the input corpus
             let input = FUZZER::Input::from_bytes(&std::fs::read(filepath)?)?;
-            let metadata_path = project_state
-                .path
-                .join("metadata")
-                .join(crate::utils::hexdigest(&input));
+            let filename = hexdigest(&input);
+            let mut new_input = InputWithMetadata::from_input(input);
 
-            let input = if let Ok(data) = std::fs::read_to_string(metadata_path) {
-                let metadata = serde_json::from_str(&data)?;
-                InputWithMetadata {
-                    input,
-                    metadata: RwLock::new(metadata),
-                }
-            } else {
-                InputWithMetadata::from_input(input)
-            };
+            let metadata_path = project_state.path.join("metadata").join(filename);
+            if let Ok(data) = std::fs::read_to_string(metadata_path) {
+                new_input.metadata = RwLock::new(serde_json::from_str(&data)?);
+            }
 
-            let input = Arc::new(input);
+            let input = Arc::new(new_input);
             input_corpus.push(input);
         }
     } else {

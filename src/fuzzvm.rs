@@ -41,6 +41,7 @@ use crate::rng::Rng;
 use crate::stack_unwinder::{StackUnwinders, UnwindInfo};
 use crate::stats::{PerfMark, PerfStatTimer, Stats};
 use crate::symbols::Symbol;
+use crate::utils::save_input_in_project;
 
 use crate::vbcpu::VbCpu;
 use crate::{handle_vmexit, Execution, SymbolList};
@@ -4674,19 +4675,32 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                         // Add the new input to the corpus
                         let input = Arc::new(new_input);
                         assert!(!input.metadata.read().unwrap().new_coverage.is_empty());
+
                         corpus.push(input.clone());
 
                         // Save every new input into a total corpus directory. Since we only keep
                         // the inputs that have unique feedback globally, we discard inputs. This could
                         // discard inputs that were used as the "original_file" for some other inputs.
                         // In order to have a total history of inputs, we keep them in this corpus directory
-                        for curr_input in [&input, orig_input] {
-                            crate::utils::save_input_in_project(
-                                curr_input,
-                                project_dir,
-                                "all_local_corpi",
-                            )
-                            .unwrap();
+                        for curr_input in [orig_input, &input] {
+                            // Since this is a useful input, double check that all files in the mutation
+                            // chain have been written to disk as well
+                            let mut queue = vec![curr_input];
+
+                            while let Some(curr_input) = queue.pop() {
+                                for c in corpus.iter() {
+                                    if crate::utils::calculate_hash(&c)
+                                        == curr_input.metadata.read().unwrap().original_file
+                                    {
+                                        save_input_in_project(c, project_dir, "all_local_corpi")?;
+
+                                        queue.push(c);
+                                    }
+                                }
+                            }
+
+                            // Save this input into the local corpi directory
+                            save_input_in_project(curr_input, project_dir, "all_local_corpi")?;
                         }
 
                         // Immediately send this input out to be sync'd
@@ -4698,7 +4712,9 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                                     let old_corpus = corpus.clone();
                                     curr_stats.old_corpus = Some(old_corpus);
                                 }
-                                Some(ref mut corpus) => corpus.push(input),
+                                Some(ref mut corpus) => {
+                                    corpus.push(input);
+                                }
                             }
                         } else {
                             panic!("No core stats?!");
