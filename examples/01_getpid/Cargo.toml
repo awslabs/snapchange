@@ -21,3 +21,7 @@ lto = false
 codegen-units = 255
 opt-level = 3
 debug = true
+
+[features]
+default = ["redqueen"]
+redqueen = ["snapchange/redqueen"]
