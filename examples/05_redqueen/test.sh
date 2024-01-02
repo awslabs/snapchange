@@ -1,34 +1,56 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-example5() {
-  echo "Testing Example 05"
+if [[ -z "$FUZZ_CORES" ]]; then
+   FUZZ_CORES="/2"
+fi
 
-  # Reset the snapshot
-  pushd snapshot > /dev/null
-  ./reset.sh
-  popd > /dev/null
+if [[ -z "$FUZZ_TIMEOUT" ]]; then
+   FUZZ_TIMEOUT="6m"
+fi
 
-  # Rebuild the fuzzer
-  echo "Building Example 05"
-  cargo build -r 2>/dev/null >/dev/null
+EX="$(basename $PWD)"
 
-  # Start the fuzzers
-  echo "Begin fuzzing! we have $(nproc) cores; using half for fuzzing; using at most $(grep -Eo 'cores = ([0-9]*)' ./harness/config.toml) for redqueen"
-  cargo run -r -- fuzz -c /2 --ascii-stats --stop-after-first-crash --stop-after-time 6m
+COLOR_CLEAR='\e[0m'
+COLOR_RED='\e[0;31m'
+COLOR_GREEN='\e[0;32m'
 
-  # Kill the example 05 fuzzers
-  ps -ef | rg Example05 | tr -s ' ' | cut -d' ' -f2 | xargs kill -9 2>/dev/null >/dev/null
-
-  # Check if the fuzzer found a crash
-  ls snapshot/crashes/SIGSEGV* >/dev/null
-  STATUS=$?
-  if [ "$STATUS" -gt 0 ]; then
-    echo "Example 5 did not find crash"
+function err {
+    echo -e "${COLOR_RED}ERROR: $EX - $* $COLOR_CLEAR"
     exit 1
-  else 
-    echo -e "\e[32mExample 05 SUCCESS!\e[0m"
-    exit 0
-  fi
 }
 
-example5
+function log_success {
+    echo -e "${COLOR_GREEN}SUCCESS: $EX - $* $COLOR_CLEAR"
+}
+
+if ! test -d snapshot; then
+    err "require snapshot"
+fi
+
+# Reset the snapshot from a previous run
+pushd snapshot > /dev/null
+./reset.sh
+popd > /dev/null
+
+# Rebuild the fuzzer
+cargo build -r >/dev/null 2>&1 || err "build failure"
+
+# Start the fuzzers
+echo "Begin fuzzing! we have $(nproc) cores; using half for fuzzing; using at most $(grep -Eo 'cores = ([0-9]*)' ./harness/config.toml) for redqueen"
+cargo run -r -- fuzz -c "$FUZZ_CORES" \
+    --ascii-stats \
+    --stop-after-first-crash \
+    --stop-after-time "$FUZZ_TIMEOUT" \
+    >/dev/null 2>&1 || err "fuzzing abnormal exit"
+
+# Kill the example 05 fuzzers
+ps -ef | rg Example05 | tr -s ' ' | cut -d' ' -f2 | xargs kill -9 2>/dev/null >/dev/null
+
+  # Check if the fuzzer found a crash
+ls snapshot/crashes/SIGSEGV* >/dev/null
+STATUS=$?
+if [ "$STATUS" -gt 0 ]; then
+    err "did not find crash"
+else 
+    log_success "fuzz"
+fi

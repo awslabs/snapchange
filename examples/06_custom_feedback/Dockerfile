@@ -20,6 +20,6 @@ FROM ghcr.io/awslabs/snapchange
 COPY --from=base / "$SNAPSHOT_INPUT"
 
 # set the path to the target within the root filesystem of the build environment
-# ENV SNAPSHOT_ENTRYPOINT=/opt/
+ENV SNAPSHOT_ENTRYPOINT="/opt/maze"
 # optionally: set the working directory of the target
 ENV SNAPSHOT_ENTRYPOINT_CWD="/opt/"
