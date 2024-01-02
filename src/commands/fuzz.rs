@@ -1274,14 +1274,6 @@ fn start_core<FUZZER: Fuzzer>(
     core_stats.lock().unwrap().feedback.merge(&feedback);
     // core_stats.lock().unwrap().redqueen_coverage.append(&mut redqueen_coverage);
 
-    // Write this current corpus to disk
-    for input in &corpus {
-        save_input_in_project(input, &project_dir, "current_corpus").unwrap();
-    }
-
-    // Save the corpus in old_corpus for stats to sync with
-    // core_stats.lock().unwrap().old_corpus = Some(corpus);
-
     // Send the current corpus to the main corpus collection
     if core_stats.lock().unwrap().old_corpus.is_none() {
         core_stats.lock().unwrap().old_corpus = Some(corpus);
