@@ -499,10 +499,10 @@ pub fn hexdigest<T: Hash>(t: &T) -> String {
 /// * Given `input.to_bytes()` failed
 /// * Creating the corpus or metadata directory failed
 /// * Failed to write the bytes to disk
-pub fn save_input_in_project<T: FuzzInput>(
+pub fn save_input_in_project<T: FuzzInput, P: AsRef<Path>>(
     input: &InputWithMetadata<T>,
     project_dir: &Path,
-    dir: &str,
+    dir: P,
 ) -> Result<usize> {
     let input_bytes = input.input_as_bytes()?;
     let length = input_bytes.len();
@@ -510,7 +510,7 @@ pub fn save_input_in_project<T: FuzzInput>(
     // Create the filename for this input
     let filename = hexdigest(&input);
 
-    let corpus_dir = project_dir.join(dir);
+    let corpus_dir = project_dir.join(dir.as_ref());
     let metadata_dir = project_dir.join("metadata");
 
     // Ensure the corpus and metadata directories exist
