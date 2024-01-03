@@ -323,13 +323,40 @@ fn start_core<FUZZER: Fuzzer>(
 
         let (execution, mut feedback) = time!(
             RunInput,
-            fuzzvm.gather_feedback(
-                &mut fuzzer,
-                &curr_input,
-                vm_timeout,
-                covbps_addrs.iter().cloned(),
-                bp_type
-            )?
+            if min_params.codecov_level >= MinimizeCodeCovLevel::Hitcounts {
+                // run input without any feedback mechanism -> fast basic check
+                let (execution, mut feedback) = fuzzvm.gather_feedback(
+                    &mut fuzzer,
+                    &curr_input,
+                    vm_timeout,
+                    vec![],
+                    bp_type,
+                )?;
+
+                // fast check whether we superficially hit the same exit and not something
+                // completely different.
+                if orig_reg_state.rip == fuzzvm.rip() && orig_execution == execution {
+                    // and only if it looks to be the same; do a reset and gather detailed feedback
+                    // with hitcounts.
+                    fuzzvm.gather_feedback(
+                        &mut fuzzer,
+                        &curr_input,
+                        vm_timeout,
+                        covbps_addrs.iter().cloned(),
+                        bp_type,
+                    )?
+                } else {
+                    (execution, feedback)
+                }
+            } else {
+                fuzzvm.gather_feedback(
+                    &mut fuzzer,
+                    &curr_input,
+                    vm_timeout,
+                    covbps_addrs.iter().cloned(),
+                    bp_type,
+                )?
+            }
         );
 
         // Check if the VM resulted in the same crashing state. If so, keep the minimized input as the

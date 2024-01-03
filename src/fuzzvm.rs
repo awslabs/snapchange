@@ -4406,7 +4406,7 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
         // Set the input into the VM as per the fuzzer
         fuzzer.set_input(input, self)?;
 
-        let mut hit_breakpoints = BTreeMap::new();
+        let mut hit_breakpoints = CoverageBreakpoints::default();
 
         let cr3 = self.cr3();
 
