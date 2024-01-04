@@ -16,7 +16,7 @@ use crate::constants;
 
 const CR3: Cr3 = Cr3(constants::CR3);
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Example1Fuzzer {
     // Fuzzer specific data could go in here
 }

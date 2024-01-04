@@ -126,7 +126,7 @@ pub struct Breakpoint<FUZZER: Fuzzer> {
 }
 
 /// Generic fuzzer trait
-pub trait Fuzzer: Default + Sized {
+pub trait Fuzzer: Default + Clone + Sized + Send {
     /// The input type used by this fuzzer
     type Input: FuzzInput + std::panic::RefUnwindSafe;
 
@@ -153,6 +153,11 @@ pub trait Fuzzer: Default + Sized {
         input: &InputWithMetadata<Self::Input>,
         fuzzvm: &mut FuzzVm<Self>,
     ) -> Result<()>;
+
+    /// Create a new fuzzer - only called once, while per-core fuzzers are cloned.
+    fn new() -> Self {
+        Self::default()
+    }
 
     /// Reset the state of the current fuzzer
     fn reset_fuzzer_state(&mut self) {
@@ -321,5 +326,12 @@ pub trait Fuzzer: Default + Sized {
     /// * The target specific fuzzer failed to initialize a filesystem
     fn init_files(&self, _fs: &mut FileSystem) -> Result<()> {
         Ok(())
+    }
+
+
+    /// Load a seed input (stored by default in `./snapshot/inputs/`)
+    fn load_seed_input<P: AsRef<Path>>(&mut self, input_path: P, project_dir: &Path) -> Result<InputWithMetadata<Self::Input>> {
+        let input_path = input_path.as_ref();
+        InputWithMetadata::from_path(input_path, project_dir)
     }
 }

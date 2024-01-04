@@ -80,7 +80,7 @@ impl std::default::Default for WasdArray {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct MazeFuzzer {
     /// this is used for input scheduling - assigning weights to each input. The latest corpus entry
     /// has the biggest weight, while the first one has the smallest. Essentially this one is a

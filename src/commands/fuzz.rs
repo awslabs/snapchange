@@ -107,41 +107,37 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
 
     log::warn!("Starting all {} worker threads", cores);
 
+    let mut fuzzer = FUZZER::new();
+
     // Read the input corpus from the given input directory
     let mut input_corpus: Vec<Arc<InputWithMetadata<FUZZER::Input>>> = Vec::new();
 
     // Use the user given input directory or default to <PROJECT_DIR>/input
     let input_dir = if let Some(input_dir) = &args.input_dir {
         input_dir.clone()
-    } else if project_state.path.join("current_corpus").exists() {
-        // If no input dir was given, and the current corpus exists, use the old corpus
-        project_state.path.join("current_corpus")
-    } else if project_state.path.join("input").exists() {
-        // If no given input or current corpus, use "input" directory
-        project_state.path.join("input")
     } else {
-        // Default to the standard current_corpus directory
-        project_state.path.join("current_corpus")
+        project_state.path.join("input")
     };
 
     // Get the corpus directory
     let mut corpus_dir = project_state.path.clone();
     corpus_dir.push("current_corpus");
     if !corpus_dir.exists() {
-        std::fs::create_dir(&corpus_dir).context("Failed to create crash dir")?;
+        std::fs::create_dir(&corpus_dir).context("Failed to create corpus dir")?;
     }
-
-    let num_files = input_dir.read_dir()?.count();
+    let num_corpus = corpus_dir.read_dir()?.count();
 
     // Give some statistics on reading the initial corpus
     let mut start = std::time::Instant::now();
     let mut count = 0_u32;
+    let mut total_loaded = 0_u32;
     if input_dir.exists() {
+        let num_files = input_dir.read_dir()?.count();
         for (i, file) in input_dir.read_dir()?.enumerate() {
             if start.elapsed() >= std::time::Duration::from_millis(1000) {
                 let left = num_files - i;
                 println!(
-                    "{i:9} / {num_files:9} | Reading corpus {:8.2} files/sec | {:6.2} seconds left",
+                    "{i:9} / {num_files:9} | Reading seeds {:8.2} files/sec | {:6.2} seconds left",
                     count as f64 / start.elapsed().as_secs_f64(),
                     left as f64 / (count as f64 / start.elapsed().as_secs_f64()),
                 );
@@ -158,29 +154,58 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
                 log::debug!("Ignoring directory found in input dir: {:?}", filepath);
                 continue;
             }
-
+            
             // Add the input to the input corpus
-            let input = FUZZER::Input::from_bytes(&std::fs::read(filepath)?)?;
-            let metadata_path = project_state
-                .path
-                .join("metadata")
-                .join(crate::utils::hexdigest(&input));
-
-            let input = if let Ok(data) = std::fs::read_to_string(metadata_path) {
-                let metadata = serde_json::from_str(&data)?;
-                InputWithMetadata {
-                    input,
-                    metadata: RwLock::new(metadata),
-                }
-            } else {
-                InputWithMetadata::from_input(input)
-            };
+            let input = fuzzer.load_seed_input(&filepath, &project_state.path)?;
 
             let input = Arc::new(input);
             input_corpus.push(input);
+
+            total_loaded += 1;
         }
     } else {
-        log::warn!("No input directory found: {input_dir:?}, starting with an empty corpus!");
+        log::info!("no seed input directory found: {}", input_dir.display());
+    }
+
+    start = std::time::Instant::now();
+    count = 0_u32;
+    if num_corpus > 0 {
+        for (i, file) in corpus_dir.read_dir()?.enumerate() {
+            if start.elapsed() >= std::time::Duration::from_millis(1000) {
+                let left = num_corpus - i;
+                println!(
+                    "{i:9} / {num_corpus:9} | Reading current corpus {:8.2} files/sec | {:6.2} seconds left",
+                    count as f64 / start.elapsed().as_secs_f64(),
+                    left as f64 / (count as f64 / start.elapsed().as_secs_f64()),
+                );
+                start = std::time::Instant::now();
+                count = 0;
+            }
+
+            count += 1;
+
+            let filepath = file?.path();
+
+            // Ignore directories if they exist
+            if filepath.is_dir() {
+                log::debug!("Ignoring directory found in corpus dir: {:?}", filepath);
+                continue;
+            }
+            
+            // Add the input to the input corpus
+            let input = InputWithMetadata::<FUZZER::Input>::from_path(&filepath, &project_state.path)?;
+
+            let input = Arc::new(input);
+            input_corpus.push(input);
+
+            total_loaded += 1;
+        }
+    } else {
+        log::info!("starting with an empty corpus");
+    }
+
+    if total_loaded == 0 {
+        log::warn!("No inputs loaded - starting with an empty corpus!");
     }
 
     // Initialize the dictionary
@@ -357,6 +382,9 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         start.elapsed()
     );
 
+
+    let fuzzer = fuzzer;
+
     const BETWEEN_WAIT_FOR_MILLIES: u64 = 100;
 
     // Create a thread for each active CPU core.
@@ -445,10 +473,13 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
         let stop_after_first_crash = args.stop_after_first_crash;
 
         // Start executing on this core
+        let fuzzer = fuzzer.clone();
         let thread = std::thread::spawn(move || -> Result<()> {
-            let result = std::panic::catch_unwind(|| -> Result<()> {
+            // let mut wrapper = (&mut fuzzer);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
                 start_core::<FUZZER>(
                     core_id,
+                    fuzzer,
                     &vm,
                     &project_state.vbcpu,
                     &cpuids,
@@ -469,7 +500,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
                     #[cfg(feature = "redqueen")]
                     redqueen_breakpoints,
                 )
-            });
+            }));
 
             // Ensure this thread is signalling it is not alive
             core_stats.lock().unwrap().alive = false;
@@ -675,6 +706,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
 /// Thread worker used to fuzz the given [`VbCpu`] state with the given physical memory.
 fn start_core<FUZZER: Fuzzer>(
     core_id: CoreId,
+    mut fuzzer: FUZZER,
     vm: &VmFd,
     vbcpu: &VbCpu,
     cpuid: &CpuId,
@@ -720,8 +752,6 @@ fn start_core<FUZZER: Fuzzer>(
 
     // Unblock SIGALRM to enable this thread to handle SIGALRM
     unblock_sigalrm()?;
-
-    let mut fuzzer = FUZZER::default();
 
     // RNG for this core used for mutation of inputs
     let mut rng = Rng::new();
