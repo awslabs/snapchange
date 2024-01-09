@@ -15,7 +15,6 @@ use std::sync::{Arc, RwLock};
 
 use crate::addrs::{Cr3, VirtAddr};
 use crate::cmp_analysis::RedqueenRule;
-use crate::expensive_mutators;
 use crate::feedback::FeedbackTracker;
 use crate::filesystem::FileSystem;
 use crate::fuzz_input::{FuzzInput, InputMetadata, InputWithMetadata};
@@ -23,6 +22,7 @@ use crate::fuzzvm::{FuzzVm, HookFn};
 use crate::mutators;
 use crate::rng::Rng;
 use crate::Execution;
+use crate::{expensive_mutators, ProjectState};
 
 /// Type of breakpoint being applied
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -155,7 +155,7 @@ pub trait Fuzzer: Default + Clone + Sized + Send {
     ) -> Result<()>;
 
     /// Create a new fuzzer - only called once, while per-core fuzzers are cloned.
-    fn new() -> Self {
+    fn new(project_state: &ProjectState) -> Self {
         Self::default()
     }
 
@@ -328,9 +328,12 @@ pub trait Fuzzer: Default + Clone + Sized + Send {
         Ok(())
     }
 
-
     /// Load a seed input (stored by default in `./snapshot/inputs/`)
-    fn load_seed_input<P: AsRef<Path>>(&mut self, input_path: P, project_dir: &Path) -> Result<InputWithMetadata<Self::Input>> {
+    fn load_seed_input<P: AsRef<Path>>(
+        &mut self,
+        input_path: P,
+        project_dir: &Path,
+    ) -> Result<InputWithMetadata<Self::Input>> {
         let input_path = input_path.as_ref();
         InputWithMetadata::from_path(input_path, project_dir)
     }

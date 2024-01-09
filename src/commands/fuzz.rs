@@ -107,7 +107,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
 
     log::warn!("Starting all {} worker threads", cores);
 
-    let mut fuzzer = FUZZER::new();
+    let mut fuzzer = FUZZER::new(&project_state);
 
     // Read the input corpus from the given input directory
     let mut input_corpus: Vec<Arc<InputWithMetadata<FUZZER::Input>>> = Vec::new();

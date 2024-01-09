@@ -117,7 +117,7 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     } = project_state;
 
     // Use the current fuzzer
-    let mut fuzzer = FUZZER::default();
+    let mut fuzzer = FUZZER::new(project_state);
 
     // Sanity check that the given fuzzer matches the snapshot
     ensure!(
