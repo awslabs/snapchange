@@ -309,7 +309,11 @@ pub(crate) fn run(project_state: &ProjectState, args: &cmdline::Project) -> Resu
             log::info!(
                 "loaded debug info with {} debug locations based on {} coverage breakpoints",
                 debug_info.len(),
-                project_state.coverage_basic_blocks.as_ref().and_then(|covbps| Some(covbps.len())).unwrap_or(0_usize)
+                project_state
+                    .coverage_basic_blocks
+                    .as_ref()
+                    .and_then(|covbps| Some(covbps.len()))
+                    .unwrap_or(0_usize)
             );
             let filepath = project_state.path.join("debug_info.json");
             std::fs::write(&filepath, serde_json::to_string(&debug_info)?)

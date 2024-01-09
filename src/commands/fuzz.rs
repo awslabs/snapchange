@@ -2,8 +2,8 @@
 
 use anyhow::{ensure, Context, Result};
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::num::NonZeroUsize;
+use std::collections::BTreeSet;
+
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,7 +22,7 @@ use crate::coverage_analysis::CoverageAnalysis;
 use crate::enable_manual_dirty_log_protect;
 use crate::fuzz_input::{FuzzInput, InputWithMetadata};
 use crate::fuzzer::Fuzzer;
-use crate::fuzzvm::{FuzzVm, ResetBreakpoints, CoverageBreakpoints};
+use crate::fuzzvm::{CoverageBreakpoints, FuzzVm, ResetBreakpoints};
 use crate::rng::Rng;
 use crate::stats::PerfStatTimer;
 use crate::stats::{self, PerfMark};
@@ -32,7 +32,7 @@ use crate::{block_sigalrm, kick_cores, Stats, FINISHED};
 use crate::memory::Memory;
 use crate::{fuzzvm, unblock_sigalrm, write_crash_input, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
-use crate::{Cr3, Execution, ResetBreakpointType, VbCpu, VirtAddr};
+use crate::{Cr3, Execution, VbCpu, VirtAddr};
 
 use crate::feedback::FeedbackTracker;
 

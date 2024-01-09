@@ -6,7 +6,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::mem::size_of;
 use std::os::unix::io::AsRawFd;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -23,7 +23,7 @@ use crate::memory::Memory;
 use crate::utils::get_files;
 use crate::{cmdline, fuzzvm, fuzzvm::ResetBreakpoints, unblock_sigalrm, SymbolList, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
-use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
+use crate::{Cr3, Execution, VbCpu};
 
 /// Execute the Coverage subcommand to gather coverage for a particular input
 pub(crate) fn run<FUZZER: Fuzzer>(

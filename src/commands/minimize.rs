@@ -2,7 +2,6 @@
 use anyhow::{anyhow, ensure, Context, Result};
 use rustc_hash::FxHashSet;
 
-use std::collections::BTreeMap;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -21,7 +20,7 @@ use crate::memory::Memory;
 use crate::stack_unwinder::StackUnwinders;
 use crate::{fuzzvm, unblock_sigalrm, SymbolList, THREAD_IDS};
 use crate::{init_environment, KvmEnvironment, ProjectState};
-use crate::{Cr3, Execution, ResetBreakpointType, VbCpu, VirtAddr};
+use crate::{Cr3, Execution, VbCpu, VirtAddr};
 
 /// Stages to measure performance during minimization
 #[derive(Debug, Copy, Clone)]
@@ -238,7 +237,6 @@ fn start_core<FUZZER: Fuzzer>(
     let mut last_execution = Execution::Continue;
     let mut current_iteration = 0u32;
     let mut last_successful_iteration = 0u32;
-    let mut last_metric_change_at = 0u32;
     let mut max_iterations = max_iterations;
     let (mut minimizer_state, initial_cf) = input.input.init_minimize();
     match initial_cf {

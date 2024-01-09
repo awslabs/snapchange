@@ -124,7 +124,6 @@ use vmm_sys_util::fam::FamStructWrapper;
 
 extern crate bitflags;
 
-use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
@@ -157,7 +156,6 @@ mod page_table;
 
 pub mod fuzzer;
 pub use fuzzer::Fuzzer;
-use fuzzer::ResetBreakpointType;
 
 mod symbols;
 pub use symbols::Symbol;
@@ -1015,12 +1013,12 @@ pub mod prelude {
         addrs::{Cr3, VirtAddr},
         anyhow,
         anyhow::Result,
+        fuzz_input::{BytesMinimizeState, MinimizeControlFlow, NullMinimizerState},
         fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer},
         fuzzvm::FuzzVm,
         rand,
         rng::Rng,
         snapchange_main, Execution, FuzzInput, InputWithMetadata,
-        fuzz_input::{NullMinimizerState, BytesMinimizeState, MinimizeControlFlow},
     };
 
     #[cfg(feature = "custom_feedback")]

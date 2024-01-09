@@ -87,7 +87,6 @@ pub enum BreakpointMemory {
     NotDirty,
 }
 
-
 /// Type that stores coverage breakpoints.
 pub type CoverageBreakpoints = crate::FxIndexMap<VirtAddr, u8>;
 /// Map a tuple `(VirtAddr, Cr3)` pair to a index. Used to retrieve e.g., a breakpoint handler.

@@ -28,8 +28,7 @@ use crate::{
     fuzzvm::{CoverageBreakpoints, FuzzVm, ResetBreakpoints},
     init_environment,
     stack_unwinder::StackUnwinders,
-    unblock_sigalrm, KvmEnvironment, Memory, ProjectState, SymbolList,
-    VbCpu, THREAD_IDS,
+    unblock_sigalrm, KvmEnvironment, Memory, ProjectState, SymbolList, VbCpu, THREAD_IDS,
 };
 
 /// Execute the c subcommand to gather coverage for a particular input

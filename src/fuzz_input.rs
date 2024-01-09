@@ -241,6 +241,7 @@ impl MinimizerState for NullMinimizerState {
     }
 }
 
+#[allow(dead_code)]
 impl NullMinimizerState {
     /// to be used in [`FuzzInput::
     const fn init() -> (Self, MinimizeControlFlow) {
@@ -383,7 +384,7 @@ impl FuzzInput for Vec<u8> {
                     TruncateTo(size + 1)
                 } else {
                     // otherwise we transition to the next strategy. Replace with a constant
-                    // starting from the back. We start by replacing whole 
+                    // starting from the back. We start by replacing whole
                     if self.len() >= 8 {
                         cf = MinimizeControlFlow::ContinueFor((self.len() / 8).try_into().unwrap());
                         ReplaceConstBytes(self.len() - 8, &[b'A'; 8])

@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, ensure, Context, Result};
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -21,7 +21,7 @@ use crate::memory::Memory;
 use crate::stack_unwinder::StackUnwinders;
 use crate::{cmdline, fuzzvm, unblock_sigalrm, SymbolList, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
-use crate::{Cr3, Execution, ResetBreakpointType, VbCpu, VirtAddr};
+use crate::{Execution, VbCpu, VirtAddr};
 
 /// Thread worker to execute a single input and write the single step trace for that
 /// input

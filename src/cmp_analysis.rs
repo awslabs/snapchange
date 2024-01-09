@@ -320,24 +320,16 @@ pub enum Operand {
     ConstF64(f64),
 
     /// A memory location to read the operand
-    Load {
-        address: Box<Operand>,
-    },
+    Load { address: Box<Operand> },
 
     /// Bitwise inversion of the operand
-    Not {
-        src: Box<Operand>,
-    },
+    Not { src: Box<Operand> },
 
     /// Sign inversion of the operand
-    Neg {
-        src: Box<Operand>,
-    },
+    Neg { src: Box<Operand> },
 
     /// Sign inversion of the operand
-    SignExtend {
-        src: Box<Operand>,
-    },
+    SignExtend { src: Box<Operand> },
 
     /// Arithmetic shift right
     ArithmeticShiftRight {
@@ -440,7 +432,7 @@ macro_rules! impl_read_for_type {
                 }
                 Operand::Sub { left, right } => Ok(left.$func(fuzzvm)? - right.$func(fuzzvm)?),
                 Operand::Mul { left, right } => Ok(left.$func(fuzzvm)? * right.$func(fuzzvm)?),
-                Operand::Div{ left, right } => Ok(left.$func(fuzzvm)? / right.$func(fuzzvm)?),
+                Operand::Div { left, right } => Ok(left.$func(fuzzvm)? / right.$func(fuzzvm)?),
                 Operand::Or { left, right } => Ok(left.$func(fuzzvm)? | right.$func(fuzzvm)?),
                 Operand::Not { src } => Ok(!src.$func(fuzzvm)?),
                 Operand::Neg { src } => Ok(src.$func(fuzzvm)?.wrapping_neg()),
@@ -1166,10 +1158,10 @@ pub fn gather_comparison<FUZZER: Fuzzer>(
 
     #[rustfmt::skip]
     impl_primitive_sizes!(
-        U8,   u8,   read_u8,   
+        U8,   u8,   read_u8,
         U16,  u16,  read_u16,
-        U32,  u32,  read_u32,  
-        U64,  u64,  read_u64,  
+        U32,  u32,  read_u32,
+        U64,  u64,  read_u64,
         U128, u128, read_u128
     );
 

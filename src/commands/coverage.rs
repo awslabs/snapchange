@@ -2,7 +2,6 @@
 
 use anyhow::{anyhow, ensure, Context, Result};
 
-use std::collections::BTreeMap;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -18,7 +17,6 @@ use crate::fuzzvm::{FuzzVm, ResetBreakpoints};
 use crate::memory::Memory;
 use crate::{cmdline, fuzzvm, unblock_sigalrm, SymbolList, THREAD_IDS};
 use crate::{init_environment, KvmEnvironment, ProjectState};
-use crate::{Cr3, ResetBreakpointType, VirtAddr};
 
 /// Execute the Coverage subcommand to gather coverage for a particular input
 pub(crate) fn run<FUZZER: Fuzzer>(

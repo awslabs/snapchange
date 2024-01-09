@@ -7,22 +7,22 @@ use log::debug;
 use smallvec::SmallVec;
 use thiserror::Error;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use std::num::NonZeroUsize;
 
 use crate::addrs::{Cr3, VirtAddr};
 use crate::cmp_analysis::{Conditional, Operand, RedqueenArguments, Size};
 use crate::config::Config;
 use crate::feedback::FeedbackTracker;
-use crate::fuzzer::ResetBreakpointType;
+
+use crate::fuzzvm::ResetBreakpoints;
 use crate::stack_unwinder::StackUnwinders;
 use crate::symbols::{Symbol, LINUX_KERNEL_SYMBOLS, LINUX_USERLAND_SYMBOLS};
 use crate::vbcpu::{VbCpu, VmSelector, X86FxState, X86XSaveArea, X86XSaveHeader, X86XsaveYmmHi};
 use crate::SymbolList;
-use crate::fuzzvm::ResetBreakpoints;
 
 /// Custom errors [`FuzzVm`](crate::fuzzvm::FuzzVm) can throw
 #[derive(Error, Debug)]
