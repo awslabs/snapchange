@@ -21,6 +21,13 @@ snapshot: dockers/snapshot_image 0001-snapshot.patch
 		-e SNAPSHOT_IMGTYPE=initramfs \
 		$$(cat dockers/snapshot_image) >/dev/null 2>&1
 
+snapshot/input: snapshot
+	# add seed inputs
+	mkdir -p snapshot/input
+	find snapshot/image/opt/tiff-4.0.4/test/images/*tiff -size -40k -exec cp {} snapshot/input/ \;
+
+seeds: snapshot/input
+
 fuzzer:
 	cargo build -r >/dev/null 2>&1
 
