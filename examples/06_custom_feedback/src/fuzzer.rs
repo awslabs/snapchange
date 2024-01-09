@@ -530,10 +530,12 @@ impl snapchange::FuzzInput for WasdArray {
         last_successful_iteration: u32,
         _rng: &mut Rng,
     ) -> MinimizeControlFlow {
+        log::trace!("minimize state: {:?}", *state);
+        
         // Cannot minimize an empty input
         if self.data.is_empty() {
             *state = WasdMinState::End;
-            return MinimizeControlFlow::Skip;
+            return MinimizeControlFlow::Stop;
         }
 
         use MinimizeControlFlow::*;
@@ -546,7 +548,7 @@ impl snapchange::FuzzInput for WasdArray {
                 (Continue, Delete(usize::MAX))
             }
             TruncateTo(new_len) => {
-                if current_iteration == 0 || last_successful_iteration == current_iteration - 1 {
+                if current_iteration == 0 || last_successful_iteration + 1 == current_iteration {
                     self.data.truncate(new_len);
                     (Continue, TruncateTo(new_len.saturating_sub(1)))
                 } else {
