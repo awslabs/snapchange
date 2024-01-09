@@ -13,8 +13,8 @@ scriptdir="$(dirname "$(realpath "$0")")"
 echo "INFO: Building snapchange base images"
 make -s -C "$scriptdir/../docker/" >/dev/null 2>&1 || err "failed to build docker base images"
 
-# DIRS="01_getpid 02_libtiff 03_ffmpeg_custom_mutator 04_syscall_fuzzer 05_redqueen 06_custom_feedback 07_libfuzzer"
-DIRS="01_getpid 02_libtiff 04_syscall_fuzzer 05_redqueen 06_custom_feedback 07_libfuzzer"
+DIRS="01_getpid 02_libtiff 03_ffmpeg_custom_mutator 04_syscall_fuzzer 05_redqueen 06_custom_feedback 07_libfuzzer"
+# DIRS="01_getpid 02_libtiff 04_syscall_fuzzer 05_redqueen 06_custom_feedback 07_libfuzzer"
 
 success=""
 failed=""
