@@ -59,10 +59,11 @@ fn start_core<FUZZER: Fuzzer>(
     max_iterations: u32,
     config: Config,
     min_params: MinimizerConfig,
-    project_dir: &PathBuf,
+    project_state: &ProjectState,
 ) -> Result<()> {
+    let project_dir = &project_state.path;
     // Use the current fuzzer
-    let mut fuzzer = FUZZER::default();
+    let mut fuzzer = FUZZER::new(project_state);
 
     // Sanity check that the given fuzzer matches the snapshot
     ensure!(
@@ -467,7 +468,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         args.iterations_per_stage,
         project_state.config.clone(),
         minparams,
-        &project_state.path,
+        &project_state,
     )?;
 
     // Success

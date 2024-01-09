@@ -117,6 +117,9 @@ pub(crate) fn run<FUZZER: Fuzzer>(
     let chunk_size: usize = args.chunk_size;
     let mut minimizer = CorpusMinimizer::default();
 
+    // create new fuzzer
+    let mut fuzzer = FUZZER::new(&project_state);
+
     //
     for chunk in (0..paths.len()).step_by(chunk_size) {
         let ending_index = (chunk + chunk_size).min(paths.len());
@@ -144,11 +147,13 @@ pub(crate) fn run<FUZZER: Fuzzer>(
             let timeout = args.timeout.clone();
             let clean_snapshot = clean_snapshot.clone();
             let project_dir = project_state.path.clone();
+            let fuzzer = fuzzer.clone();
 
             // Start executing on this core
             let t = std::thread::spawn(move || {
                 start_core::<FUZZER>(
                     CoreId { id: core_id },
+                    fuzzer,
                     &vm,
                     &vbcpu,
                     &cpuids,
@@ -292,6 +297,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
 /// Thread worker used to gather coverage for a specific input
 pub(crate) fn start_core<FUZZER: Fuzzer>(
     core_id: CoreId,
+    mut fuzzer: FUZZER,
     vm: &VmFd,
     vbcpu: &VbCpu,
     cpuid: &CpuId,
@@ -316,9 +322,6 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
 
     // Set the core affinity for this core
     core_affinity::set_for_current(core_id);
-
-    // Use the current fuzzer
-    let mut fuzzer = FUZZER::default();
 
     // Sanity check that the given fuzzer matches the snapshot
     ensure!(

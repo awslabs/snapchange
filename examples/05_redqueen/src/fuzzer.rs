@@ -12,7 +12,7 @@ const CR3: Cr3 = Cr3(constants::CR3);
 
 // src/fuzzer.rs
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Example05Fuzzer;
 
 impl Fuzzer for Example05Fuzzer {

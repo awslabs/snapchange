@@ -12,7 +12,7 @@ use snapchange::fuzzvm::FuzzVm;
 
 use crate::constants;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Example7Fuzzer {}
 
 impl Fuzzer for Example7Fuzzer {

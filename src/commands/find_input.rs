@@ -28,6 +28,7 @@ use crate::{Cr3, Execution, ResetBreakpointType, VbCpu, VirtAddr};
 #[allow(clippy::needless_pass_by_value)]
 fn start_core<FUZZER: Fuzzer>(
     core_id: CoreId,
+    mut fuzzer: FUZZER,
     vm: &VmFd,
     vbcpu: &VbCpu,
     cpuid: &CpuId,
@@ -52,9 +53,6 @@ fn start_core<FUZZER: Fuzzer>(
 
     // Set the core affinity for this core
     core_affinity::set_for_current(core_id);
-
-    // Create a default fuzzer for single shot, tracing execution with the given input
-    let mut fuzzer = FUZZER::default();
 
     // Sanity check that the given fuzzer matches the snapshot
     ensure!(
@@ -239,6 +237,9 @@ pub(crate) fn run<FUZZER: Fuzzer>(
     let next_file_index = Arc::new(AtomicUsize::new(0));
     let finished = Arc::new(AtomicBool::new(false));
 
+    // create new fuzzer
+    let mut fuzzer = FUZZER::new(&project_state);
+
     for id in 1..=cores {
         let files = files.clone();
         let physmem_file_fd = physmem_file.as_raw_fd();
@@ -263,10 +264,13 @@ pub(crate) fn run<FUZZER: Fuzzer>(
 
         let clean_snapshot = clean_snapshot.clone();
 
+        let fuzzer = fuzzer.clone();
+
         // Start executing on this core
         let t = std::thread::spawn(move || {
             start_core::<FUZZER>(
                 core_id,
+                fuzzer,
                 &vm,
                 &vbcpu,
                 &cpuids,

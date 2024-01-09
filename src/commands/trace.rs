@@ -64,7 +64,7 @@ fn start_core<FUZZER: Fuzzer>(
     core_affinity::set_for_current(core_id);
 
     // Create a default fuzzer for single shot, tracing execution with the given input
-    let mut fuzzer = FUZZER::default();
+    let mut fuzzer = FUZZER::new(project_state);
 
     log::info!("Fuzzer: {:#x} RIP: {:#x}", FUZZER::START_ADDRESS, vbcpu.rip);
 

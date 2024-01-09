@@ -15,7 +15,7 @@ use snapchange::linux::{read_args, ReadArgs};
 use snapchange::rng::Rng;
 use snapchange::Execution;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Example03Fuzzer {
     file_offset: usize,
 }

@@ -82,7 +82,7 @@ const SHELLCODE: u64 = constants::SHELLCODE;
 const SCRATCH: u64 = constants::SCRATCH;
 const CR3: Cr3 = Cr3(constants::CR3);
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Example04Fuzzer {
     /// Offset to the next address to write shellcode
     shellcode_offset: u64,
