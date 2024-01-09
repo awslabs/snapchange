@@ -1,17 +1,15 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Reset the snapshot from a previous run
-pushd snapshot > /dev/null
-./reset.sh
-popd > /dev/null
-
-# Rebuild the fuzzer
-echo "Building Example 07"
-cargo build -r >/dev/null 2>/dev/null
+source ../test.include.sh
 
 # Seed the input with an easier input
-echo "Begin fuzzing!"
-cargo run -r -- fuzz -c 8 --ascii-stats --stop-after-first-crash --stop-after-time 5m
+log_info "start fuzzing"
+cargo run -r -- \
+    fuzz \
+    -c "$FUZZ_CORES" \
+    --ascii-stats \
+    --stop-after-first-crash \
+    --stop-after-time "$FUZZ_TIMEOUT" >/dev/null 2>&1 || err "fuzzing failed"
 
 ls snapshot/crashes/SIGSEGV* >/dev/null 2>/dev/null
 STATUS=$?
@@ -24,8 +22,7 @@ fi
 ls snapshot/crashes/SIGSEGV* >/dev/null
 STATUS=$?
 if [ "$STATUS" -gt 0 ]; then
-  echo "Example 7 did not find crash"
-  exit 1
+  err "did not find crash"
 fi
 
-echo -e "\e[32mExample 07 fuzz SUCCESS!\e[0m"
+log_success "fuzzing"

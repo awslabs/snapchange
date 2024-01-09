@@ -2,3 +2,8 @@ dockers/snapshot_image
 dockers/target_image
 *.min
 fuzzer.log
+snapshot
+snapshot/
+target
+harness/example1
+harness/report.info

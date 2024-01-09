@@ -11,3 +11,4 @@ perf.data
 perf.*analyze
 *stats.toml
 stats*.toml
+Cargo.lock

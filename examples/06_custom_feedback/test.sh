@@ -1,49 +1,21 @@
 #!/usr/bin/env bash
 
-if [[ -z "$FUZZ_CORES" ]]; then
-   FUZZ_CORES="/2"
-fi
-
-if [[ -z "$FUZZ_TIMEOUT" ]]; then
-   FUZZ_TIMEOUT="1m"
-fi
-
-EX="$(basename $PWD)"
-
-COLOR_CLEAR='\e[0m'
-COLOR_RED='\e[0;31m'
-COLOR_GREEN='\e[0;32m'
-
-function err {
-    echo -e "${COLOR_RED}ERROR: $EX - $* $COLOR_CLEAR"
-    exit 1
-}
-
-function log_success {
-    echo -e "${COLOR_GREEN}SUCCESS: $EX - $* $COLOR_CLEAR"
-}
-
-if ! test -d snapshot; then
-    err "require snapshot"
-fi
-
-# Reset the snapshot from a previous run
-pushd snapshot > /dev/null
-./reset.sh
-popd > /dev/null
-
-# Rebuild the fuzzer
-echo "Building Example 06"
-cargo build -r >/dev/null 2>/dev/null || err "build failure"
+source ../test.include.sh
 
 export USE_MAZE=0
 export CHECK_CODE=1
 export MAZE_NO_BT=0
 
-echo "Begin fuzzing!"
-timeout 160s cargo run -r -- \
-    fuzz -c /2 --ascii-stats \
-    --stop-after-first-crash --stop-after-time 120s >/dev/null 2>/dev/null
+setup_build
+
+### Test fuzzing ###
+echo "Begin fuzzing $EX"
+cargo run -r -- \
+    fuzz \
+    --ascii-stats --stop-after-first-crash \
+    -c "$FUZZ_CORES" \
+    --stop-after-time "$FUZZ_TIMEOUT" \
+    >/dev/null 2>/dev/null
 
 # Check if the fuzzer found a crash
 ls snapshot/crashes/*assert_fail* >/dev/null
@@ -64,11 +36,33 @@ if [[ -z "$CORPUS_FILE" ]]; then
     err "failed to identify a corpus file"
 fi
 
+pushd harness >/dev/null
+make >/dev/null 2>&1 || err "failed to build harness/maze on host"
+popd >/dev/null
+
 ### Test minimize ###
 # minimize only according to rip + custom feedback
 MIN_FLAGS="--rip-only --consider-coverage=none"
-cargo run -r -- minimize $MIN_FLAGS "$CRASH_FILE" 2>/dev/null >/dev/null || err "running minimize subcommand on $CRASH_FILE failed"
+# cargo run -r -- minimize $MIN_FLAGS "$CRASH_FILE" 2>/dev/null >/dev/null || err "running minimize subcommand on $CRASH_FILE failed"
 cargo run -r -- minimize $MIN_FLAGS "$CORPUS_FILE" 2>/dev/null >/dev/null || err "running minimize subcommand on $CORPUS_FILE failed"
+
+for CRASH_FILE in ./snapshot/crashes/*assert_fail*/*; do
+    cargo run -r -- minimize $MIN_FLAGS "$CRASH_FILE" 2>/dev/null >/dev/null || err "running minimize subcommand on $CRASH_FILE failed"
+    if [[ -e "$CRASH_FILE.min" ]]; then
+        if [[ "$(sha1sum "$CRASH_FILE" | awk '{print $1}')" == "$(sha1sum "$CRASH_FILE.min")" ]]; then
+            err "minimized file $CRASH_FILE.min equal to original"
+        fi
+        # out_orig="$(./harness/maze "$CRASH_FILE")"
+        out_min="$(./harness/maze "$CRASH_FILE.min" 2>&1)"
+        if echo "$out_min" | grep "Assertion" >/dev/null 2>&1; then
+            true
+        else
+            err "minimized file $CRASH_FILE.min does not trigger crash"
+        fi
+    else
+        err "no minimized file found for $CRASH_FILE"
+    fi
+done
 
 log_success "minimize"
 

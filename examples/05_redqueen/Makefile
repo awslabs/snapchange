@@ -1,6 +1,8 @@
 DOCKER ?= docker
 FUZZ_CORES ?= /2
 
+DOCKER_IMAGE_NAME ?= snapchange_example5
+
 all: base_images test
 
 base_images:
@@ -8,7 +10,7 @@ base_images:
 	$(MAKE) -C ../../docker
 
 snapshot_image: Dockerfile.snapshot harness/test_cmpsolves harness/test_cmpsolves.cmps harness/test_cmpsolves.covbps
-	$(DOCKER) build -q -t snapchange_example5:snapshot . -f $< | tee $@
+	$(DOCKER) build -q -t $(DOCKER_IMAGE_NAME):snapshot . -f $< > $@
 
 snapshot: snapshot_image
 	$(DOCKER) run --rm -i \
@@ -39,6 +41,7 @@ clean: clean-docker
 	-$(RM) -rf snapshot
 
 clean-docker:
+	-$(DOCKER) rmi $(DOCKER_IMAGE_NAME):snapshot
 	-$(DOCKER) rmi `cat ./snapshot_image`
 	-$(RM) snapshot_image
 
