@@ -857,35 +857,28 @@ fn get_redqueen_rule_candidates_for_vec(
     candidates
 }
 
-/// Stages of the minimization process
-///
-/// Stages:
-/// Slice   - Attempt to delete slices of data to make the input smaller
-/// Bytes   - Attempt to delele individual bytes to make the input smaller
-/// Replace - Attempt to find unnecessary byte values by replacing bytes with `?`
+/// Stages for the minimization process of a byte string (e.g., `Vec<u8>`).
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum BytesMinimizeState {
-    /// Attempt to truncate to the given size
+    /// Attempt to truncate to the given size.
     TruncateTo(usize),
 
-    /// This state tries to identify unnecessary bytes in the input
+    /// Replace unused sub-slices in the input with a constant slice.
     ReplaceConstBytes(usize, &'static [u8]),
 
-    /// This state tries to identify unnecessary bytes in the input
+    /// Replace unused bytes in the input with a constant byte.
     Replace(usize, u8),
 
-    /// This state tries to delete bytes of the input to make the input smaller
+    /// Delete a randomly-selected sub-slice of the input to make the input smaller.
     Slices,
 
-    /// This state tries to delete random bytes of the input to make the input smaller
+    /// Randomly select and delete multiple bytes in the input to make the input smaller.
     MultiBytes,
 
-    /// This state tries to delete single bytes of the input to make the input smaller
+    /// Delete a single randomly-selected byte in the input to make the input smaller.
     SingleBytes,
 
-    /// Randomize
-
-    /// signal immediate stop of minimization (currently unused)
+    /// signal immediate stop of minimization.
     End,
 }
 
