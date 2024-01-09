@@ -6,6 +6,9 @@ DOCKER_IMAGE_NAME ?= snapchange_example4
 all: test
 
 base_images:
+	$(MAKE) -C ../../docker/
+
+base_images_old:
 	# Build the base snapchange image used for snapshotting
 	cd ../../docker && \
 		$(DOCKER) build \
@@ -18,7 +21,7 @@ base_images:
 dockers/target_image: dockers/Dockerfile.target
 	$(DOCKER) build -q -t $(DOCKER_IMAGE_NAME):target . -f $< > $@ || { rm $@; exit 1; }
 
-dockers/snapshot_image: dockers/Dockerfile.snapshot dockers/target_image
+dockers/snapshot_image: dockers/Dockerfile.new.snapshot dockers/target_image
 	$(DOCKER) build -q -t $(DOCKER_IMAGE_NAME):snapshot . -f $< > $@ || { rm $@; exit 1; }
 
 snapshot: dockers/snapshot_image syscall_harness/Cargo.toml syscall_harness/src/main.rs
