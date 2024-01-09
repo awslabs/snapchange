@@ -352,8 +352,12 @@ impl FuzzInput for Vec<u8> {
 
     fn init_minimize(&mut self) -> (Self::MinState, MinimizeControlFlow) {
         (
-            BytesMinimizeState::TruncateTo(1),
-            MinimizeControlFlow::ContinueFor(self.len().try_into().unwrap()),
+            if self.is_empty() {
+                BytesMinimizeState::End
+            } else {
+                BytesMinimizeState::StartTruncate
+            },
+            MinimizeControlFlow::Continue,
         )
     }
 
@@ -370,18 +374,25 @@ impl FuzzInput for Vec<u8> {
             *state = BytesMinimizeState::End;
             return MinimizeControlFlow::Stop;
         }
+        let last_succeeded = current_iteration == (last_successful_iteration + 1);
         use BytesMinimizeState::*;
         let mut cf = MinimizeControlFlow::Continue;
         // Advance the state machine
         *state = match *state {
             // == deterministic minimization steps ===
-            TruncateTo(size) => {
-                // first attempt to truncate the size to the minimum; we start by truncating to a single
-                // byte and then gradually increase the length we truncate to. If we find that a
-                // truncation works, then we will see that size == self.len() and transition to the next
-                // strategy.
-                if size < self.len() {
-                    TruncateTo(size + 1)
+            StartTruncate => {
+                cf = MinimizeControlFlow::one_more();
+                FindTruncate(0, self.len())
+            }
+            FindTruncate(low, high) => {
+                if low < high && low < self.len() {
+                    cf = MinimizeControlFlow::one_more();
+                    let index = (low + high) / 2;
+                    if last_succeeded {
+                        FindTruncate(low, index - 1)
+                    } else {
+                        FindTruncate(index + 1, high)
+                    }
                 } else {
                     // otherwise we transition to the next strategy. Replace with a constant
                     // starting from the back. We start by replacing whole
@@ -414,7 +425,7 @@ impl FuzzInput for Vec<u8> {
             // loop endlessly between states as long as the fuzzer wants
             Slices => MultiBytes,
             MultiBytes => SingleBytes,
-            SingleBytes => MultiBytes,
+            SingleBytes => Slices,
             // == end state ===
             End => End,
         };
@@ -423,8 +434,12 @@ impl FuzzInput for Vec<u8> {
 
         // Perform the minimization strategy for this state
         match *state {
-            TruncateTo(size) => {
-                self.truncate(size);
+            StartTruncate => {
+                return MinimizeControlFlow::Skip;
+            }
+            FindTruncate(low, high) => {
+                let index = (low + high) / 2;
+                self.truncate(index);
             }
             ReplaceConstBytes(index, byte_slice) => {
                 let repl_len = byte_slice.len();
@@ -861,8 +876,11 @@ fn get_redqueen_rule_candidates_for_vec(
 /// Stages for the minimization process of a byte string (e.g., `Vec<u8>`).
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum BytesMinimizeState {
+    /// Start a binary search to identify the right length to truncate the testcase to.
+    StartTruncate,
+
     /// Attempt to truncate to the given size.
-    TruncateTo(usize),
+    FindTruncate(usize, usize),
 
     /// Replace unused sub-slices in the input with a constant slice.
     ReplaceConstBytes(usize, &'static [u8]),
