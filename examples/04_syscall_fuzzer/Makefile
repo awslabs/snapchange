@@ -21,7 +21,7 @@ base_images_old:
 dockers/target_image: dockers/Dockerfile.target
 	$(DOCKER) build -q -t $(DOCKER_IMAGE_NAME):target . -f $< > $@ || { rm $@; exit 1; }
 
-dockers/snapshot_image: dockers/Dockerfile.new.snapshot dockers/target_image
+dockers/snapshot_image: dockers/Dockerfile.snapshot dockers/target_image
 	$(DOCKER) build -q -t $(DOCKER_IMAGE_NAME):snapshot . -f $< > $@ || { rm $@; exit 1; }
 
 snapshot: dockers/snapshot_image syscall_harness/Cargo.toml syscall_harness/src/main.rs
