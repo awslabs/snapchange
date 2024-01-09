@@ -244,7 +244,7 @@ impl MinimizerState for NullMinimizerState {
 #[allow(dead_code)]
 impl NullMinimizerState {
     /// to be used in [`FuzzInput::
-    const fn init() -> (Self, MinimizeControlFlow) {
+    pub const fn init() -> (Self, MinimizeControlFlow) {
         (Self {}, MinimizeControlFlow::Continue)
     }
 }
