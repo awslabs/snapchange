@@ -16,7 +16,7 @@ snapshot: snapshot_image
 	$(DOCKER) run --rm -i \
 		-v $(shell realpath -m ./snapshot):/snapshot \
 		-e SNAPSHOT_IMGTYPE=initramfs \
-		$(shell cat $<)
+		$(shell cat $<) >/dev/null 2>&1
 
 fuzzer:
 	cargo build -r

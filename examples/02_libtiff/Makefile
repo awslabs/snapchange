@@ -31,15 +31,15 @@ seeds: snapshot/input
 fuzzer:
 	cargo build -r >/dev/null 2>&1
 
-fuzz: snapshot
+fuzz: snapshot seeds
 	cargo run -r -- -p ./snapshot fuzz -c $(FUZZ_CORES)
 
-fuzz-%: snapshot
+fuzz-%: snapshot seeds
 	cargo run -r -- -p ./snapshot fuzz -c $(FUZZ_CORES) --stop-after-time $(shell echo $@ | sed 's/fuzz-//g')m
 # .PHONY: fuzz-1 fuzz-2 fuzz-3 fuzz-4 fuzz-5
 
 
-test: snapshot fuzzer reset
+test: snapshot fuzzer reset seeds
 	./test.sh
 
 reset: snapshot

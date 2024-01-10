@@ -19,6 +19,7 @@ impl Fuzzer for Example7Fuzzer {
     type Input = Vec<u8>;
     const START_ADDRESS: u64 = constants::RIP;
     const MAX_INPUT_LENGTH: usize = 32;
+    const MAX_MUTATIONS: u64 = 2;
 
     fn set_input(
         &mut self,

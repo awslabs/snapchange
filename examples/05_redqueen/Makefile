@@ -15,7 +15,7 @@ snapshot_image: Dockerfile.snapshot harness/test_cmpsolves harness/test_cmpsolve
 snapshot: snapshot_image
 	$(DOCKER) run --rm -i \
 		-v $(shell realpath -m ./snapshot):/snapshot \
-		$(shell cat $<)
+		$(shell cat $<) >/dev/null 2>&1
 	cp harness/*cmps ./snapshot/
 	cp harness/*covbps ./snapshot/
 	cp harness/*analysis ./snapshot/
