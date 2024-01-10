@@ -106,6 +106,7 @@
 #![feature(iter_array_chunks)]
 #![feature(stmt_expr_attributes)]
 #![allow(rustdoc::invalid_rust_codeblocks)]
+#![allow(internal_features)]
 #![deny(missing_docs)]
 
 use feedback::FeedbackTracker;
