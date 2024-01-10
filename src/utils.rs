@@ -492,6 +492,31 @@ pub fn hexdigest<T: Hash>(t: &T) -> String {
     format!("{h:016x}")
 }
 
+/// Get all of the files found in the given path recursively
+pub fn get_files<P: std::convert::AsRef<std::path::Path>>(
+    path: P,
+    recurse: bool,
+) -> Result<Vec<PathBuf>, std::io::Error> {
+    let mut files = Vec::new();
+    let entries = std::fs::read_dir(path)?;
+
+    for entry in entries {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            if recurse {
+                let dir_files = get_files(&entry.path(), recurse)?;
+                files.extend(dir_files);
+            }
+        } else if file_type.is_file() {
+            files.push(entry.path());
+        }
+    }
+
+    Ok(files)
+}
+
 /// Save the [`InputWithMetadata`] into the project directory using the hash of input as the filename
 ///
 /// # Errors
@@ -499,10 +524,10 @@ pub fn hexdigest<T: Hash>(t: &T) -> String {
 /// * Given `input.to_bytes()` failed
 /// * Creating the corpus or metadata directory failed
 /// * Failed to write the bytes to disk
-pub fn save_input_in_project<T: FuzzInput>(
+pub fn save_input_in_project<T: FuzzInput, P: AsRef<Path>>(
     input: &InputWithMetadata<T>,
     project_dir: &Path,
-    dir: &str,
+    dir: P,
 ) -> Result<usize> {
     let input_bytes = input.input_as_bytes()?;
     let length = input_bytes.len();
@@ -510,7 +535,7 @@ pub fn save_input_in_project<T: FuzzInput>(
     // Create the filename for this input
     let filename = hexdigest(&input);
 
-    let corpus_dir = project_dir.join(dir);
+    let corpus_dir = project_dir.join(dir.as_ref());
     let metadata_dir = project_dir.join("metadata");
 
     // Ensure the corpus and metadata directories exist

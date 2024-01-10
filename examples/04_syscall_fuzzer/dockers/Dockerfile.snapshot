@@ -1,6 +1,39 @@
+# import target
 FROM snapchange_example4:target as target
 
-FROM snapchange_snapshot_linux_v5.4
+# build the vulnerable kernel
+FROM snapchange_snapshot as sc_base
+FROM ubuntu:20.04 as kernel_builder
+ARG DEBIAN_FRONTEND=noninteractive
+ARG TZ="America/Chicago"
+RUN apt-get update -q \
+  && apt-get install -y --no-install-recommends -q \
+    build-essential \
+    meson ninja-build cmake \
+    git wget curl \
+    flex bison sudo \
+    libncurses-dev gawk flex bison openssl libssl-dev dkms libelf-dev libudev-dev libpci-dev libiberty-dev autoconf llvm \
+    bc bash \
+  && apt-get clean -y \
+  && rm -rf /var/lib/apt/lists/*
+  # && sudo apt-get build-dep linux linux-image-generic \
+
+RUN mkdir -p /snapchange/install/
+COPY --from=sc_base /snapchange/install/linux.sh /snapchange/install/linux.sh
+RUN chmod +x /snapchange/install/linux.sh
+
+ENV LINUX_VERSION="v5.4"
+RUN git config --global http.sslverify false
+RUN /snapchange/install/linux.sh
+
+# create the snapshot
+FROM snapchange_snapshot
+
+COPY --from=kernel_builder /snapchange/vmlinux /snapchange/
+COPY --from=kernel_builder /snapchange/linux.bzImage /snapchange/
+COPY --from=kernel_builder /snapchange/vmlinux.kasan /snapchange/
+COPY --from=kernel_builder /snapchange/linux.kasan.bzImage /snapchange/
+
 COPY --from=target / "$SNAPSHOT_INPUT"
 
 ENV SNAPSHOT_ENTRYPOINT=/opt/syscall_harness/target/release/syscall_harness

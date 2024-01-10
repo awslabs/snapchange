@@ -1515,7 +1515,6 @@ pub fn worker<FUZZER: Fuzzer>(
                                         )
                                         .unwrap();
                                     }
-                                } else {
                                 }
                             }
                         }
@@ -1962,6 +1961,11 @@ pub fn worker<FUZZER: Fuzzer>(
         iters_index = (iters_index + 1) % ITERS_WINDOW_SIZE;
     } // Start of iteration loop
 
+    let mut corpus_len = 0;
+    for input in &total_corpus {
+        corpus_len += save_input_in_project(input, project_dir, "current_corpus")?;
+    }
+
     if tui {
         // Restore the terminal to the original state
         crate::stats_tui::restore_terminal()?;
@@ -2004,12 +2008,6 @@ pub fn worker<FUZZER: Fuzzer>(
             .collect::<Vec<String>>()
             .join("\n"),
     )?;
-
-    let mut corpus_len = 0;
-
-    for input in &total_corpus {
-        corpus_len += save_input_in_project(input, project_dir, "current_corpus")?;
-    }
 
     std::fs::write(
         &coverage_blockers_in_path_file,
@@ -2213,7 +2211,7 @@ impl DebugInfo {
         contexts: &'a ContextSlice,
     ) -> Result<()> {
         let cov_bps = project_state
-            .coverage_breakpoints
+            .coverage_basic_blocks
             .as_ref()
             .ok_or(anyhow::anyhow!(
                 "Coverage breakpoints required for source coverage"

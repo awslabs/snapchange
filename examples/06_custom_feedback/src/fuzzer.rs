@@ -4,15 +4,8 @@
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_lossless)]
 
-use anyhow::Result;
-use rand::Rng as _;
-
-use snapchange::addrs::{Cr3, VirtAddr};
-use snapchange::fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer};
-use snapchange::fuzzvm::FuzzVm;
-use snapchange::rng::Rng;
-use snapchange::Execution;
-use snapchange::InputWithMetadata;
+use snapchange::fuzz_input::MinimizerState;
+use snapchange::prelude::*;
 use std::sync::Arc;
 
 use crate::constants;
@@ -80,6 +73,21 @@ impl std::default::Default for WasdArray {
     }
 }
 
+#[derive(Clone, Copy, Debug, Hash, Default, PartialEq, Eq)]
+pub enum WasdMinState {
+    TruncateTo(usize),
+    Delete(usize),
+    Replace(usize, Wasd),
+    #[default]
+    End,
+}
+
+impl MinimizerState for WasdMinState {
+    fn is_stop_state(&self) -> bool {
+        matches!(self, Self::End)
+    }
+}
+
 #[derive(Default)]
 pub struct MazeFuzzer {
     /// this is used for input scheduling - assigning weights to each input. The latest corpus entry
@@ -119,10 +127,7 @@ impl Fuzzer for MazeFuzzer {
             "ld-musl-x86_64.so.1!fputs",
             "ld-musl-x86_64.so.1!fprintf",
             "ld-musl-x86_64.so.1!printf",
-            "maze.small!draw",
-            "maze.small.nobt!draw",
-            "maze.big!draw",
-            "maze.big.nobt!draw",
+            "maze!draw",
         ] {
             if fuzzvm
                 .patch_bytes_permanent(AddressLookup::SymbolOffset(sym, 0), &[0xc3])
@@ -130,14 +135,42 @@ impl Fuzzer for MazeFuzzer {
             {
                 log::warn!("inserting immediate ret at sym {}", sym);
             } else {
-                log::warn!(" ret at sym {}", sym);
+                log::warn!("fail to set ret at sym {}", sym);
             }
         }
+
+        // configure snapshot for the right variant of the maze.
+        if let Ok(use_maze) = std::env::var("USE_MAZE") {
+            let use_maze: i32 = use_maze.parse()?;
+            let (addr, cr3) = AddressLookup::SymbolOffset("maze!USE_MAZE", 0).get(fuzzvm)?;
+            fuzzvm.write(addr, cr3, use_maze)?;
+            log::info!(
+                "using the {} maze",
+                if use_maze == 1 { "big" } else { "small" }
+            );
+        } else {
+            log::info!("using the small maze");
+        }
+
+        if let Ok(val) = std::env::var("MAZE_NO_BT") {
+            let bt: u8 = val.parse()?;
+            let (addr, cr3) = AddressLookup::SymbolOffset("maze!MAZE_NO_BT", 0).get(fuzzvm)?;
+            fuzzvm.write(addr, cr3, bt)?;
+            log::info!("set MAZE_NO_BT to {bt}");
+        }
+
+        if let Ok(val) = std::env::var("CHECK_CODE") {
+            let cc: u8 = val.parse()?;
+            let (addr, cr3) = AddressLookup::SymbolOffset("maze!CHECK_CODE", 0).get(fuzzvm)?;
+            fuzzvm.write(addr, cr3, cc)?;
+            log::info!("set CHECK_CODE to {cc}");
+        }
+
         Ok(())
     }
 
     fn reset_breakpoints(&self) -> Option<&[AddressLookup]> {
-        Some(&[AddressLookup::SymbolOffset(constants::TARGET_BYE, 0x0)])
+        Some(&[AddressLookup::SymbolOffset("maze!bye", 0x0)])
     }
 
     fn breakpoints(&self) -> Option<&[Breakpoint<Self>]> {
@@ -146,7 +179,7 @@ impl Fuzzer for MazeFuzzer {
                 // this breakpoint gathers the last (x, y) position in the maze. this is good enough
                 // for the fuzzer to achieve it's goal of reaching the end of the maze.
                 Breakpoint {
-                    lookup: AddressLookup::SymbolOffset(constants::TARGET_LOSE, 0x0),
+                    lookup: AddressLookup::SymbolOffset("maze!lose", 0x0),
                     bp_type: BreakpointType::Repeated,
                     bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer, feedback| {
                         if let Some(feedback) = feedback {
@@ -187,7 +220,7 @@ impl Fuzzer for MazeFuzzer {
                 // we also record the winning position as custom feedback, otherwise we only see the
                 // position in the feedback when we lose.
                 Breakpoint {
-                    lookup: AddressLookup::SymbolOffset(constants::TARGET_WIN, 0x0),
+                    lookup: AddressLookup::SymbolOffset("maze!win", 0x0),
                     bp_type: BreakpointType::Repeated,
                     bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer, feedback| {
                         if let Some(feedback) = feedback {
@@ -201,11 +234,11 @@ impl Fuzzer for MazeFuzzer {
                     },
                 },
                 // This breakpoint showcases custom feedback to minimize a string distance between
-                // two memory values. We do not want to reverse the obfuscation of the secret code,
+                // two memory values. We do not want to manually reverse the obfuscation of the secret code,
                 // so we let the fuzzer discover the correct inputs by minimizing the distance
-                // between the stored
+                // between the stored value and the provided input.
                 Breakpoint {
-                    lookup: AddressLookup::SymbolOffset(constants::TARGET_EQ16, 0x0),
+                    lookup: AddressLookup::SymbolOffset("maze!eq16", 0x0),
                     bp_type: BreakpointType::Repeated,
                     bp_hook: |fuzzvm: &mut FuzzVm<Self>, _input, _fuzzer, feedback| {
                         if let Some(feedback) = feedback {
@@ -479,37 +512,85 @@ impl snapchange::FuzzInput for WasdArray {
         mutations
     }
 
-    /// Minimize a `WasdArray` by truncating it or removing directions.
-    fn minimize(input: &mut Self, rng: &mut Rng) {
+    // this is requrired to conform to snapchange's API
+    type MinState = WasdMinState;
+    /// dummy init minimize
+    fn init_minimize(&mut self) -> (Self::MinState, MinimizeControlFlow) {
+        (
+            WasdMinState::TruncateTo(self.data.len().saturating_sub(1)),
+            MinimizeControlFlow::ContinueFor(self.data.len().try_into().unwrap()),
+        )
+    }
+
+    /// Minimize a `WasdArray` by truncating it, removing directions, or replacing directions.
+    fn minimize(
+        &mut self,
+        state: &mut Self::MinState,
+        current_iteration: u32,
+        last_successful_iteration: u32,
+        _rng: &mut Rng,
+    ) -> MinimizeControlFlow {
+        log::trace!("minimize state: {:?}", *state);
+        
         // Cannot minimize an empty input
-        if input.data.is_empty() {
-            return;
+        if self.data.is_empty() {
+            *state = WasdMinState::End;
+            return MinimizeControlFlow::Stop;
         }
 
-        enum MinimizeAction {
-            Truncate,
-            Delete,
-        }
-
-        // Randomly pick the type of minimization
-        let state = match rng.gen_range(0..=1) {
-            0 => MinimizeAction::Truncate,
-            1 => MinimizeAction::Delete,
-            _ => unreachable!(),
-        };
+        use MinimizeControlFlow::*;
+        use WasdMinState::*;
 
         // Perform the minimization strategy for this state
-        match state {
-            MinimizeAction::Truncate => {
-                if input.data.len() > 1 {
-                    input.data.truncate(input.data.len() - 1);
+        let (cf, next) = match *state {
+            TruncateTo(0) => {
+                self.data.clear();
+                (Continue, Delete(usize::MAX))
+            }
+            TruncateTo(new_len) => {
+                if current_iteration == 0 || last_successful_iteration + 1 == current_iteration {
+                    self.data.truncate(new_len);
+                    (Continue, TruncateTo(new_len.saturating_sub(1)))
+                } else {
+                    // last truncation failed, so we skip further truncates
+                    (Skip, Delete(usize::MAX))
                 }
             }
-            MinimizeAction::Delete => {
-                let l = input.data.len();
-                let idx = rng.gen_range(0..l);
-                input.data.remove(idx);
+            Delete(0) => {
+                self.data.remove(0);
+                (Continue, Replace(usize::MAX, Wasd::W)) // next state is Replace
             }
-        }
+            Delete(index) => {
+                let index = std::cmp::min(self.data.len() - 1, index);
+                self.data.remove(index);
+                (Continue, Delete(index.saturating_sub(1)))
+            }
+            Replace(0, val) => {
+                let last_index = self.data.len() - 1;
+                *self.data.get_mut(0).unwrap() = val;
+                match val {
+                    Wasd::W => (Continue, Replace(last_index, Wasd::A)),
+                    Wasd::A => (Continue, Replace(last_index, Wasd::S)),
+                    Wasd::S => (Continue, Replace(last_index, Wasd::D)),
+                    Wasd::D => (Continue, Replace(last_index, Wasd::X)),
+                    Wasd::X => (Continue, Replace(last_index, Wasd::Y)),
+                    Wasd::Y => (Continue, End),
+                    Wasd::Stop => (Stop, End),
+                }
+            }
+            Replace(index, val) => {
+                let index = std::cmp::min(self.data.len() - 1, index);
+                if let Some(p) = self.data.get_mut(index) {
+                    *p = val;
+                    (Continue, Replace(index - 1, val))
+                } else {
+                    (Skip, Replace(self.data.len().saturating_sub(1), val))
+                }
+            }
+            End => (Stop, End),
+        };
+
+        *state = next;
+        cf
     }
 }

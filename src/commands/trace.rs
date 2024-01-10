@@ -3,7 +3,6 @@
 use anyhow::{anyhow, ensure, Context, Result};
 use rustc_hash::FxHashSet;
 
-use std::collections::BTreeMap;
 use std::fs::File;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
@@ -16,12 +15,14 @@ use kvm_ioctls::VmFd;
 
 use crate::fuzz_input::InputWithMetadata;
 use crate::fuzzer::{BreakpointType, Fuzzer};
-use crate::fuzzvm::{BreakpointHook, BreakpointMemory, FuzzVm, FuzzVmExit};
+use crate::fuzzvm::{
+    BreakpointHook, BreakpointMemory, CoverageBreakpoints, FuzzVm, FuzzVmExit, ResetBreakpoints,
+};
 use crate::interrupts::IdtEntry;
 use crate::memory::Memory;
 use crate::{cmdline, fuzzvm, symbols, unblock_sigalrm, SymbolList, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
-use crate::{Cr3, Execution, ResetBreakpointType, Symbol, VbCpu, VirtAddr};
+use crate::{Cr3, Execution, Symbol, VbCpu, VirtAddr};
 
 /// Number of iterations to execute the same input through the VM (for debugging)
 const NUMBER_OF_ITERATIONS: usize = 1;
@@ -36,8 +37,8 @@ fn start_core<FUZZER: Fuzzer>(
     snapshot_fd: i32,
     clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<SymbolList>,
-    symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
-    coverage_breakpoints: Option<BTreeMap<VirtAddr, u8>>,
+    symbol_breakpoints: Option<ResetBreakpoints>,
+    coverage_breakpoints: Option<CoverageBreakpoints>,
     input_case: &Option<PathBuf>,
     vm_timeout: Duration,
     single_step: bool,
@@ -135,7 +136,7 @@ fn start_core<FUZZER: Fuzzer>(
             }
         }
 
-        if let Some(covbps) = project_state.coverage_breakpoints.as_ref() {
+        if let Some(covbps) = project_state.coverage_basic_blocks.as_ref() {
             for addr in covbps.keys().copied() {
                 let res = fuzzvm.set_breakpoint(
                     addr,

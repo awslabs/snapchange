@@ -1,4 +1,4 @@
-//! Execute the `coverage` command
+//! Execute the `corpus-min` command
 
 use anyhow::{ensure, Context, Result};
 
@@ -6,7 +6,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::mem::size_of;
 use std::os::unix::io::AsRawFd;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -18,31 +18,12 @@ use kvm_ioctls::VmFd;
 use crate::config::Config;
 use crate::fuzz_input::InputWithMetadata;
 use crate::fuzzer::Fuzzer;
-use crate::fuzzvm::{FuzzVm, FuzzVmExit};
+use crate::fuzzvm::{CoverageBreakpoints, FuzzVm, FuzzVmExit};
 use crate::memory::Memory;
-use crate::{cmdline, fuzzvm, unblock_sigalrm, SymbolList, THREAD_IDS};
+use crate::utils::get_files;
+use crate::{cmdline, fuzzvm, fuzzvm::ResetBreakpoints, unblock_sigalrm, SymbolList, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
-use crate::{Cr3, Execution, ResetBreakpointType, VbCpu, VirtAddr};
-
-/// Get all of the files found in the given path recursively
-fn get_files(path: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
-    let mut files = Vec::new();
-    let entries = std::fs::read_dir(path)?;
-
-    for entry in entries {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-
-        if file_type.is_dir() {
-            let dir_files = get_files(&entry.path())?;
-            files.extend(dir_files);
-        } else if file_type.is_file() {
-            files.push(entry.path());
-        }
-    }
-
-    Ok(files)
-}
+use crate::{Cr3, Execution, VbCpu};
 
 /// Execute the Coverage subcommand to gather coverage for a particular input
 pub(crate) fn run<FUZZER: Fuzzer>(
@@ -50,16 +31,12 @@ pub(crate) fn run<FUZZER: Fuzzer>(
     args: &cmdline::CorpusMin,
 ) -> Result<()> {
     ensure!(
-        project_state.coverage_breakpoints.is_some(),
+        project_state.coverage_basic_blocks.is_some(),
         "Must have covbps to gather minimize a corpus"
     );
 
     // Get the number of cores to fuzz with
-    let mut cores = args.cores.unwrap_or(1);
-    if cores == 0 {
-        log::warn!("No cores given. Defaulting to 1 core");
-        cores = 1;
-    }
+    let cores: usize = args.cores.map_or(1, |c| c.into());
 
     let KvmEnvironment {
         kvm,
@@ -71,7 +48,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
     } = init_environment(project_state)?;
 
     // Init the coverage breakpoints mapping to byte
-    let mut covbp_bytes = BTreeMap::new();
+    let mut covbp_bytes = crate::fuzzvm::CoverageBreakpoints::default();
     //
     let cr3 = Cr3(project_state.vbcpu.cr3);
     let mut total_coverage = Vec::new();
@@ -80,7 +57,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
     {
         let curr_clean_snapshot = clean_snapshot.read().unwrap();
         for addr in project_state
-            .coverage_breakpoints
+            .coverage_basic_blocks
             .as_ref()
             .unwrap()
             .keys()
@@ -104,7 +81,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
     );
 
     // Gather the paths to gather the coverage for
-    let paths = get_files(&args.input_dir)?;
+    let paths = get_files(&args.input_dir, true)?;
 
     log::info!("Found {} coverage", covbp_bytes.keys().len());
     log::info!("Found {} files to minimize", paths.len());
@@ -255,7 +232,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
     }
 
     // Gather the paths to gather the coverage for
-    let new_paths = get_files(&args.input_dir)?;
+    let new_paths = get_files(&args.input_dir, true)?;
     log::info!("Reduced corpus from {} to {}", paths.len(), new_paths.len());
 
     let cov_out = project_state.path.join("coverage.addresses.min");
@@ -298,8 +275,8 @@ pub(crate) fn start_core<FUZZER: Fuzzer>(
     snapshot_fd: i32,
     clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<SymbolList>,
-    symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
-    coverage_breakpoints: BTreeMap<VirtAddr, u8>,
+    symbol_breakpoints: Option<ResetBreakpoints>,
+    coverage_breakpoints: CoverageBreakpoints,
     vm_timeout: Duration,
     config: Config,
     paths: Arc<Vec<PathBuf>>,

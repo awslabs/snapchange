@@ -1,7 +1,7 @@
 DOCKER ?= docker
 FUZZ_CORES ?= /2
 
-DOCKER_IMAGE_NAME ?= snapchange_example1
+DOCKER_IMAGE_NAME ?= snapchange_example2
 
 all: test
 
@@ -15,11 +15,18 @@ dockers/target_image: dockers/Dockerfile.target
 dockers/snapshot_image: dockers/Dockerfile.snapshot dockers/target_image
 	$(DOCKER) build -q -t $(DOCKER_IMAGE_NAME):snapshot . -f $< > $@ || { rm $@; exit 1; }
 
-snapshot: dockers/snapshot_image harness/example1.c
+snapshot: dockers/snapshot_image 0001-snapshot.patch
 	$(DOCKER) run --rm -i \
 		-v $(shell realpath -m ./snapshot):/snapshot \
 		-e SNAPSHOT_IMGTYPE=initramfs \
 		$$(cat dockers/snapshot_image) >/dev/null 2>&1
+
+snapshot/input: snapshot
+	# add seed inputs
+	mkdir -p snapshot/input
+	find snapshot/image/opt/tiff-4.0.4/test/images/*tiff -size -40k -exec cp {} snapshot/input/ \;
+
+seeds: snapshot/input
 
 fuzzer:
 	cargo build -r >/dev/null 2>&1
@@ -42,11 +49,11 @@ clean: clean-docker
 	-$(RM) -rf snapshot target
 
 clean-docker:
-	-$(DOCKER) rmi $(DOCKER_IMAGE_NAME):snapshot
-	-$(DOCKER) rmi $(DOCKER_IMAGE_NAME):target
 	-$(DOCKER) rmi `cat ./dockers/snapshot_image`
-	-$(DOCKER) rmi `cat ./dockers/target_image`
+	-$(DOCKER) rmi $(DOCKER_IMAGE_NAME):snapshot
 	-rm ./dockers/snapshot_image
+	-$(DOCKER) rmi `cat ./dockers/target_image`
+	-$(DOCKER) rmi $(DOCKER_IMAGE_NAME):target
 	-rm ./dockers/target_image
 
 .PHONY: fuzzer all base_images test reset fuzz

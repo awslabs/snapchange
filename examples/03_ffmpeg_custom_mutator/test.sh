@@ -1,19 +1,18 @@
 #!/bin/bash
 
-echo "Testing Example 03"
+source ../test.include.sh
 
-# Reset the snapshot
-pushd snapshot > /dev/null
-./reset.sh
-popd > /dev/null
+setup_build
 
-# Rebuild the fuzzer
-echo "Building Example 03"
-cargo build -r 2>/dev/null >/dev/null
-
-# Start the fuzzers
-echo "Begin fuzzing!"
-cargo run -r -- fuzz -c 16 --ascii-stats --stop-after-time 10m --stop-after-first-crash --timeout 1m 2>/dev/null >/dev/null
+log_info "start fuzzing"
+cargo run -r -- \
+    fuzz \
+        --ascii-stats \
+        --stop-after-first-crash \
+        -c "$FUZZ_CORES" \
+        --stop-after-time "$FUZZ_TIMEOUT" \
+        --timeout 1m \
+    >/dev/null 2>&1
 
 # Kill the example 03 fuzzers
 ps -ef | rg Example03 | tr -s ' ' | cut -d' ' -f2 | xargs kill -9 2>/dev/null >/dev/null
@@ -22,8 +21,7 @@ ps -ef | rg Example03 | tr -s ' ' | cut -d' ' -f2 | xargs kill -9 2>/dev/null >/
 ls snapshot/crashes/ASAN_WRITE* >/dev/null
 STATUS=$?
 if [ "$STATUS" -gt 0 ]; then
-  echo "Example 3 did not find crash"
-  exit 1
-else 
-  echo -e "\e[32mExample 03 SUCCESS!\e[0m"
+    err "did not find crash"
 fi
+
+log_success "fuzzing"

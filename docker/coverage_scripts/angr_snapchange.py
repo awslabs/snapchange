@@ -718,10 +718,15 @@ for entry in auto_dictionary:
 
 
 dict_path = cliargs.dict_path
+logger.info(f"writing auto-dict entries to {dict_path}")
 dict_path.mkdir(parents=True, exist_ok=True)
+written = 0
 for fname, content in auto_dict_files.items():
     with (dict_path / fname).open("wb") as f:
         f.write(content)
+        written += 1
+
+logger.info(f"wrote {written} auto-dict entries")
 
 
 sys.exit(0)

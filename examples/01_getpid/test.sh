@@ -1,43 +1,11 @@
 #!/usr/bin/env bash
 
-if [[ -z "$FUZZ_CORES" ]]; then
-    FUZZ_CORES="/2"
-fi
+source ../test.include.sh
 
-if [[ -z "$FUZZ_TIMEOUT" ]]; then 
-    FUZZ_TIMEOUT="1m"
-fi
-
-EX="$(basename $PWD)"
-
-COLOR_CLEAR='\e[0m'
-COLOR_RED='\e[0;31m'
-COLOR_GREEN='\e[0;32m'
-
-function err {
-    echo -e "${COLOR_RED}ERROR: $EX - $* $COLOR_CLEAR"
-    exit 1
-}
-
-function log_success {
-    echo -e "${COLOR_GREEN}SUCCESS: $EX - $* $COLOR_CLEAR"
-}
-
-if ! test -d snapshot; then
-    err "require snapshot"
-fi
-
-# Reset the snapshot from a previous run
-pushd snapshot > /dev/null
-./reset.sh
-popd > /dev/null
-
-# Rebuild the fuzzer
-echo "Building Example 01"
-cargo build -r >/dev/null 2>/dev/null || err "build failed"
+setup_build
 
 # Seed the input with an easier input
-echo "Begin fuzzing!"
+log_info "start fuzzing"
 mkdir -p snapshot/input
 echo -n fuzzmetosolvem11 > snapshot/input/test
 cargo run -r -- fuzz -c "$FUZZ_CORES" --ascii-stats --stop-after-first-crash --stop-after-time "$FUZZ_TIMEOUT" >/dev/null 2>/dev/null

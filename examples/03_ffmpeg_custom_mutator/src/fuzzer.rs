@@ -8,12 +8,8 @@ use anyhow::Result;
 use rand::Rng as _;
 use std::sync::Arc;
 
-use snapchange::fuzz_input::InputWithMetadata;
-use snapchange::fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer};
-use snapchange::fuzzvm::FuzzVm;
+use snapchange::prelude::*;
 use snapchange::linux::{read_args, ReadArgs};
-use snapchange::rng::Rng;
-use snapchange::Execution;
 
 #[derive(Default)]
 pub struct Example03Fuzzer {
@@ -528,6 +524,8 @@ pub struct MovGenerator {
 }
 
 impl snapchange::FuzzInput for MovGenerator {
+    type MinState = snapchange::fuzz_input::BytesMinimizeState;
+
     fn from_bytes(bytes: &[u8]) -> Result<Self> {
         Ok(MovGenerator {
             bytes: bytes.to_vec(),
@@ -540,9 +538,19 @@ impl snapchange::FuzzInput for MovGenerator {
         Ok(())
     }
 
+    fn init_minimize(&mut self) -> (Self::MinState, MinimizeControlFlow) {
+        self.bytes.init_minimize()
+    }
+
     /// Minimize the given `input` based on a minimization strategy
-    fn minimize(input: &mut Self, rng: &mut Rng) {
-        <Vec<u8> as snapchange::FuzzInput>::minimize(&mut input.bytes, rng)
+    fn minimize(
+        &mut self,
+        state: &mut Self::MinState,
+        current_iteration: u32,
+        last_successful_iteration: u32,
+        rng: &mut Rng,
+    ) -> MinimizeControlFlow {
+        self.bytes.minimize(state, current_iteration, last_successful_iteration, rng)
     }
 
     fn generate(

@@ -292,7 +292,7 @@ if [[ "$GENERATE_COVERAGE_BREAKPOINTS" -eq 1 ]]; then
     # Use ghidra to find the coverage basic blocks
     python3 $SNAPCHANGE_ROOT/coverage_scripts/ghidra_basic_blocks.py --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin" > "$OUTPUT/ghidra.log" 2>&1
   elif [[ "$COVERAGE_BREAKPOINT_COMMAND" == "angr" ]]; then
-    python3 $SNAPCHANGE_ROOT/coverage_scripts/angr_snapchange.py --auto-dict --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin" > "$OUTPUT/angr.log" 2>&1
+    python3 $SNAPCHANGE_ROOT/coverage_scripts/angr_snapchange.py --dict-path "$OUTPUT/dict" --auto-dict --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin" > "$OUTPUT/angr.log" 2>&1
   elif [[ "$COVERAGE_BREAKPOINT_COMMAND" == "rizin" ]]; then
     python3 $SNAPCHANGE_ROOT/coverage_scripts/rz_snapchange.py --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin" > "$OUTPUT/rizin.log" 2>&1
   elif [[ "$COVERAGE_BREAKPOINT_COMMAND" == "binaryninja" ]]; then

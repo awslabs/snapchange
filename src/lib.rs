@@ -124,7 +124,6 @@ use vmm_sys_util::fam::FamStructWrapper;
 
 extern crate bitflags;
 
-use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
@@ -157,7 +156,6 @@ mod page_table;
 
 pub mod fuzzer;
 pub use fuzzer::Fuzzer;
-use fuzzer::ResetBreakpointType;
 
 mod symbols;
 pub use symbols::Symbol;
@@ -842,7 +840,7 @@ struct KvmEnvironment {
     symbols: Option<SymbolList>,
 
     /// Parsed symbol breakpoints if any coverage breakpoints are available in the project
-    symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
+    symbol_breakpoints: Option<fuzzvm::ResetBreakpoints>,
 }
 
 /// Perform KVM initialization routines and common project setup steps for all
@@ -1015,6 +1013,7 @@ pub mod prelude {
         addrs::{Cr3, VirtAddr},
         anyhow,
         anyhow::Result,
+        fuzz_input::{BytesMinimizeState, MinimizeControlFlow, NullMinimizerState},
         fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer},
         fuzzvm::FuzzVm,
         rand,

@@ -2,7 +2,8 @@
 
 use anyhow::{ensure, Context, Result};
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
+
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,7 +22,7 @@ use crate::coverage_analysis::CoverageAnalysis;
 use crate::enable_manual_dirty_log_protect;
 use crate::fuzz_input::{FuzzInput, InputWithMetadata};
 use crate::fuzzer::Fuzzer;
-use crate::fuzzvm::FuzzVm;
+use crate::fuzzvm::{CoverageBreakpoints, FuzzVm, ResetBreakpoints};
 use crate::rng::Rng;
 use crate::stats::PerfStatTimer;
 use crate::stats::{self, PerfMark};
@@ -31,7 +32,7 @@ use crate::{block_sigalrm, kick_cores, Stats, FINISHED};
 use crate::memory::Memory;
 use crate::{fuzzvm, unblock_sigalrm, write_crash_input, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
-use crate::{Cr3, Execution, ResetBreakpointType, VbCpu, VirtAddr};
+use crate::{Cr3, Execution, VbCpu, VirtAddr};
 
 use crate::feedback::FeedbackTracker;
 
@@ -70,11 +71,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
     } = init_environment(&project_state)?;
 
     // Get the number of cores to fuzz with
-    let mut cores = args.cores.unwrap_or(1);
-    if cores == 0 {
-        log::warn!("No cores given. Defaulting to 1 core");
-        cores = 1;
-    }
+    let cores: usize = args.cores.map_or(1, |c| c.into());
 
     // Init list of all cores executing
     let mut threads = Vec::new();
@@ -266,7 +263,7 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
     );
 
     // Init the coverage breakpoints mapping to byte
-    let mut covbp_bytes = BTreeMap::new();
+    let mut covbp_bytes = fuzzvm::CoverageBreakpoints::default();
 
     // Start timer for writing all coverage breakpoints
     let start = Instant::now();
@@ -681,8 +678,8 @@ fn start_core<FUZZER: Fuzzer>(
     snapshot_fd: i32,
     clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<SymbolList>,
-    symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
-    coverage_breakpoints: Option<BTreeMap<VirtAddr, u8>>,
+    symbol_breakpoints: Option<ResetBreakpoints>,
+    coverage_breakpoints: Option<CoverageBreakpoints>,
     core_stats: &Arc<Mutex<Stats<FUZZER>>>,
     project_dir: &PathBuf,
     vm_timeout: Duration,
@@ -1276,14 +1273,6 @@ fn start_core<FUZZER: Fuzzer>(
     // Append the current coverage
     core_stats.lock().unwrap().feedback.merge(&feedback);
     // core_stats.lock().unwrap().redqueen_coverage.append(&mut redqueen_coverage);
-
-    // Write this current corpus to disk
-    for input in &corpus {
-        save_input_in_project(input, &project_dir, "current_corpus").unwrap();
-    }
-
-    // Save the corpus in old_corpus for stats to sync with
-    // core_stats.lock().unwrap().old_corpus = Some(corpus);
 
     // Send the current corpus to the main corpus collection
     if core_stats.lock().unwrap().old_corpus.is_none() {

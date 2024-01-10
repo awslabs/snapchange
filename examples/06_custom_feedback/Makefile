@@ -1,28 +1,25 @@
 DOCKER ?= docker
 FUZZ_CORES ?= /2
 
-DOCKER_IMAGE_NAME ?= snapchange_example1
+DOCKER_IMAGE_NAME ?= snapchange_example6
 
-all: test
+all: base_images test
 
 base_images:
 	# Build the base snapchange image used for snapshotting
-	cd ../../docker && make
+	$(MAKE) -C ../../docker
 
-dockers/target_image: dockers/Dockerfile.target
-	$(DOCKER) build -q -t $(DOCKER_IMAGE_NAME):target . -f $< > $@ || { rm $@; exit 1; }
+snapshot_image: Dockerfile harness/maze.c harness/Makefile
+	$(DOCKER) build -q -t $(DOCKER_IMAGE_NAME):snapshot . -f $< > $@
 
-dockers/snapshot_image: dockers/Dockerfile.snapshot dockers/target_image
-	$(DOCKER) build -q -t $(DOCKER_IMAGE_NAME):snapshot . -f $< > $@ || { rm $@; exit 1; }
-
-snapshot: dockers/snapshot_image harness/example1.c
+snapshot: snapshot_image
 	$(DOCKER) run --rm -i \
 		-v $(shell realpath -m ./snapshot):/snapshot \
 		-e SNAPSHOT_IMGTYPE=initramfs \
-		$$(cat dockers/snapshot_image) >/dev/null 2>&1
+		$(shell cat $<)
 
 fuzzer:
-	cargo build -r >/dev/null 2>&1
+	cargo build -r
 
 fuzz: snapshot
 	cargo run -r -- -p ./snapshot fuzz -c $(FUZZ_CORES)
@@ -31,9 +28,11 @@ fuzz-%: snapshot
 	cargo run -r -- -p ./snapshot fuzz -c $(FUZZ_CORES) --stop-after-time $(shell echo $@ | sed 's/fuzz-//g')m
 # .PHONY: fuzz-1 fuzz-2 fuzz-3 fuzz-4 fuzz-5
 
-
 test: snapshot fuzzer reset
 	./test.sh
+
+bench: snapshot fuzzer reset
+	./bench.sh
 
 reset: snapshot
 	cd snapshot && ./reset.sh
@@ -42,11 +41,8 @@ clean: clean-docker
 	-$(RM) -rf snapshot target
 
 clean-docker:
+	-$(DOCKER) rmi `cat ./snapshot_image`
 	-$(DOCKER) rmi $(DOCKER_IMAGE_NAME):snapshot
-	-$(DOCKER) rmi $(DOCKER_IMAGE_NAME):target
-	-$(DOCKER) rmi `cat ./dockers/snapshot_image`
-	-$(DOCKER) rmi `cat ./dockers/target_image`
-	-rm ./dockers/snapshot_image
-	-rm ./dockers/target_image
+	-$(RM) snapshot_image
 
 .PHONY: fuzzer all base_images test reset fuzz

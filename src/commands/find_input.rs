@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, ensure, Context, Result};
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -21,7 +21,7 @@ use crate::memory::Memory;
 use crate::stack_unwinder::StackUnwinders;
 use crate::{cmdline, fuzzvm, unblock_sigalrm, SymbolList, THREAD_IDS};
 use crate::{handle_vmexit, init_environment, KvmEnvironment, ProjectState};
-use crate::{Cr3, Execution, ResetBreakpointType, VbCpu, VirtAddr};
+use crate::{Execution, VbCpu, VirtAddr};
 
 /// Thread worker to execute a single input and write the single step trace for that
 /// input
@@ -34,7 +34,7 @@ fn start_core<FUZZER: Fuzzer>(
     snapshot_fd: i32,
     clean_snapshot: Arc<RwLock<Memory>>,
     symbols: &Option<SymbolList>,
-    symbol_breakpoints: Option<BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>>,
+    symbol_breakpoints: Option<crate::fuzzvm::ResetBreakpoints>,
     vm_timeout: Duration,
     config: Config,
     next_file_index: Arc<AtomicUsize>,
@@ -218,11 +218,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
     let files = Arc::new(files);
 
     // Get the number of cores to fuzz with
-    let mut cores = args.cores.unwrap_or(1);
-    if cores == 0 {
-        log::warn!("No cores given. Defaulting to 1 core");
-        cores = 1;
-    }
+    let cores: usize = args.cores.map_or(1, |c| c.into());
 
     let core_ids =
         core_affinity::get_core_ids().ok_or_else(|| anyhow!("Failed to get core ids"))?;

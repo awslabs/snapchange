@@ -1,12 +1,14 @@
 //! Command line arguments
 
 use anyhow::{anyhow, ensure, Context, Result};
+use clap::builder::ArgAction;
 use clap::Parser;
 use log::debug;
 use smallvec::SmallVec;
 use thiserror::Error;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -15,7 +17,8 @@ use crate::addrs::{Cr3, VirtAddr};
 use crate::cmp_analysis::{Conditional, Operand, RedqueenArguments, Size};
 use crate::config::Config;
 use crate::feedback::FeedbackTracker;
-use crate::fuzzer::ResetBreakpointType;
+
+use crate::fuzzvm::ResetBreakpoints;
 use crate::stack_unwinder::StackUnwinders;
 use crate::symbols::{Symbol, LINUX_KERNEL_SYMBOLS, LINUX_USERLAND_SYMBOLS};
 use crate::vbcpu::{VbCpu, VmSelector, X86FxState, X86XSaveArea, X86XSaveHeader, X86XsaveYmmHi};
@@ -87,7 +90,7 @@ pub struct ProjectState {
 
     /// Addresses to apply single shot breakpoints for the purposes of coverage.
     /// Addresses assume the CR3 of the beginning of the snapshot.
-    pub(crate) coverage_breakpoints: Option<BasicBlockMap>,
+    pub(crate) coverage_basic_blocks: Option<BasicBlockMap>,
 
     /// Module metadata containing where each module is loaded in the snapshot. Primarily
     /// used for dumping lighthouse coverage maps
@@ -137,7 +140,7 @@ impl ProjectState {
             prev_coverage = serde_json::from_str(&data)?;
         }
 
-        if let Some(breakpoints) = self.coverage_breakpoints.as_ref() {
+        if let Some(breakpoints) = self.coverage_basic_blocks.as_ref() {
             // The coverage left to hit
             let coverage_left = breakpoints
                 .keys()
@@ -356,7 +359,7 @@ pub struct Fuzz {
     /// Number of cores to fuzz with. Negative numbers interpretted as MAX_CORES - CORES. Prefix
     /// with `/N` to specify a fraction of available cores.
     #[clap(short, long, allow_hyphen_values = true, value_parser = parse_cores)]
-    pub(crate) cores: Option<usize>,
+    pub(crate) cores: Option<NonZeroUsize>,
 
     /// Set the timeout (in seconds) of the execution of the VM. [0-9]+(ns|us|ms|s|m|h)
     #[clap(long, value_parser = parse_timeout, default_value = "1s")]
@@ -415,9 +418,13 @@ pub(crate) enum MinimizeCodeCovLevel {
 /// Minimize subcommand
 #[derive(Parser, Debug)]
 pub struct Minimize {
-    /// Enable single step, single execution trace of the guest using the given file as
-    /// the input
+    /// Minimize the given file or alternatively, if a directory is passed, everything inside of the
+    /// directory.
     pub(crate) path: PathBuf,
+
+    /// Whether to replace the original file with the minimized file.
+    #[clap(short = 'I', long)]
+    pub(crate) in_place: bool,
 
     /// Set the timeout (in seconds) of the execution of the VM. [0-9]+(ns|us|ms|s|m|h)
     #[clap(long, value_parser = parse_timeout, default_value = "60s")]
@@ -428,29 +435,57 @@ pub struct Minimize {
     #[clap(short, long, default_value_t = 50000)]
     pub(crate) iterations_per_stage: u32,
 
-    /// Only check the RIP register for checking if the register state is the same after
-    /// minimizing an input
-    #[clap(short, long)]
-    pub(crate) rip_only: bool,
-
-    /// Ignore the feedback returned through coverage breakpoints and custom feedback,
-    /// when checking for same state after minimizing an input.
-    #[clap(long)]
-    pub(crate) ignore_feedback: bool,
-
     /// Specify, which type of code coverage feedback should be considered, when minimizing
     /// the given input. `none` ignores all code coverage. `basic-blocks` is the regular fuzzing
     /// coverage. `symbols` is function-level coverage when symbols are available. `hitcounts`
     /// is basic-block coverage considering hitcounts.
-    #[clap(long, value_enum, default_value_t = MinimizeCodeCovLevel::None)]
-    pub(crate) consider_coverage: MinimizeCodeCovLevel,
+    #[clap(long, value_enum)]
+    pub(crate) consider_coverage: Option<MinimizeCodeCovLevel>,
+
+    /// Only check the RIP register for checking if the register state is the same after
+    /// minimizing an input
+    #[clap(
+        short, long,
+        default_value("false"),
+        default_missing_value("true"),
+        num_args(0..=1),
+        require_equals(true),
+        action = ArgAction::Set,
+    )]
+    pub(crate) rip_only: bool,
+
+    /// Ignore the feedback returned through coverage breakpoints and custom feedback,
+    /// when checking for same state after minimizing an input.
+    #[clap(
+        long,
+        default_value("false"),
+        default_missing_value("true"),
+        num_args(0..=1),
+        require_equals(true),
+        action = ArgAction::Set,
+    )]
+    pub(crate) ignore_feedback: bool,
 
     /// Ignore stack contents when checking for same state after minimizing an input.
-    #[clap(long)]
+    #[clap(
+        long,
+        default_value("true"),
+        default_missing_value("true"),
+        num_args(0..=1),
+        require_equals(true),
+        action = ArgAction::Set,
+    )]
     pub(crate) ignore_stack: bool,
 
     /// Ignore the consoel output when checking for same state after minimizing an input.
-    #[clap(long)]
+    #[clap(
+        long,
+        default_value("true"),
+        default_missing_value("true"),
+        num_args(0..=1),
+        require_equals(true),
+        action = ArgAction::Set,
+    )]
     pub(crate) ignore_console_output: bool,
 
     /// Dump the observed feedback into a file. Useful when debugging minimization according to
@@ -465,7 +500,7 @@ pub struct CorpusMin {
     /// Number of cores to fuzz with. Negative numbers interpretted as MAX_CORES - CORES. Prefix
     /// with `/N` to specify a fraction of available cores.
     #[clap(short, long, allow_hyphen_values = true, value_parser = parse_cores)]
-    pub(crate) cores: Option<usize>,
+    pub(crate) cores: Option<NonZeroUsize>,
 
     /// The path to the corpus containing input files to minimize
     #[clap(short, long, default_value = "./snapshot/current_corpus")]
@@ -527,9 +562,10 @@ pub struct FindInput {
     pub(crate) timeout: Duration,
 
     /// Number of cores to fuzz with. Negative numbers interpretted as MAX_CORES - CORES. Prefix
-    /// with `/N` to specify a fraction of available cores.
+    /// with `/N` to specify a fraction of available cores. Use `/1` for all cores.
+    /// Recommended: `/2` on systems with hyperthreading.
     #[clap(short, long, allow_hyphen_values = true, value_parser = parse_cores)]
-    pub(crate) cores: Option<usize>,
+    pub(crate) cores: Option<NonZeroUsize>,
 }
 
 /// Subcommands available for the command line specific to the project
@@ -626,9 +662,6 @@ pub struct WriteMem {
     #[clap(long)]
     pub(crate) cr3: Option<VirtAddr>,
 }
-
-/// Set of addresses that, if hit, signal a crash in the guest
-pub type ResetBreakpoints = BTreeMap<(VirtAddr, Cr3), ResetBreakpointType>;
 
 /// Get the [`ProjectState`] from the given project directory
 ///
@@ -879,7 +912,7 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         vbcpu,
         physical_memory,
         symbols,
-        coverage_breakpoints,
+        coverage_basic_blocks: coverage_breakpoints,
         modules,
         binaries,
         vmlinux,
@@ -903,10 +936,10 @@ pub fn get_project_state(dir: &Path, cmd: Option<&SubCommand>) -> Result<Project
         )?;
 
         // Add the sancov breakpoints to the total coverage breakpoints
-        if let Some(covbps) = state.coverage_breakpoints.as_mut() {
+        if let Some(covbps) = state.coverage_basic_blocks.as_mut() {
             covbps.extend(sancov_bps);
         } else {
-            state.coverage_breakpoints = Some(sancov_bps);
+            state.coverage_basic_blocks = Some(sancov_bps);
         }
     }
 
@@ -926,7 +959,7 @@ pub fn parse_symbols(
 ) -> Result<(Option<SymbolList>, Option<ResetBreakpoints>)> {
     // Init the resulting values
     let mut symbols = None;
-    let mut reset_breakpoints = Some(BTreeMap::new());
+    let mut reset_breakpoints = Some(ResetBreakpoints::default());
 
     if let Some(ref syms) = symbols_arg {
         let mut curr_symbols = crate::SymbolList::new();
@@ -949,7 +982,7 @@ pub fn parse_symbols(
             });
         }
 
-        let mut symbol_bps = BTreeMap::new();
+        let mut symbol_bps = ResetBreakpoints::default();
 
         // Sanity check the symbols are sorted
         for sym in &curr_symbols {
@@ -1574,21 +1607,21 @@ pub fn parse_timeout(input: &str) -> anyhow::Result<Duration> {
     Ok(res)
 }
 
-fn parse_cores(str: &str) -> Result<usize, anyhow::Error> {
+fn parse_cores(str: &str) -> Result<NonZeroUsize, anyhow::Error> {
     let num_cores = core_affinity::get_core_ids().unwrap().len();
 
     let cores = if let Some(cores) = str.strip_prefix('/') {
-        let i = cores.parse::<usize>()?;
+        let i = cores.parse::<NonZeroUsize>()?;
         num_cores / i
     } else {
         let i = str.parse::<i64>()?;
         if i < 0 {
-            ((num_cores as i64) + i) as usize
+            ((num_cores as i64) + i).try_into()?
         } else {
-            i as usize
+            i.try_into()?
         }
     };
-    Ok(cores)
+    Ok(cores.try_into()?)
 }
 
 /// Parse the cmp analysis breakpoints. This will read the given path and parse

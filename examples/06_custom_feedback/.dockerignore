@@ -1,10 +1,1 @@
-target
-snapshot
-**/*.rs.bk
-# remove if not needed
-Cargo.lock
-perf.data*
-harness/maze.small
-harness/maze.big
-harness/maze.big.nobt
-harness/maze.small.nobt
+.gitignore

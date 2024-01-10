@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 /*****************************************************************************/
+// basic obfuscation code.
 __attribute__((noinline, optnone)) uint8_t eq16(const uint8_t *x,
                                                 const uint8_t *y) {
   uint8_t r = 0;
@@ -115,11 +116,49 @@ bool check_contra_code(const char *program, size_t cur, size_t size) {
 // adapted according to the changes from the ijon paper:
 // https://github.com/RUB-SysSec/ijon-data/tree/master/maze
 
-#ifdef MAZE_BIG
-#include "big.h"
-#else
-#include "small.h"
-#endif
+// maze settings - defaults to small maze with backtracking.
+uint8_t MAZE_NO_BT = false;
+uint8_t CHECK_CODE = true;
+uint32_t USE_MAZE = 0;
+
+// struct to contain the maze
+#define MAZE_DIM_SIZE (32)
+typedef struct maze {
+  int h;
+  int w;
+  char maze[MAZE_DIM_SIZE][MAZE_DIM_SIZE];
+} maze_t;
+
+// two mazes
+maze_t maze_big = {13,
+                   17,
+                   {
+                       "+-+-------------+",
+                       "| |             |",
+                       "| | +-----* *---+",
+                       "|   |           |",
+                       "+---+-* *-------+",
+                       "|               |",
+                       "+ +-------------+",
+                       "| |       |   |#|",
+                       "| | *---+ * * * |",
+                       "| |     |   |   |",
+                       "| +---* +-------+",
+                       "|               |",
+                       "+---------------+",
+                   }};
+
+maze_t maze_small = {7,
+                     11,
+                     {
+                         "+-+---+---+",
+                         "| |     |#|",
+                         "| | --+ | |",
+                         "| |   | | |",
+                         "| +-- | | |",
+                         "|     |   |",
+                         "+-----+---+",
+                     }};
 
 __attribute__((noinline, optnone)) void log_pos(uint16_t x, uint16_t y) {
   printf("pos = (%u, %u)\n", x, y);
@@ -130,11 +169,11 @@ __attribute__((noinline, optnone)) void bye(int i) {
   exit(i);
 }
 
-void draw() {
+void draw(maze_t *maze) {
   int i, j;
-  for (i = 0; i < H; i++) {
-    for (j = 0; j < W; j++)
-      printf("%c", maze[i][j]);
+  for (i = 0; i < maze->h; i++) {
+    for (j = 0; j < maze->w; j++)
+      printf("%c", maze->maze[i][j]);
     printf("\n");
   }
   printf("\n");
@@ -154,7 +193,7 @@ __attribute__((noinline, optnone)) void win(uint16_t x, uint16_t y) {
   log_pos(x, y);
 }
 
-void walk_maze(const char *program, const size_t iters) {
+void walk_maze(const char *program, const size_t iters, maze_t maze) {
   uint16_t x, y;   // Player position
   uint16_t ox, oy; // Old player position
   size_t i = 0;    // Iteration number
@@ -162,15 +201,15 @@ void walk_maze(const char *program, const size_t iters) {
   y = 1;
   ox = x;
   oy = y;
-  maze[y][x] = 'X';
-  draw();
+  maze.maze[y][x] = 'X';
+  draw(&maze);
   while (i < iters) {
-    if (x > W || y > H) {
+    if (x > maze.w || y > maze.h) {
       lose("OOB", x, y);
     }
-#ifndef MAZE_NO_BT
-    maze[y][x] = ' ';
-#endif
+    if (MAZE_NO_BT) {
+      maze.maze[y][x] = ' ';
+    }
     ox = x; // Save old player position
     oy = y;
 
@@ -191,43 +230,43 @@ void walk_maze(const char *program, const size_t iters) {
       break;
     case 'x':
     case 'y':
-      draw();
+      draw(&maze);
       break;
     case '\n':
     case '\0':
       logmsg("final state");
-      draw();
+      draw(&maze);
       lose("You give up", ox, oy);
     default:
-      lose("Wrong command!(only w,s,a,d accepted!)", ox, oy);
+      lose("Wrong command! (only w,s,a,d,x,y accepted!)", ox, oy);
     }
-    if (maze[y][x] == '#') {
+    if (maze.maze[y][x] == '#') {
       win(x, y);
-#ifdef CHECK_CODE
-      if (check_contra_code(program, i, iters)) {
-        logmsg("oh oh..");
-        assert(0);
+      if (CHECK_CODE) {
+        if (check_contra_code(program, i, iters)) {
+          logmsg("oh oh..");
+          assert(0);
+        } else {
+          logmsg("... or did you really?");
+          bye(0);
+        }
       } else {
-        logmsg("... or did you really?");
-        bye(0);
+        // notify fuzzer
+        assert(0);
       }
-#else
-      // notify fuzzer
-      assert(0);
-#endif
     }
-    if (maze[y][x] != ' ') {
+    if (maze.maze[y][x] != ' ') {
       x = ox;
       y = oy;
     }
-#ifdef MAZE_NO_BT
-    if (ox == x && oy == y) {
-      lose("No movement", ox, oy);
+    if (MAZE_NO_BT) {
+      if (ox == x && oy == y) {
+        lose("No movement", ox, oy);
+      }
     }
-#endif
 
-    maze[y][x] = 'X';
-    draw(); // draw it
+    maze.maze[y][x] = 'X';
+    draw(&maze); // draw it
     i++;
   }
 
@@ -243,6 +282,19 @@ char program[MAX_ITERS] = {
 };
 
 int main(int argc, char *argv[]) {
+
+  char *e = getenv("USE_MAZE");
+  if (e != NULL) {
+    USE_MAZE = atoi(e);
+  }
+  e = getenv("MAZE_NO_BT");
+  if (e != NULL) {
+    MAZE_NO_BT = atoi(e);
+  }
+  e = getenv("CHECK_CODE");
+  if (e != NULL) {
+    CHECK_CODE = atoi(e);
+  }
 
   if (getenv("SNAPSHOT") != NULL) {
     printf("SNAPSHOT Data buffer: %p\n", program);
@@ -260,6 +312,15 @@ int main(int argc, char *argv[]) {
       fclose(f);
     }
   }
-  walk_maze(program, MAX_ITERS);
+  // dynamically select the maze
+  maze_t maze;
+  if (USE_MAZE == 0) {
+    maze = maze_small;
+  } else if (USE_MAZE == 1) {
+    maze = maze_big;
+  } else {
+    maze = maze_small;
+  }
+  walk_maze(program, MAX_ITERS, maze);
   bye(0);
 }
