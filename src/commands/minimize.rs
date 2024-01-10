@@ -323,7 +323,7 @@ fn start_core<FUZZER: Fuzzer>(
             RunInput,
             if min_params.codecov_level >= MinimizeCodeCovLevel::Hitcounts {
                 // run input without any feedback mechanism -> fast basic check
-                let (execution, mut feedback) = fuzzvm.gather_feedback(
+                let (execution, feedback) = fuzzvm.gather_feedback(
                     &mut fuzzer,
                     &curr_input,
                     vm_timeout,
