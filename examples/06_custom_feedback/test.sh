@@ -8,14 +8,7 @@ export MAZE_NO_BT=0
 
 setup_build
 
-### Test fuzzing ###
-echo "Begin fuzzing $EX"
-cargo run -r -- \
-    fuzz \
-    --ascii-stats --stop-after-first-crash \
-    -c "$FUZZ_CORES" \
-    --stop-after-time "$FUZZ_TIMEOUT" \
-    >/dev/null 2>/dev/null
+start_fuzzing
 
 # Check if the fuzzer found a crash
 ls snapshot/crashes/*assert_fail* >/dev/null
