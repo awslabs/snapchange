@@ -1868,8 +1868,10 @@ pub fn worker<FUZZER: Fuzzer>(
         // If something has triggered FINISH, close out all stats and return from this
         // thread
         if crate::FINISHED.load(Ordering::SeqCst) {
-            // Restore the terminal to the original state
-            crate::stats_tui::restore_terminal()?;
+            if tui {
+                // Restore the terminal to the original state
+                crate::stats_tui::restore_terminal()?;
+            }
 
             // Sanity check all cores are dead before exiting
             let iters = 20;
