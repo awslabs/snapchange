@@ -42,6 +42,7 @@ fn start_core<FUZZER: Fuzzer>(
     input_case: &Option<PathBuf>,
     vm_timeout: Duration,
     single_step: bool,
+    ignore_cov_bps: bool,
     project_state: &ProjectState,
 ) -> Result<()> {
     // Get the options from the project state
@@ -104,19 +105,43 @@ fn start_core<FUZZER: Fuzzer>(
         log::info!("No single step trace");
         fuzzvm.disable_single_step()?;
 
-        let mut count = 0_usize;
+        if !ignore_cov_bps {
+            let mut count = 0_usize;
 
-        let cr3 = Cr3(project_state.vbcpu.cr3);
-        if let Some(symbols) = symbols.as_ref() {
-            log::info!("setting breakpoints on all symbols");
-            for sym in symbols.iter() {
-                let translation = fuzzvm.translate(sym.address.into(), cr3);
-                if translation.phys_addr().is_some()
-                    && translation.is_executable()
-                    && !translation.is_writable()
-                {
+            let cr3 = Cr3(project_state.vbcpu.cr3);
+            if let Some(symbols) = symbols.as_ref() {
+                log::info!("setting breakpoints on all symbols");
+                for sym in symbols.iter() {
+                    let translation = fuzzvm.translate(sym.address.into(), cr3);
+                    if translation.phys_addr().is_some()
+                        && translation.is_executable()
+                        && !translation.is_writable()
+                    {
+                        let res = fuzzvm.set_breakpoint(
+                            sym.address.into(),
+                            cr3,
+                            BreakpointType::Repeated,
+                            BreakpointMemory::NotDirty,
+                            BreakpointHook::Ignore,
+                        );
+                        match res {
+                            Ok(_) => count += 1,
+                            Err(_e) => {
+                                let name = &sym.symbol;
+                                let address = &sym.address;
+                                log::trace!(
+                                    "invalid symbol breakpoint for symbols {name} @ {address:#x}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(covbps) = project_state.coverage_basic_blocks.as_ref() {
+                for addr in covbps.keys().copied() {
                     let res = fuzzvm.set_breakpoint(
-                        sym.address.into(),
+                        addr,
                         cr3,
                         BreakpointType::Repeated,
                         BreakpointMemory::NotDirty,
@@ -124,38 +149,16 @@ fn start_core<FUZZER: Fuzzer>(
                     );
                     match res {
                         Ok(_) => count += 1,
-                        Err(_e) => {
-                            let name = &sym.symbol;
-                            let address = &sym.address;
-                            log::trace!(
-                                "invalid symbol breakpoint for symbols {name} @ {address:#x}"
-                            );
+                        Err(e) => {
+                            let addr = addr.0;
+                            log::debug!("invalid coverage breakpoint for @ {addr:#x}: {e:?}");
                         }
                     }
                 }
             }
-        }
 
-        if let Some(covbps) = project_state.coverage_basic_blocks.as_ref() {
-            for addr in covbps.keys().copied() {
-                let res = fuzzvm.set_breakpoint(
-                    addr,
-                    cr3,
-                    BreakpointType::Repeated,
-                    BreakpointMemory::NotDirty,
-                    BreakpointHook::Ignore,
-                );
-                match res {
-                    Ok(_) => count += 1,
-                    Err(e) => {
-                        let addr = addr.0;
-                        log::debug!("invalid coverage breakpoint for @ {addr:#x}: {e:?}");
-                    }
-                }
-            }
+            log::info!("set {count} breakpoints");
         }
-
-        log::info!("set {count} breakpoints");
     }
 
     // If the trace input name is `testcase`, allow the fuzzer to do something ahead of
@@ -390,7 +393,7 @@ fn start_core<FUZZER: Fuzzer>(
                 curr_res.push_str(&format!("{call_indent}{symbol}("));
                 if let Ok(a1) = fuzzvm.read_c_string(VirtAddr(arg1), fuzzvm.cr3()) {
                     if a1.len() > 2 {
-                        curr_res.push_str(&format!("{a1:?}, "));
+                        curr_res.push_str(&format!("{arg1:#x} => {a1:?}, "));
                     } else {
                         curr_res.push_str(&format!("{arg1:#x}, "));
                     }
@@ -399,7 +402,7 @@ fn start_core<FUZZER: Fuzzer>(
                 }
                 if let Ok(a2) = fuzzvm.read_c_string(VirtAddr(arg2), fuzzvm.cr3()) {
                     if a2.len() > 2 {
-                        curr_res.push_str(&format!("{a2:?}, "));
+                        curr_res.push_str(&format!("{arg2:#x} => {a2:?}, "));
                     } else {
                         curr_res.push_str(&format!("{arg2:#x}, "));
                     }
@@ -408,7 +411,7 @@ fn start_core<FUZZER: Fuzzer>(
                 }
                 if let Ok(a3) = fuzzvm.read_c_string(VirtAddr(arg3), fuzzvm.cr3()) {
                     if a3.len() > 2 {
-                        curr_res.push_str(&format!("{a3:?}, "));
+                        curr_res.push_str(&format!("{arg3:#x} => {a3:?}, "));
                     } else {
                         curr_res.push_str(&format!("{arg3:#x}, "));
                     }
@@ -417,7 +420,7 @@ fn start_core<FUZZER: Fuzzer>(
                 }
                 if let Ok(a4) = fuzzvm.read_c_string(VirtAddr(arg4), fuzzvm.cr3()) {
                     if a4.len() > 2 {
-                        curr_res.push_str(&format!("{a4:?}, "));
+                        curr_res.push_str(&format!("{arg4:#x} => {a4:?}, "));
                     } else {
                         curr_res.push_str(&format!("{arg4:#x}, "));
                     }
@@ -545,7 +548,7 @@ fn start_core<FUZZER: Fuzzer>(
 
             // Reset the VM if the vmexit handler says so
             if matches!(execution, Execution::Reset | Execution::CrashReset { .. }) {
-                log::debug!("stopping tracing at @ {rip:#x}");
+                log::debug!("stopping tracing at @ {rip:#x} with {execution:?}");
                 break;
             }
 
@@ -761,6 +764,7 @@ pub(crate) fn run<FUZZER: Fuzzer>(
         &args.input,
         args.timeout,
         !args.no_single_step,
+        args.ignore_cov_bps,
         project_state,
     )?;
 
