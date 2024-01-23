@@ -404,6 +404,9 @@ pub struct Trace {
     /// Don't single step with the trace. Useful for quickly executing one single input
     #[clap(short, long)]
     pub(crate) no_single_step: bool,
+
+    #[clap(short, long)]
+    pub(crate) ignore_cov_bps: bool,
 }
 
 /// To which extent code coverage is considered when minimizing a testcase.
