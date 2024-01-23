@@ -1398,11 +1398,12 @@ def arithmetic_backslice(curr_instr):
                         for index in range(curr_instr_index, starting_index):
                             check_instr = curr_instr.function[index]
                             if check_instr.operation == LowLevelILOperation.LLIL_SET_REG:
-                                # Check if we can just use this register as the operand
-                                dst_reg = arch_regs[check_instr.dest.name].full_width_reg
-                                if dst_reg == checked_reg:
-                                    log_warn(f"CHECK {curr_instr.address:#x}. Intermediate register cannot be used")
-                                    break
+                                if check_instr.dest.name in arch_regs:
+                                    # Check if we can just use this register as the operand
+                                    dst_reg = arch_regs[check_instr.dest.name].full_width_reg
+                                    if dst_reg == checked_reg:
+                                        log_warn(f"CHECK {curr_instr.address:#x}. Intermediate register cannot be used")
+                                        break
                         else:
                             left_mods.append(f'sub')
                             right_mods.append(f'reg {curr_instr.right.src.name}')
@@ -1442,10 +1443,11 @@ def arithmetic_backslice(curr_instr):
                             check_instr = curr_instr.function[index]
                             if check_instr.operation == LowLevelILOperation.LLIL_SET_REG:
                                 # Check if we can just use this register as the operand
-                                dst_reg = arch_regs[check_instr.dest.name].full_width_reg
-                                if dst_reg == checked_reg:
-                                    log_warn(f"CHECK {curr_instr.address:#x}. Intermediate register cannot be used")
-                                    break
+                                if check_instr.dest.name in arch_regs:
+                                    dst_reg = arch_regs[check_instr.dest.name].full_width_reg
+                                    if dst_reg == checked_reg:
+                                        log_warn(f"CHECK {curr_instr.address:#x}. Intermediate register cannot be used")
+                                        break
                         else:
                             left_mods.append(f'add')
                             right_mods.append(f'reg {curr_instr.right.src.name}')
@@ -1761,7 +1763,7 @@ def get_cmp_analysis_from_instr_llil(curr_instr):
             return output
 
         log_debug(
-            f"{bp_address:#x} UNKNOWN intrinsic @ {curr_instr.address:#x}: `{curr_instr.operation}` | {curr_instr!r}"
+            f"UNKNOWN intrinsic @ {curr_instr.address:#x}: `{curr_instr.operation}` | {curr_instr!r}"
         )
         return None
     elif curr_instr.operation == LowLevelILOperation.LLIL_FLOAT_CONV:
