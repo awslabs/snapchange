@@ -58,3 +58,5 @@ default = []
 # default = ["redqueen", "custom_feedback"]
 redqueen = []
 custom_feedback = []
+# this is only for debugging snapchange itself
+fuzz_single_step = []

@@ -49,10 +49,10 @@ use crate::stack_unwinder::StackUnwinders;
 /// single step trace. This flag enables writing a single step trace of any crash found.
 /// Since this enables single step for all fuzzing cores, it drastically reduces
 /// performance of the fuzzing and should only be used for testing.
-const SINGLE_STEP: bool = false;
+const SINGLE_STEP: bool = cfg!(feature = "fuzz_single_step");
 
 /// Single step debugging enabled for all cores
-pub static SINGLE_STEP_DEBUG: AtomicBool = AtomicBool::new(false);
+// pub static SINGLE_STEP_DEBUG: AtomicBool = AtomicBool::new(false);
 
 /// Execute the fuzz subcommand to fuzz the given project
 pub(crate) fn run<FUZZER: Fuzzer + 'static>(
@@ -272,25 +272,31 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
     let mut count = 0;
     let cr3 = Cr3(project_state.vbcpu.cr3);
 
-    {
+    if !SINGLE_STEP {
         // Small scope to drop the clean snapshot lock
-        let mut curr_clean_snapshot = clean_snapshot.write().unwrap();
-        for addr in &coverage_left {
-            if let Ok(orig_byte) = curr_clean_snapshot.read::<u8>(*addr, cr3) {
-                curr_clean_snapshot.write_bytes(*addr, cr3, &[0xcc])?;
-                covbp_bytes.insert(*addr, orig_byte);
-                count += 1;
+        {
+            let mut curr_clean_snapshot = clean_snapshot.write().unwrap();
+            for addr in &coverage_left {
+                if let Ok(orig_byte) = curr_clean_snapshot.read::<u8>(*addr, cr3) {
+                    curr_clean_snapshot.write_bytes(*addr, cr3, &[0xcc])?;
+                    covbp_bytes.insert(*addr, orig_byte);
+                    count += 1;
+                }
             }
         }
-    }
 
-    log::info!("Pre-populating coverage breakpoints");
-    log::info!(
-        "Given {:?} | Valid {:?} | Can write {:16.2} covbps/sec",
-        coverage_left.len(),
-        covbp_bytes.len(),
-        f64::from(count) / start.elapsed().as_secs_f64()
-    );
+        log::info!("Pre-populating coverage breakpoints");
+        log::info!(
+            "Given {:?} | Valid {:?} | Can write {:16.2} covbps/sec",
+            coverage_left.len(),
+            covbp_bytes.len(),
+            f64::from(count) / start.elapsed().as_secs_f64()
+        );
+    } else {
+        for _ in 0..3 {
+            log::warn!("SINGLE-STEP fuzzing without breakpoints!!!!");
+        }
+    }
 
     // Due to the time it takes to clone large corpi, symbols, or coverage breakpoints,
     // we bulk clone as many as we need for all the cores at once and then `.take` them
@@ -760,7 +766,7 @@ fn start_core<FUZZER: Fuzzer>(
     let mut iters = 0;
 
     // Sanity warn that all cores are in single step when debugging
-    if SINGLE_STEP && SINGLE_STEP_DEBUG.load(Ordering::SeqCst) {
+    if SINGLE_STEP {
         log::warn!("SINGLE STEP FUZZING ENABLED");
         log::warn!("SINGLE STEP FUZZING ENABLED");
         log::warn!("SINGLE STEP FUZZING ENABLED");
@@ -1045,7 +1051,7 @@ fn start_core<FUZZER: Fuzzer>(
 
         // Top of the run iteration loop for the current fuzz case
         loop {
-            if SINGLE_STEP && SINGLE_STEP_DEBUG.load(Ordering::SeqCst) {
+            if SINGLE_STEP {
                 // Add the current instruction to the trace
                 let rip = fuzzvm.regs().rip;
                 let cr3 = fuzzvm.cr3();
@@ -1174,8 +1180,10 @@ fn start_core<FUZZER: Fuzzer>(
             if let Some(crash_file) =
                 write_crash_input(&crash_dir, "timeout", &input, &fuzzvm.console_output)?
             {
-                if SINGLE_STEP && SINGLE_STEP_DEBUG.load(Ordering::SeqCst) {
-                    std::fs::write(crash_file.with_extension("single_step"), instrs.join("\n"))?;
+                if SINGLE_STEP {
+                    let instr_log = crash_file.with_extension("single_step");
+                    log::debug!("writing instruction log to: {}", instr_log.display());
+                    std::fs::write(instr_log, instrs.join("\n"))?;
                 }
 
                 // Allow the fuzzer to handle the crashing state
@@ -1194,6 +1202,10 @@ fn start_core<FUZZER: Fuzzer>(
                 // Inc the number of crashes found
                 core_stats.lock().unwrap().crashes += 1;
 
+                if SINGLE_STEP {
+                    std::fs::write(crash_file.with_extension("single_step"), instrs.join("\n"))?;
+                }
+
                 // Allow the fuzzer to handle the crashing state
                 // Useful for things like syscall fuzzer to write a C file from the input
                 fuzzer.handle_crash(&input, &mut fuzzvm, &crash_file)?;
@@ -1207,7 +1219,14 @@ fn start_core<FUZZER: Fuzzer>(
 
             if !fuzzvm.console_output.is_empty() {
                 if let Ok(_out) = std::str::from_utf8(&fuzzvm.console_output) {
-                    // println!("{}", _out);
+                    log::debug!("=== console output ===");
+                    unsafe {
+                        log::debug!(
+                            "{:?}",
+                            std::str::from_utf8_unchecked(&fuzzvm.console_output)
+                        );
+                    }
+                    log::debug!("=== end of console output ===");
                 }
             }
 
@@ -1218,8 +1237,10 @@ fn start_core<FUZZER: Fuzzer>(
             if let Some(crash_file) =
                 write_crash_input(&crash_dir, &path, &input, &fuzzvm.console_output)?
             {
-                if SINGLE_STEP && SINGLE_STEP_DEBUG.load(Ordering::SeqCst) {
-                    std::fs::write(crash_file.with_extension("single_step"), instrs.join("\n"))?;
+                if SINGLE_STEP {
+                    let instr_log = crash_file.with_extension("single_step");
+                    log::debug!("writing instruction log to: {}", instr_log.display());
+                    std::fs::write(instr_log, instrs.join("\n"))?;
                 }
 
                 // If this was a newly written crash file, allow the fuzzer to handle the
