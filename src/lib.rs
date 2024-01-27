@@ -1021,15 +1021,19 @@ pub fn snapchange_main<FUZZER: Fuzzer + 'static>() -> Result<()> {
 /// use snapchange::prelude::*;
 /// ```
 pub mod prelude {
-    pub use super::rand::seq::SliceRandom;
+    // this is useful for the `slice.choose(rng)` calls.
+    pub use super::rand::seq::{IteratorRandom, SliceRandom};
+    // need this for `let v: u32 = rng.gen()` style calls
     pub use super::rand::Rng as _;
+    // now bring the most important things from snapchange into scope
     pub use super::{
         addrs::{Cr3, VirtAddr},
         anyhow,
         anyhow::Result,
-        fuzz_input::{BytesMinimizeState, MinimizeControlFlow, NullMinimizerState},
+        fuzz_input::{MinimizeControlFlow, MinimizerState, NullMinimizerState},
         fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer},
         fuzzvm::FuzzVm,
+        input_types::bytes::BytesMinimizeState,
         rand,
         rng::Rng,
         snapchange_main, Execution, FuzzInput, InputWithMetadata,
@@ -1037,4 +1041,10 @@ pub mod prelude {
 
     #[cfg(feature = "custom_feedback")]
     pub use super::feedback::FeedbackTracker;
+
+    #[cfg(feature = "redqueen")]
+    pub use super::cmp_analysis::RedqueenRule;
+
+    #[cfg(feature = "redqueen")]
+    pub use rustc_hash::FxHashSet;
 }
