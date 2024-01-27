@@ -343,7 +343,11 @@ fn handle_vmexit<FUZZER: Fuzzer>(
                         .unwrap_or_else(|| "Unknown symbol".to_string());
 
                     execution = Execution::CrashReset {
-                        path: format!("{}_weird_bp_{rip:#x}_{sym}", err.root_cause()),
+                        path: format!(
+                            "{}_weird_bp_{rip:#x}_cr3_{:x?}_{sym}",
+                            err.root_cause(),
+                            fuzzvm.cr3().0
+                        ),
                     };
                 }
                 Ok(res) => {
@@ -505,17 +509,26 @@ fn handle_vmexit<FUZZER: Fuzzer>(
             // Get the output directory name for this crash
             let dirname = match signal {
                 linux::Signal::SegmentationFault { code, address } => {
-                    format!("SIGSEGV_addr_{address:#x}_code_{code:x?}")
+                    format!(
+                        "SIGSEGV_addr_{address:#x}_cr3_{:x?}_code_{code:x?}",
+                        fuzzvm.cr3().0
+                    )
                 }
                 linux::Signal::IllegalInstruction { code, address } => {
-                    format!("SIGILL_addr_{address:#x}_code_{code:?}")
+                    format!(
+                        "SIGILL_addr_{address:#x}_cr3_{:x?}_code_{code:?}",
+                        fuzzvm.cr3().0
+                    )
                 }
                 linux::Signal::Unknown {
                     signal,
                     code,
                     arg: _,
                 } => {
-                    format!("ForceSigFault_Unknown_sig{signal:#x}_code{code:#x}")
+                    format!(
+                        "ForceSigFault_Unknown_sig{signal:#x}_code{code:#x}_cr3_{:x?}",
+                        fuzzvm.cr3().0
+                    )
                 }
                 linux::Signal::Trap => {
                     // Immediately return from the function
