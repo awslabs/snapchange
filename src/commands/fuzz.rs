@@ -1158,12 +1158,6 @@ fn start_core<FUZZER: Fuzzer>(
             // }
         }
 
-        // Exit the fuzz loop if told to
-        // MUST BE IN THE RUN LOOP
-        if core_stats.lock().unwrap().forced_shutdown || crate::FINISHED.load(Ordering::SeqCst) {
-            break 'finish;
-        }
-
         /*
         if SINGLE_STEP && SINGLE_STEP_DEBUG.load(Ordering::SeqCst) {
             log::info!("Writing {} instrs", instrs.len());
@@ -1211,6 +1205,7 @@ fn start_core<FUZZER: Fuzzer>(
                 fuzzer.handle_crash(&input, &mut fuzzvm, &crash_file)?;
             }
             if stop_after_first_crash {
+                crate::FINISHED.store(true, Ordering::SeqCst);
                 break;
             }
         } else if let Execution::CrashReset { path } = execution {
@@ -1250,6 +1245,7 @@ fn start_core<FUZZER: Fuzzer>(
             }
 
             if stop_after_first_crash {
+                crate::FINISHED.store(true, Ordering::SeqCst);
                 break;
             }
         } else if feedback.has_new() {
@@ -1286,6 +1282,12 @@ fn start_core<FUZZER: Fuzzer>(
 
         // Reset the guest state
         fuzzvm.reset_guest_state(&mut fuzzer)?;
+
+        // Exit the fuzz loop if told to
+        // MUST BE IN THE RUN LOOP
+        if core_stats.lock().unwrap().forced_shutdown || crate::FINISHED.load(Ordering::SeqCst) {
+            break 'finish;
+        }
     }
 
     // remove this thread from the list to avoid being "kicked" by the kick_cores_thread

@@ -293,7 +293,7 @@ lazy_static::lazy_static! {
 pub static KICK_CORES: AtomicBool = AtomicBool::new(false);
 
 /// Signals that the main thread is finished and the stats worker can exit
-pub(crate) static FINISHED: AtomicBool = AtomicBool::new(false);
+pub static FINISHED: AtomicBool = AtomicBool::new(false);
 
 /// Current number of columns in the terminal
 static COLUMNS: AtomicUsize = AtomicUsize::new(0);
