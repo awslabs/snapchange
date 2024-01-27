@@ -55,6 +55,7 @@ def collect_process_memory_map():
     found_files = set()
     started = False
     modules = {}
+    special_regions = {}
 
     for line in vmmap.split('\n'):
         # Skip all lines until the header
@@ -89,8 +90,13 @@ def collect_process_memory_map():
         # Parse the split line
         (start_addr, end_addr, size, offset, perms, filepath) = line
 
+        # Parse the string into an int
+        start_addr = int(start_addr, 16)
+        end_addr = int(end_addr, 16)
+
         # Ignore [vvar], [vdso], [stack], [vsyscall], ect
         if '[' in filepath and ']' in filepath:
+            special_regions[filepath.strip()] = (start_addr, end_addr)
             continue
 
         # Already processed this file, no need to process it again
@@ -98,7 +104,7 @@ def collect_process_memory_map():
             # Sanity check the filename was initialized properly
             assert('end' in modules[filename])
 
-            modules[filename]['end'] = end_addr
+            modules[filename]['end'] = hex(end_addr)
             continue
 
         # New file
@@ -109,10 +115,7 @@ def collect_process_memory_map():
 
         # Add the filename to the total module list if it doesn't exist
         print("Inserting first time in modules: {}".format(filename))
-        modules[filename] = {"start": start_addr, "end": end_addr}
-
-        # Parse the string into an int
-        start_addr = int(start_addr, 16)
+        modules[filename] = {"start": hex(start_addr), "end": hex(end_addr)}
 
         # Init the module to parse with `nm` as False
         found = filepath
@@ -199,8 +202,23 @@ def collect_process_memory_map():
 
     # Force page in all memory in all found modules
     for (_filename, addrs) in modules.items():
-        start = int(addrs['start'], 16) & ~0xfff
-        end = (int(addrs['end'], 16) + 0xfff) & ~0xfff
+        start = int(addrs['start'], 0) & ~0xfff
+        end = (int(addrs['end'], 0) + 0xfff) & ~0xfff
+        addrs = range(start, end, 0x1000)
+        for (i, page) in enumerate(addrs):
+            if i % 10 == 0:
+                print("Page: {}/{}: {:x}".format(i, len(addrs), page))
+            # Dump bytes from this page in order to force this memory to be paged in
+            try:
+                gdb.execute('x/4b {}'.format(page), to_string=True)
+            except:
+                print("Addr {} for {} not found: {}".format(hex(page), filename, addrs))
+
+    print("touching special memory regions to ensure paged in")
+    for (filename, addrs) in special_regions.items():
+        print("region: ", filename)
+        start = addrs[0] & ~0xfff
+        end = (addrs[1] + 0xfff) & ~0xfff
         addrs = range(start, end, 0x1000)
         for (i, page) in enumerate(addrs):
             if i % 10 == 0:
