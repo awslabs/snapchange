@@ -272,6 +272,22 @@ impl Execution {
             _ => false,
         }
     }
+
+    /// Returns true if the given Execution state is a crash.
+    pub fn is_reset(&self) -> bool {
+        match &self {
+            Self::CrashReset { .. } => true,
+            Self::Reset | Self::TimeoutReset => true,
+            _ => false,
+        }
+    }
+
+    /// Create a new `Execution::CrashReset` with the given crash_name as string.
+    pub fn new_crash<T: Into<String>>(crash_name: T) -> Self {
+        Self::CrashReset {
+            path: crash_name.into(),
+        }
+    }
 }
 
 /// List of [`Symbol`] sorted in order by address. Always allows to `binary_search_by_key`.

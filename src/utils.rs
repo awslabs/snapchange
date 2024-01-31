@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::fuzz_input::{FuzzInput, InputWithMetadata};
+use crate::Execution;
 use crate::SymbolList;
 use crate::{Symbol, VirtAddr};
 
@@ -778,4 +779,14 @@ pub fn write_crash_input<T: FuzzInput>(
     }
 
     Ok(None)
+}
+
+/// creates a new `Execution::CrashReset`, wrapped in a `Result::Ok`. The idea of this is to
+/// quickly do something like this in a breakpoint hook:
+///
+/// ```rust,ignore
+/// return custom_crash("custom_crash_identifier");
+/// ```
+pub fn custom_crash<T: Into<String>>(crash_name: T) -> Result<Execution> {
+    Ok(Execution::new_crash(crash_name))
 }
