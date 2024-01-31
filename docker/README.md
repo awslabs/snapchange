@@ -94,3 +94,4 @@ There are some more exotic options that you can pass to the snapshot script.
       better (or worse) analysis results. For example, `angr` supports automatically generating a basic fuzzing dictionary from the binary.
     * Can be set to a custom command to obtain coverage breakpoints.
     * `binaryninja` generally offers the best results and also enables the use of redqueen. However, this requires putting binary ninja and a valid commercial license into the container.
+* `COVERAGE_BREAKPOINTS_EXTRA_BINS` - a space separated list of extra binaries (or rather libraries) to analyze for coverage breakpoints.

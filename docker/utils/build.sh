@@ -39,8 +39,11 @@ fi
 if [[ -z "$SNAPSHOT_FUNCTION" ]]; then
   SNAPSHOT_FUNCTION=""
 fi
+if [[ -z "$COVERAGE_BREAKPOINTS_EXTRA_BINS" ]]; then
+    COVERAGE_BREAKPOINTS_EXTRA_BINS=""
+fi
 if [[ -z "$SNAPSHOT_EXTRACT" ]]; then
-  SNAPSHOT_EXTRACT=""
+  SNAPSHOT_EXTRACT="$COVERAGE_BREAKPOINTS_EXTRA_BINS"
 fi
 if [[ -z "$SNAPSHOT_CHECK_FOR_GDB" ]]; then
   SNAPSHOT_CHECK_FOR_GDB=1
@@ -276,6 +279,12 @@ EOF
         echo -n "su $USER -c \"" >> $RC_LOCAL
     fi
 
+    if [[ "$SNAPCHANGE_DEV" -eq 1 ]]; then
+        echo -n "echo '---- begin gdbcmds ----'" >> $RC_LOCAL
+        echo -n "cat $GDBCMDS" >> $RC_LOCAL
+        echo -n "echo '---- end gdbcmds ----'" >> $RC_LOCAL
+    fi
+
     # Create the script to start on boot
     echo -n "\$GDB --batch --command=$GDBCMDS --args "$SNAPSHOT_ENTRYPOINT" $SNAPSHOT_ENTRYPOINT_ARGUMENTS" >> $RC_LOCAL
 
@@ -406,7 +415,7 @@ if [[ -n "$SNAPSHOT_CUSTOM_GDBCMDS" ]]; then
         exit 1
     fi
 elif [[ "$SNAPSHOT_FUNCTION" ]]; then
-    echo "LIBFUZZER SNAPSHOT DETECTED"
+    echo "FUNCTION SNAPSHOT DETECTED (e.g., libfuzzer)"
     echo "Taking a snapshot at $SNAPSHOT_FUNCTION"
     cat > "$DIR/$GDBCMDS" <<EOF
 $(printf "$LOAD_SYMBOL_FILE")
