@@ -75,6 +75,9 @@ fi
 if [[ -z "$SNAPSHOT_CUSTOM_GDBCMDS" ]]; then
     SNAPSHOT_CUSTOM_GDBCMDS=""
 fi
+if [[ -z "$SNAPSHOT_GDB_MODE" ]]; then
+    SNAPSHOT_GDB_MODE="quit"
+fi
 
 source $SNAPCHANGE_ROOT/utils/log.sh || { echo "Failed to source $SNAPCHANGE_ROOT/utils/log.sh"; exit 1; }
 
@@ -397,10 +400,24 @@ cat > "$DIR/$GDBCMDS.basic" <<EOF
 $(printf "$LOAD_SYMBOL_FILE")
 set pagination off
 run
+bt
+x/2i \$rip
 source $GDBPY
 ni
 ni
 quit
+
+EOF
+
+
+cat > "$DIR/$GDBCMDS.detach" <<EOF
+$(printf "$LOAD_SYMBOL_FILE")
+set pagination off
+run
+bt
+x/2i \$rip
+source $GDBPY
+detach
 
 EOF
 
@@ -466,7 +483,14 @@ quit
 
 EOF
 else
-    cp "$DIR/$GDBCMDS.basic" "$DIR/$GDBCMDS"
+    if [[ "$SNAPSHOT_GDB_MODE" == "detach" ]]; then
+        cp "$DIR/$GDBCMDS.detach" "$DIR/$GDBCMDS"
+    else 
+        if [[ "$SNAPSHOT_GDB_MODE" != "quit" ]]; then
+            echo "Invalid SNAPSHOT_GDB_MODE=$SNAPSHOT_GDB_MODE - using \"quit\""
+        fi
+        cp "$DIR/$GDBCMDS.basic" "$DIR/$GDBCMDS"
+    fi
 fi
 chmod a+r "$DIR/$GDBCMDS"
 cat "$DIR/$GDBCMDS"
