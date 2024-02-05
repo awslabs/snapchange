@@ -46,6 +46,9 @@ fi
 if [[ -z "$COVERAGE_BREAKPOINT_COMMAND" ]]; then
     COVERAGE_BREAKPOINT_COMMAND=ghidra
 fi
+if [[ -z "$COVERAGE_BREAKPOINTS_EXTRA_BINS" ]]; then
+    COVERAGE_BREAKPOINTS_EXTRA_BINS=""
+fi
 
 
 source $SNAPCHANGE_ROOT/utils/log.sh || { echo "Failed to source $SNAPCHANGE_ROOT/utils/log.sh"; exit 1; }
@@ -282,27 +285,49 @@ fi
 # Create the reset script for the snapshot
 cp $SNAPCHANGE_ROOT/utils/reset_snapshot.sh $OUTPUT/reset.sh
 
+function create_covbps() {
+  BIN_NAME="$1"
+  # Get the base address of the example from the module list
+  BASE="$(grep "$BIN_NAME" "$OUTPUT/gdb.modules" | cut -d' ' -f1)"
+  log_msg "analyzing $BIN_NAME @ ($BASE) for breakpoints with '$COVERAGE_BREAKPOINT_COMMAND'"
+  if [[ "$COVERAGE_BREAKPOINT_COMMAND" == "ghidra" ]]; then
+    # Use ghidra to find the coverage basic blocks
+    time python3 $SNAPCHANGE_ROOT/coverage_scripts/ghidra_basic_blocks.py --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin" > "$OUTPUT/ghidra.log" 2>&1
+  elif [[ "$COVERAGE_BREAKPOINT_COMMAND" == "angr" ]]; then
+    time python3 $SNAPCHANGE_ROOT/coverage_scripts/angr_snapchange.py --dict-path "$OUTPUT/dict" --auto-dict --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin" > "$OUTPUT/angr.log" 2>&1
+  elif [[ "$COVERAGE_BREAKPOINT_COMMAND" == "rizin" ]]; then
+    time python3 $SNAPCHANGE_ROOT/coverage_scripts/rz_snapchange.py --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin" > "$OUTPUT/rizin.log" 2>&1
+  elif [[ "$COVERAGE_BREAKPOINT_COMMAND" == "binaryninja" ]]; then
+    log_warning "binary ninja coverage script requires a headless license! make sure everything is set up inside of the container."
+    time python3 $SNAPCHANGE_ROOT/coverage_scripts/bn_snapchange.py --bps --analysis --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin" 
+  else
+    time $COVERAGE_BREAKPOINT_COMMAND "$BASE" "$OUTPUT/$BIN_NAME.bin" 2>&1 | tee "$OUTPUT/custom_coverage_command.log"
+  fi
+  mv *.covbps "$OUTPUT/" || true
+}
+
+# finally just chown to something more sensible
+chown -R "$SNAPSHOT_CHOWN_TO" "$OUTPUT" || true
+
 if [[ "$GENERATE_COVERAGE_BREAKPOINTS" -eq 1 ]]; then
   log_msg "creating coverage breakpoints with $COVERAGE_BREAKPOINT_COMMAND"
   # Create the coverage breakpoints and analysis
-  BIN_NAME="$(basename "$SNAPSHOT_ENTRYPOINT")"
-  # Get the base address of the example from the module list
-  BASE="$(grep "$BIN_NAME" "$OUTPUT/gdb.modules" | cut -d' ' -f1)"
-  if [[ "$COVERAGE_BREAKPOINT_COMMAND" == "ghidra" ]]; then
-    # Use ghidra to find the coverage basic blocks
-    python3 $SNAPCHANGE_ROOT/coverage_scripts/ghidra_basic_blocks.py --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin" > "$OUTPUT/ghidra.log" 2>&1
-  elif [[ "$COVERAGE_BREAKPOINT_COMMAND" == "angr" ]]; then
-    python3 $SNAPCHANGE_ROOT/coverage_scripts/angr_snapchange.py --dict-path "$OUTPUT/dict" --auto-dict --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin" > "$OUTPUT/angr.log" 2>&1
-  elif [[ "$COVERAGE_BREAKPOINT_COMMAND" == "rizin" ]]; then
-    python3 $SNAPCHANGE_ROOT/coverage_scripts/rz_snapchange.py --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin" > "$OUTPUT/rizin.log" 2>&1
-  elif [[ "$COVERAGE_BREAKPOINT_COMMAND" == "binaryninja" ]]; then
-    log_warning "binary ninja coverage script requires a headless license! make sure everything is set up inside of the container."
-    python3 $SNAPCHANGE_ROOT/coverage_scripts/bn_snapchange.py --bps --analysis --base-addr "$BASE" "$OUTPUT/$BIN_NAME.bin" 
-  else
-    $COVERAGE_BREAKPOINT_COMMAND "$BASE" "$OUTPUT/$BIN_NAME.bin" 2>&1 | tee "$OUTPUT/custom_coverage_command.log"
+  bin_name="$(basename "$SNAPSHOT_ENTRYPOINT")"
+  create_covbps "$bin_name"
+  if [[ -n "$COVERAGE_BREAKPOINTS_EXTRA_BINS" ]]; then
+      for bin_path in $COVERAGE_BREAKPOINTS_EXTRA_BINS; do
+          bin_name="$(basename "$bin_path")"
+          if [[ -e "$OUTPUT/image/$bin_path" ]]; then
+              cp "$OUTPUT/image/$bin_path" "$OUTPUT/${bin_name}.bin"
+              create_covbps "$bin_name"
+          elif [[ -e "$OUTPUT/$bin_name.bin" ]]; then
+              create_covbps "$bin_name"
+          else
+              log_warning "failed to locate $bin_path in snapshot directory"
+          fi
+      done
   fi
-  mv *.covbps "$OUTPUT/" || true
-  log_msg "[+] generated $(cat "$OUTPUT"/*.covbps | wc -l) coverage breakpoints"
+  log_msg "[+] generated $(cat "$OUTPUT"/*.covbps | wc -l) coverage breakpoints in total"
 else
   log_msg "Skipping generating coverage breakpoints"
 fi

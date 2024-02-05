@@ -355,7 +355,7 @@ pub fn get_instr_containing<FUZZER: Fuzzer>(
     // such that the second instruction is at `next_instr`
     for offset in (0..=0x10).rev() {
         //
-        let curr_addr = starting_addr - offset;
+        let curr_addr = starting_addr.wrapping_sub(offset);
 
         // Get the instruction for the current address
         let Ok(instr) = fuzzvm

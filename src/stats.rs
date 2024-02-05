@@ -1035,7 +1035,6 @@ pub fn worker<FUZZER: Fuzzer>(
     let mut crash_path_strs: Vec<String> = Vec::new();
     let mut crash_paths: Vec<_> = Vec::new();
     let mut num_crashes = 0_u32;
-    let mut num_interesting_crashes = 0_u32;
 
     // Initialize the coverage analysis with the current toal coverage
     let mut coverage_blockers_in_path = Vec::new();
@@ -1261,9 +1260,6 @@ pub fn worker<FUZZER: Fuzzer>(
                     if let Ok(dir) = std::fs::read_dir(path) {
                         num_crashes += dir.count() as u32;
                     }
-                    if !path.starts_with("timeout") && !path.starts_with("misc") {
-                        num_interesting_crashes += 1;
-                    }
                 }
 
                 // Remove the crash_dir prefix from the found crash dirs
@@ -1274,10 +1270,6 @@ pub fn worker<FUZZER: Fuzzer>(
                     .collect();
             }
         });
-
-        if stop_after_first_crash && num_interesting_crashes > 0 {
-            crate::FINISHED.store(true, Ordering::SeqCst);
-        }
 
         // Calculate the performance stats for the totals that are >1%
         perf_stats.clear();

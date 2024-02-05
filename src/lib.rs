@@ -272,6 +272,22 @@ impl Execution {
             _ => false,
         }
     }
+
+    /// Returns true if the given Execution state is a crash.
+    pub fn is_reset(&self) -> bool {
+        match &self {
+            Self::CrashReset { .. } => true,
+            Self::Reset | Self::TimeoutReset => true,
+            _ => false,
+        }
+    }
+
+    /// Create a new `Execution::CrashReset` with the given crash_name as string.
+    pub fn new_crash<T: Into<String>>(crash_name: T) -> Self {
+        Self::CrashReset {
+            path: crash_name.into(),
+        }
+    }
 }
 
 /// List of [`Symbol`] sorted in order by address. Always allows to `binary_search_by_key`.
@@ -293,7 +309,7 @@ lazy_static::lazy_static! {
 pub static KICK_CORES: AtomicBool = AtomicBool::new(false);
 
 /// Signals that the main thread is finished and the stats worker can exit
-pub(crate) static FINISHED: AtomicBool = AtomicBool::new(false);
+pub static FINISHED: AtomicBool = AtomicBool::new(false);
 
 /// Current number of columns in the terminal
 static COLUMNS: AtomicUsize = AtomicUsize::new(0);
@@ -343,7 +359,11 @@ fn handle_vmexit<FUZZER: Fuzzer>(
                         .unwrap_or_else(|| "Unknown symbol".to_string());
 
                     execution = Execution::CrashReset {
-                        path: format!("{}_weird_bp_{rip:#x}_{sym}", err.root_cause()),
+                        path: format!(
+                            "{}_weird_bp_{rip:#x}_cr3_{:x?}_{sym}",
+                            err.root_cause(),
+                            fuzzvm.cr3().0
+                        ),
                     };
                 }
                 Ok(res) => {
@@ -505,17 +525,26 @@ fn handle_vmexit<FUZZER: Fuzzer>(
             // Get the output directory name for this crash
             let dirname = match signal {
                 linux::Signal::SegmentationFault { code, address } => {
-                    format!("SIGSEGV_addr_{address:#x}_code_{code:x?}")
+                    format!(
+                        "SIGSEGV_addr_{address:#x}_cr3_{:x?}_code_{code:x?}",
+                        fuzzvm.cr3().0
+                    )
                 }
                 linux::Signal::IllegalInstruction { code, address } => {
-                    format!("SIGILL_addr_{address:#x}_code_{code:?}")
+                    format!(
+                        "SIGILL_addr_{address:#x}_cr3_{:x?}_code_{code:?}",
+                        fuzzvm.cr3().0
+                    )
                 }
                 linux::Signal::Unknown {
                     signal,
                     code,
                     arg: _,
                 } => {
-                    format!("ForceSigFault_Unknown_sig{signal:#x}_code{code:#x}")
+                    format!(
+                        "ForceSigFault_Unknown_sig{signal:#x}_code{code:#x}_cr3_{:x?}",
+                        fuzzvm.cr3().0
+                    )
                 }
                 linux::Signal::Trap => {
                     // Immediately return from the function
@@ -1008,15 +1037,19 @@ pub fn snapchange_main<FUZZER: Fuzzer + 'static>() -> Result<()> {
 /// use snapchange::prelude::*;
 /// ```
 pub mod prelude {
-    pub use super::rand::seq::SliceRandom;
+    // this is useful for the `slice.choose(rng)` calls.
+    pub use super::rand::seq::{IteratorRandom, SliceRandom};
+    // need this for `let v: u32 = rng.gen()` style calls
     pub use super::rand::Rng as _;
+    // now bring the most important things from snapchange into scope
     pub use super::{
         addrs::{Cr3, VirtAddr},
         anyhow,
         anyhow::Result,
-        fuzz_input::{BytesMinimizeState, MinimizeControlFlow, NullMinimizerState},
+        fuzz_input::{MinimizeControlFlow, MinimizerState, NullMinimizerState},
         fuzzer::{AddressLookup, Breakpoint, BreakpointType, Fuzzer},
         fuzzvm::FuzzVm,
+        input_types::bytes::BytesMinimizeState,
         rand,
         rng::Rng,
         snapchange_main, Execution, FuzzInput, InputWithMetadata,
@@ -1024,4 +1057,10 @@ pub mod prelude {
 
     #[cfg(feature = "custom_feedback")]
     pub use super::feedback::FeedbackTracker;
+
+    #[cfg(feature = "redqueen")]
+    pub use super::cmp_analysis::RedqueenRule;
+
+    #[cfg(feature = "redqueen")]
+    pub use rustc_hash::FxHashSet;
 }

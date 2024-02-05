@@ -1561,8 +1561,14 @@ pub(crate) fn parse_qemu_regs(data: &str) -> Result<VbCpu> {
 /// Number of seconds in a minute
 const SECONDS_IN_MINUTE: u64 = 60;
 
-/// Number of minutes in an hour
-const MINUTES_IN_HOUR: u64 = 60;
+/// Number of seconds in an hour.
+const SECONDS_IN_HOUR: u64 = 60 * SECONDS_IN_MINUTE;
+
+/// Number of seconds in a full day (24h).
+const SECONDS_IN_DAY: u64 = 24 * SECONDS_IN_HOUR;
+
+/// Number of seconds in a week.
+const SECONDS_IN_WEEK: u64 = 7 * SECONDS_IN_DAY;
 
 /// Parse the command line timeout argument into a [`Duration`]
 ///
@@ -1574,6 +1580,8 @@ const MINUTES_IN_HOUR: u64 = 60;
 /// * 01s  - 1 second
 /// * 10m  - 10 minutes
 /// * 2h   - 2 hours
+/// * 2d   - 2 days
+/// * 1w   - 1 week
 ///
 /// # Errors
 ///
@@ -1602,7 +1610,9 @@ pub fn parse_timeout(input: &str) -> anyhow::Result<Duration> {
         "ms" => Duration::from_millis(number),
         "s" => Duration::from_secs(number),
         "m" => Duration::from_secs(number * SECONDS_IN_MINUTE),
-        "h" => Duration::new(number * MINUTES_IN_HOUR, 0),
+        "h" => Duration::from_secs(number * SECONDS_IN_HOUR),
+        "d" => Duration::from_secs(number * SECONDS_IN_DAY),
+        "w" => Duration::from_secs(number * SECONDS_IN_WEEK),
         _ => return Err(Error::InvalidTimeoutFormat(format).into()),
     };
 
