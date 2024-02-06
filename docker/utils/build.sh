@@ -315,6 +315,8 @@ echo "" >> $RC_LOCAL
 
 echo "echo [+] waiting for processes to finish" >> $RC_LOCAL
 echo "wait" >> $RC_LOCAL
+echo "sleep 5" >> $RC_LOCAL
+echo "wait" >> $RC_LOCAL
 
 # Add a newline
 echo "" >> $RC_LOCAL

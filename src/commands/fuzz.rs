@@ -281,6 +281,14 @@ pub(crate) fn run<FUZZER: Fuzzer + 'static>(
                     curr_clean_snapshot.write_bytes(*addr, cr3, &[0xcc])?;
                     covbp_bytes.insert(*addr, orig_byte);
                     count += 1;
+
+                    if orig_byte == 0xcc {
+                        log::error!(
+                            "coverage breakpoint on top of breakpoint at {:#x} cr3 {:#x}",
+                            addr.0,
+                            cr3.0
+                        );
+                    }
                 }
             }
         }

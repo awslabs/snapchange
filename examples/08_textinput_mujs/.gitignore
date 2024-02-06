@@ -1,0 +1,23 @@
+# snapshot-specific
+snapshot/
+snapshot_image
+src/constants.rs
+dict/
+
+# rust build artifacts
+debug/
+target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# built harness binaries
+harness/mujs_harness
+harness/mujs-*
+
+# other misc data
+perf.data*
+flamegraph.svg
+strace.log
+fuzz*.log
+*.log

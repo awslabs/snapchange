@@ -10,7 +10,7 @@ use crate::fuzz_input::InputWithMetadata;
 use crate::rng::Rng;
 
 /// Insert a random slice from the corpus into the `input`, expanding the `input`
-pub(crate) fn splice_corpus_extend(
+pub fn splice_corpus_extend(
     input: &mut Vec<u8>,
     corpus: &[Arc<InputWithMetadata<Vec<u8>>>],
     rng: &mut Rng,
@@ -53,7 +53,7 @@ pub(crate) fn splice_corpus_extend(
 }
 
 /// Insert a random dictionary entry into the `input`, potentially expanding the `input`.
-pub(crate) fn splice_from_dictionary_extend(
+pub fn splice_from_dictionary_extend(
     input: &mut Vec<u8>,
     _corpus: &[Arc<InputWithMetadata<Vec<u8>>>],
     rng: &mut Rng,

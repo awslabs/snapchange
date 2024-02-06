@@ -183,7 +183,6 @@ mod colors;
 mod commands;
 
 mod coverage_analysis;
-pub mod expensive_mutators;
 pub mod feedback;
 mod filesystem;
 pub mod fuzz_input;
@@ -194,6 +193,8 @@ pub mod utils;
 pub use utils::write_crash_input;
 
 pub use fuzz_input::{FuzzInput, InputWithMetadata};
+
+pub mod input_types;
 
 #[macro_use]
 mod try_macros;
