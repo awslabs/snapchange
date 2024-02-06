@@ -12,7 +12,8 @@ lazy_static! {
         INTERESTING_U64
             .iter()
             .copied()
-            .map(|i| format!("{}", i))
+            .map(|i| [format!("{i}"), format!("-{i}")])
+            .flatten()
             .collect()
     };
     pub static ref INTERESTING_HEX_INTEGERS: Vec<String> = {

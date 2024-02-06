@@ -3921,7 +3921,9 @@ impl<'a, FUZZER: Fuzzer> FuzzVm<'a, FUZZER> {
                         // we have hit a new coverage address. Return a CoverageBreakpoint exit.
 
                         if let Some(orig_byte) = cov_bps.get(&virt_addr) {
-                            assert!(*orig_byte != 0xcc);
+                            if *orig_byte == 0xcc {
+                                assert!(*orig_byte != 0xcc, "breakpoint-on-breakpoint @ {:#x}", virt_addr.0);
+                            }
                             // This breakpoint is a coverage breakpoint. Restore the VM
                             // memory and the global clean memory of this breakpoint so no
                             // other VM has to cover this breakpoint either

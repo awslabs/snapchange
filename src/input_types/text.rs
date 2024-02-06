@@ -8,7 +8,6 @@ use crate::mutators;
 use crate::rng::Rng;
 
 use anyhow::Result;
-#[cfg(feature = "redqueen")]
 use rand::seq::SliceRandom;
 use rand::{Rng as _, RngCore};
 #[cfg(feature = "redqueen")]
@@ -100,13 +99,14 @@ impl FuzzInput for TextInput {
         }
 
         // Get the number of changes to make to the input
-        let num_change = (rng.next_u64() % max_mutations).max(1) as usize;
+        let num_change: usize = rng.gen_range(1..=max_mutations).try_into().unwrap();
 
         // Mutations applied to this input
         let mut mutations: Vec<String> = Vec::with_capacity(num_change);
 
         // Perform some number of mutations on the input
-        for _ in 0..num_change {
+        let mut changed = 0;
+        while changed < num_change {
             // Special case the redqueen mutation if there are available rules
             #[cfg(feature = "redqueen")]
             if let Some(rules) = redqueen_rules {
@@ -144,19 +144,21 @@ impl FuzzInput for TextInput {
 
             // Choose which mutators to use for this mutation. Expensive mutators are
             // harder to hit since they are a bit more costly
-            let curr_mutators = if rng.next_u64() % max_mutations * 5 == 0 {
+            let curr_mutators = if !Self::expensive_mutators().is_empty()
+                && (rng.next_u64() % max_mutations * 5 == 0)
+            {
                 Self::expensive_mutators()
             } else {
                 Self::mutators()
             };
 
             // Select one of the mutators
-            let mutator_index = rng.gen::<usize>() % curr_mutators.len();
-            let mutator_func = curr_mutators[mutator_index];
+            let mutator_func = curr_mutators.choose(rng).unwrap();
 
             // Execute the mutator
             if let Some(mutation) = mutator_func(input, corpus, rng, dictionary) {
                 mutations.push(mutation);
+                changed += 1;
             }
         }
 
@@ -179,10 +181,7 @@ impl FuzzInput for TextInput {
             // insert random strings, with the const param, being an upper bound to the number of
             // inserted bytes. This ensures that we will do small modification much more often.
             mutators::text::insert_repeated_chars::<4>,
-            mutators::text::insert_repeated_chars::<1024>,
             mutators::text::insert_random_string::<4>,
-            mutators::text::insert_random_string::<8>,
-            mutators::text::insert_random_string::<1024>,
             // dictionary-based mutations
             mutators::text::splice_from_dictionary,
             mutators::text::insert_from_dictionary,
@@ -191,10 +190,6 @@ impl FuzzInput for TextInput {
             mutators::text::insert_from_dictionary_separated_by::<'\t'>,
             mutators::text::insert_from_dictionary_separated_by::<' '>,
             mutators::text::insert_from_dictionary_separated_by::<';'>,
-            mutators::text::insert_from_corpus_separated_by::<'\n'>,
-            mutators::text::insert_from_corpus_separated_by::<' '>,
-            mutators::text::insert_from_corpus_separated_by::<'\t'>,
-            mutators::text::insert_from_corpus_separated_by::<';'>,
             // text-focused mutation operations:
             // line-focused
             mutators::text::dup_between_separator::<'\n'>,
@@ -214,7 +209,16 @@ impl FuzzInput for TextInput {
 
     /// Current expensive mutators available for mutation (typically those which allocate)
     fn expensive_mutators() -> &'static [Self::MutatorFunc] {
-        &[]
+        &[
+            // potentially longer random strings
+            mutators::text::insert_repeated_chars::<1024>,
+            mutators::text::insert_random_string::<1024>,
+            // insert whole testcases from the corpus
+            mutators::text::insert_from_corpus_separated_by::<'\n'>,
+            mutators::text::insert_from_corpus_separated_by::<' '>,
+            mutators::text::insert_from_corpus_separated_by::<'\t'>,
+            mutators::text::insert_from_corpus_separated_by::<';'>,
+        ]
     }
 
     fn generate(

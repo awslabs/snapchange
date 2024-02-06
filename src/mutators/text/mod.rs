@@ -33,11 +33,15 @@ pub fn insert_random_string<const N: usize>(
     rng: &mut Rng,
     _dictionary: &Option<Vec<Vec<u8>>>,
 ) -> Option<String> {
-    assert!(!input.is_empty());
     let s = helpers::random_ascii_string(rng, N);
-    let idx = rng.gen_range(0..=input.len());
-    utils::vec::fast_insert_at(input.data_mut(), idx, s.as_bytes());
-    Some(format!("InsertRandom_offset_{}_len_{}", idx, s.len()))
+    if input.is_empty() {
+        input.data_mut().extend_from_slice(s.as_bytes());
+        Some(format!("InsertRandom_offset_0_len_{}", s.len()))
+    } else {
+        let idx = rng.gen_range(0..=input.len());
+        utils::vec::fast_insert_at(input.data_mut(), idx, s.as_bytes());
+        Some(format!("InsertRandom_offset_{}_len_{}", idx, s.len()))
+    }
 }
 
 /// Insert repeated a randomly chosen repeated char (up to N times).
@@ -107,9 +111,8 @@ pub fn insert_from_dictionary(
         if !dictionary.is_empty() {
             let dict_idx = rng.gen_range(0..dictionary.len());
             let entry = &dictionary[dict_idx];
-            let index = rng.gen_range(0..input.len());
+            let index = rng.gen_range(0..=input.len());
             utils::vec::fast_insert_at(input.data_mut(), index, &entry[..]);
-            // TODO: add mutation log
             return Some(format!("InsertFromDict_{dict_idx}_offset_{index}"));
         }
     }
